@@ -91,6 +91,11 @@ def main():
         ledger.append(row)
         (work / "ledger.json").write_text(json.dumps(ledger, indent=2) + "\n")
         print(json.dumps(row), flush=True)
+        if process.returncode != expected and "run" in row:
+            logs=Path(row["run"]) / "logs"
+            for log in sorted(logs.glob("*.stderr"), key=lambda p:p.stat().st_mtime)[-4:]:
+                detail=log.read_text(errors="replace")
+                if detail: print(f"--- {log.name} ---\n{detail[-16000:]}",flush=True)
         assert process.returncode == expected, (row, stderr[-2000:])
         return body
 
