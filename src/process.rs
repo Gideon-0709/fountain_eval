@@ -104,7 +104,7 @@ impl Drop for ChildGroup {
         {
             let group = format!("-{}", self.0.id());
             if Command::new("kill")
-                .args(["-TERM", &group])
+                .args(["-TERM", "--", &group])
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .status()
@@ -112,7 +112,7 @@ impl Drop for ChildGroup {
             {
                 std::thread::sleep(Duration::from_millis(100));
                 let _ = Command::new("kill")
-                    .args(["-KILL", &group])
+                    .args(["-KILL", "--", &group])
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
                     .status();

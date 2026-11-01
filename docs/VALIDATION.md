@@ -65,6 +65,8 @@ Consequently, the released acceptance trace uses distinct IDs, including distinc
 
 Early candidates exposed and corrected framework issues in TOML table insertion, registry archive handling, nested Cargo workspace composition and cache-internal source filtering. A source regression test now covers downloaded input inside the cache. Initial self-XOR failures were preserved as diagnostic findings until the scope decision above. A candidate spanning a test-content change was rejected by comparison for inconsistent T identity; it was not merged into the successful matrix.
 
+The first Linux CI pass exposed an external `kill` option-parsing difference: a negative process-group ID requires an explicit `--` operand separator. Process-group cleanup now supplies that separator for TERM and KILL, and interruption coverage also checks that descendants have exited. The failed CI attempt remains visible in Actions.
+
 Normal formatting/lint corrections and a host-filtered dependency check were completed separately. The latter avoids downloading unrelated foreign-platform framework dependencies during repository inspection. Unexpected native failures stopped their candidate immediately. Subsequent corrected candidates used separate work directories; failed attempts were not retried or relabeled as successful measurements.
 
 ## CI and evidence retention

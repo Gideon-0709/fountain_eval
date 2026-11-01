@@ -59,7 +59,7 @@ fn interruption_helper() {
     };
     process::install_handler().unwrap();
     let result = process::run(
-        Command::new("sh").args(["-c", "echo ready; sleep 30"]),
+        Command::new("sh").args(["-c", "sleep 30 & echo $!; wait"]),
         std::path::Path::new(&path),
         "interrupt",
         Duration::from_secs(30),
@@ -93,5 +93,10 @@ fn interruption_isolated_process() {
             .success()
     );
     assert!(child.wait().unwrap().success());
+    let descendant = fs::read_to_string(t.0.join("interrupt.stdout")).unwrap();
+    assert!(
+        gone(descendant.trim()),
+        "interrupted descendant remained alive"
+    );
     assert!(start.elapsed() < Duration::from_secs(5));
 }
