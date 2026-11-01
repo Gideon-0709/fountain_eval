@@ -1,4 +1,4 @@
-# Implementation acceptance — 2026-11-01
+# Implementation acceptance — 2026-11-01–02
 
 This summary covers framework v0.2.0 implementation acceptance. It is not a formal performance report, and none of the short timings establish an optimization advantage. Registered I/T digests are frozen in [the catalog lock](../specs/catalog-lock.json).
 
@@ -65,7 +65,7 @@ Consequently, the released acceptance trace uses distinct IDs, including distinc
 
 Early candidates exposed and corrected framework issues in TOML table insertion, registry archive handling, nested Cargo workspace composition and cache-internal source filtering. A source regression test now covers downloaded input inside the cache. Initial self-XOR failures were preserved as diagnostic findings until the scope decision above. A candidate spanning a test-content change was rejected by comparison for inconsistent T identity; it was not merged into the successful matrix.
 
-The first Linux CI pass exposed an external `kill` option-parsing difference: a negative process-group ID requires an explicit `--` operand separator. Process-group cleanup now supplies that separator for TERM and KILL, and interruption coverage also checks that descendants have exited. The failed CI attempt remains visible in Actions.
+The first Linux CI attempt exposed an external `kill` option-parsing difference: a negative process-group ID requires an explicit `--` operand separator. Process-group cleanup now supplies that separator for TERM and KILL, and interruption coverage also checks that descendants have exited. The failed CI attempt remains visible in Actions.
 
 Normal formatting/lint corrections and a host-filtered dependency check were completed separately. The latter avoids downloading unrelated foreign-platform framework dependencies during repository inspection. Unexpected native failures stopped their candidate immediately. Subsequent corrected candidates used separate work directories; failed attempts were not retried or relabeled as successful measurements.
 
@@ -82,3 +82,5 @@ The [CI workflow](https://github.com/Gideon-0709/fountain_eval/actions/workflows
 Private Arena, development engine 3 and product API coverage in this delivery is **local macOS coverage**. Private combinations are not claimed as Linux or credential-free CI coverage. No upstream repository was modified or uploaded to.
 
 Implementation work directories and first-failure logs were kept through analysis and summarized here. They are temporary construction artifacts, not a benchmark archive, and are cleaned after acceptance. Normal user `runs/` data is managed only by the user; the CLI never performs this cleanup automatically.
+
+Construction cleanup removed the nine task-owned cache/install trees, `runs/construction`, the Python bytecode cache, and 21 explicitly identified temporary command outputs. The removed directories occupied approximately 5.93 GiB of allocated storage. The normal Cargo `target/` directory remains. No normal user run directories or upstream checkouts were deleted.

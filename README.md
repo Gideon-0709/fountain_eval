@@ -23,6 +23,8 @@ Private repositories require your existing Git credentials. Do not put tokens in
 
 ## First real run
 
+The currently pinned public Slab/Simd versions have positive native coverage on ARM64. Their upstream AVX2 source fails compilation on x86_64; see [the platform limitation](docs/VALIDATION.md#public-x86-component-limitation). The CLI preserves that build failure and produces no measurements.
+
 From an empty working directory:
 
 ```bash
