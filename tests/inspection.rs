@@ -84,7 +84,7 @@ fn matching_declared_versions_do_not_claim_evaluation_success() {
     assert!(!report.has_errors());
     assert!(!report.execution_available);
     assert!(has_code(&report, "resolution_deferred"));
-    assert!(has_code(&report, "execution_unavailable"));
+    assert!(has_code(&report, "execution_not_attempted"));
     assert!(report.local_declarations.engine.is_none());
     let json = serde_json::to_value(report).unwrap();
     assert_eq!(json["status"], "inspection_only");

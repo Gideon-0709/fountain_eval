@@ -1,7 +1,13 @@
-//! Shared request types and declaration inspection for Fountain evaluation.
-//!
-//! The package currently supplies a scaffold, not a codec test implementation.
-//! Native drivers and test recipes are registered in later development stages.
+//! Reproducible Fountain evaluation: resolve, build, validate, measure and compare.
+//! The CLI and the execution API share this single package; native drivers are embedded.
 
+pub mod build;
+pub mod catalog;
+pub mod evidence;
+pub mod execution;
+pub mod measurement;
+pub mod process;
 pub mod protocol;
 pub mod runner;
+pub mod source;
+pub mod util;

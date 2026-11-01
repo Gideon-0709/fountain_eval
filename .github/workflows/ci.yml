@@ -15,14 +15,22 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install the pinned framework toolchain
-        run: rustup toolchain install 1.89.0 --profile minimal --component rustfmt --component clippy
+        run: rustup toolchain install 1.89.0 --profile minimal --component rustfmt --component clippy --no-self-update
       - run: cargo fmt --all -- --check
+      - run: rustfmt --edition 2024 --config skip_children=true --check drivers/common.rs drivers/operator.rs drivers/native.rs drivers/product.rs
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
       - run: cargo doc --locked --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
       - run: python3 scripts/check_repository.py
+      - run: cargo build --locked
+      - name: Public native acceptance and failure lifecycle
+        run: python3 scripts/native_acceptance.py --work .fountain-eval/ci-acceptance --faults
+      - name: Print acceptance ledger on failure
+        if: failure()
+        run: cat .fountain-eval/ci-acceptance/ledger.json || true

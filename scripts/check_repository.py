@@ -15,7 +15,8 @@ def command(*args):
 
 
 def main():
-    metadata = json.loads(command("cargo", "metadata", "--locked", "--format-version", "1"))
+    host = next(line.split(": ", 1)[1] for line in command("rustc", "-vV").splitlines() if line.startswith("host: "))
+    metadata = json.loads(command("cargo", "metadata", "--locked", "--format-version", "1", "--filter-platform", host))
     members = metadata["workspace_members"]
     packages = metadata["packages"]
     assert len(members) == 1, "The framework must remain one package"

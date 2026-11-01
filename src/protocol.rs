@@ -3,14 +3,14 @@
 use std::{fmt, path::PathBuf, str::FromStr};
 
 use semver::Version;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use url::Url;
 
 /// Output format metadata, independent of interface and test versions.
 pub const FORMAT_VERSION: u32 = 1;
 
 /// A source selection. Inspection does not fetch or freeze its contents.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SourceReference {
     Path {
@@ -29,28 +29,28 @@ pub enum SourceReference {
 }
 
 /// One component reference, optionally selecting an implementation in its crate.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ComponentReference {
     #[serde(flatten)]
     pub source: SourceReference,
     pub implementation: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TestReference {
     pub name: String,
     pub version: String,
 }
 
 /// Exactly two user-selected components. Support crates are resolved later.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ComponentPair {
     pub engine: ComponentReference,
     pub operator: ComponentReference,
 }
 
 /// The public three-input request. This is not a resolved (C, I, T, E) identity.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EvaluationRequest {
     pub components: ComponentPair,
     pub test: TestReference,

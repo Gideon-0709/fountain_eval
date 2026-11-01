@@ -1,6 +1,6 @@
 [package]
 name = "fountain-eval"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.89"
 description = "Evaluation infrastructure for Fountain engines and operators"
@@ -15,6 +15,9 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "1.1"
 url = "2.5"
+sha2 = "0.10"
+ctrlc = "3.4"
+fs2 = "0.4"
 
 [lints.rust]
 unsafe_code = "forbid"

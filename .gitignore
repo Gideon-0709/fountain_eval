@@ -3,3 +3,5 @@
 /.fountain-eval/
 /.fountain-eval.local.json
 .DS_Store
+
+__pycache__/

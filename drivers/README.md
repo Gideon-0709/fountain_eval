@@ -1,7 +1,7 @@
-# Native drivers
+# Embedded native drivers
 
-No native driver or I version is registered yet. Expected integration families are public engine 2.1, development engine 3 and the binary product API.
+`common.rs` owns the shared T workload, scalar reference, correctness checks, timing and NDJSON emission. `operator.rs`, `native.rs`, and `product.rs` own I-specific bindings. `src/catalog.rs` embeds these files so an installed CLI does not read an eval checkout.
 
-Future drivers may use independent Cargo build roots and lockfiles for API isolation. They are not extra public framework crates and must not introduce native Fountain dependencies into the root package.
+Runtime generation supplies a selected operator alias and immutable build/test identity constants. The generated crate has its own Cargo.lock and release profile. The product family additionally builds the real shared library and calls the selected operator through SymbolOps. Unsupported product operator-only tests fail before measurement.
 
-API conversions belong to I; measurement semantics executed by drivers belong to T. Equivalent I implementations can be compared under the same T/E. Equivalence must be verified, not inferred from names or matching signatures.
+See the [process contract](../specs/README.md) and [design](../DESIGN.md) for capability, timing and equivalence boundaries. Native declarations and implementation code remain in their original repositories.

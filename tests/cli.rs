@@ -20,31 +20,22 @@ fn arguments(command: &str) -> [&str; 7] {
 }
 
 #[test]
-fn help_and_empty_catalog_are_available() {
+fn help_and_registered_catalog_are_available() {
     assert!(cli(&["--help"]).status.success());
     let output = cli(&["list"]);
     assert!(output.status.success());
     let catalog: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(catalog["interfaces"], serde_json::json!([]));
-    assert_eq!(catalog["tests"], serde_json::json!([]));
+    assert_eq!(catalog["interfaces"].as_array().unwrap().len(), 3);
+    assert_eq!(catalog["tests"].as_array().unwrap().len(), 2);
 }
 
 #[test]
-fn inspection_success_and_unavailable_execution_are_distinct() {
+fn inspection_is_still_offline_and_does_not_claim_execution() {
     let inspect = cli(&arguments("inspect"));
-    let run = cli(&arguments("run"));
     assert_eq!(inspect.status.code(), Some(0));
-    assert_eq!(run.status.code(), Some(3));
-    let inspected: serde_json::Value = serde_json::from_slice(&inspect.stdout).unwrap();
-    let attempted: serde_json::Value = serde_json::from_slice(&run.stdout).unwrap();
-    assert_eq!(inspected, attempted);
-    assert_eq!(attempted["status"], "inspection_only");
-    assert_eq!(attempted["execution_available"], false);
-    assert!(
-        String::from_utf8(run.stderr)
-            .unwrap()
-            .contains("evaluation unavailable")
-    );
+    let report: serde_json::Value = serde_json::from_slice(&inspect.stdout).unwrap();
+    assert_eq!(report["status"], "inspection_only");
+    assert_eq!(report["execution_available"], false);
 }
 
 #[test]
@@ -55,6 +46,7 @@ fn invalid_input_takes_precedence_over_execution_unavailability() {
     let malformed = cli(&args);
     assert_eq!(malformed.status.code(), Some(2));
     assert!(malformed.stdout.is_empty());
+    args[0] = "inspect";
     args[2] = "path:Cargo.toml";
     args[4] = "path:Cargo.lock";
     let manifest_error = cli(&args);

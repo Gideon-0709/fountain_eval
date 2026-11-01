@@ -59,8 +59,8 @@ pub fn inspect(request: EvaluationRequest) -> Inspection {
 
     diagnostics.push(diagnostic(Severity::Info, "resolution_deferred",
         "No source snapshot, resolved dependency graph, interface selection, environment recipe, build, or codec validation has been produced."));
-    diagnostics.push(diagnostic(Severity::Info, "execution_unavailable",
-        "This scaffold registers no interface implementations or test versions. Inspection output is not an evaluation result."));
+    diagnostics.push(diagnostic(Severity::Info, "execution_not_attempted",
+        "Offline inspection does not build or execute a driver. Use prepare or run for capability validation."));
     Inspection {
         format_version: FORMAT_VERSION,
         status: InspectionStatus::InspectionOnly,

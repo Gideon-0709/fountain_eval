@@ -1,192 +1,104 @@
 # Fountain evaluation architecture
 
-Status: agreed architecture with a single-package scaffold. Updated 2026-11-01.
+## From a component change to a comparable result
 
-## 1. Public workflow
+A developer wants to evaluate an engine/operator combination without maintaining a benchmark project for each branch. The public request therefore contains exactly two component references and one test content version. Arena is an operator implementation, not a third component role. Scheme, utility, product-facade and other dependencies are resolved as supporting provenance.
 
-A user selects exactly two tested components, **engine** and **operator**, plus a **test content version**. Arena, Slab, and Simd are operator implementations.
+The execution sequence is:
 
-```text
-fountain-eval run --engine <reference> --operator <reference> --test <name@version>
-```
+1. Parse references and select a registered test recipe.
+2. Resolve real packages and freeze their source inputs, including dirty local bytes and path dependencies.
+3. Select a registered interface integration, derive common build settings and observe the host environment.
+4. Generate an isolated Cargo build view, check version constraints, build, and probe the actual process/library.
+5. Validate fixed test inputs independently of the tested operator's arithmetic, then collect the prescribed samples.
+6. Seal a unique local result, preserving any failure stage and partial evidence.
+7. Compare only complete results with compatible identities and conditions.
 
-The framework selects the native interface implementation and derives the experiment recipe. Users do not supply interface versions, scheme/utility components, target manifests, or arbitrary experiment parameters for a standard run.
+`prepare` stops after step 4. `run --prepared` repeats steps 5–6 against that fixed input, observing current runtime conditions. Offline `inspect` only reads declarations; it is not a shortened correctness gate.
 
-Currently, the executable parses requests and inspects local Cargo declarations. It has no registered interfaces or tests. The README documents implemented commands; the execution pipeline below describes the intended architecture.
+## The four-tuple
 
-## 2. Four-tuple model
+A completed input identity is `(C,I,T,E)`:
 
-Resolved experimental conditions are **`(C, I, T, E)`**.
-
-| Dimension | Meaning | Selection |
+| Dimension | Owns | May change independently |
 |---|---|---|
-| C: component pair | Engine and operator under test | User selects references; framework records actual source identities and dependency closure |
-| I: interface implementation | Native API binding, conversions, capability mapping, interface-specific dependencies | Automatically selected immutable compatible implementation |
-| T: test content | Scenarios, parameters, lifecycle, timing/validation/statistical semantics, assets and implementations affecting those semantics | User selects an immutable version |
-| E: effective configuration | Expanded recipe, build options, toolchain and actual hardware/system/execution conditions | Derived from T and validated observations |
+| C: selected component combination | Engine/operator identities, implementation choice, source digests, resolved dependency provenance | Algorithms, layouts, kernels, allocation and internal implementation |
+| I: interface integration | Native API conversions, feature/source binding, supported capabilities, driver family | Package/API/trait/product ABI integration |
+| T: test content | Input generation, operations, correctness oracle, timing boundary, sampling and metric semantics | Test scenarios, coverage, workload and methodology |
+| E: effective experiment configuration | T-derived parameters, common compiler/build settings and observed runtime conditions | Host, OS, toolchain, CPU/power/affinity and common build environment |
 
-C has two public roles. Schemes, utility libraries and support packages remain part of provenance, not additional user-selected tested components. Their versions follow registered integration rules and locked dependencies. Missing mappings cause explicit errors rather than guessing.
+I and T have independent version-plus-content identities. A published version must not be repointed to changed content. The catalog lock and repository checks detect edits without an explicit version update. Components' declared package versions alone are insufficient: source bytes and dependency locks distinguish two different checkouts carrying the same version string.
 
-I and T evolve independently. There is no aggregate public protocol version and no fifth top-level axis. Repository commits, crate versions, output formats, binary digests, run IDs and report-generator revisions provide provenance. A run ID distinguishes repetitions of the same tuple, including failures and environmental observations.
+Framework package version, serialization schema, run ID, wall-clock time and report renderer are provenance, not additional tuple axes. A semantic change to interface calls or measurement still belongs to I or T even if delivered in a small framework patch.
 
-## 3. Existing libraries
+A failed early stage has no complete tuple. After a successful build/probe, the fixed input tuple can exist even if subsequent correctness fails; that record remains failed and is not eligible for comparison. Raw sample prefixes never imply completion.
 
-Observations below are pinned to section 12's source snapshots.
+## Stable responsibilities and dependencies
 
-| Library | Role | Consequence |
-|---|---|---|
-| `fountain_engine` | Encoder, Decoder, solver, DataManager; owns DataOperator, CodeScheme, Operation and HDPC/LDPC interfaces | Native APIs and Rust type identity depend on engine version |
-| `fountain_scheme` | R10, RQ, LT, BHP and related scheme/precode parameters | Support dependency on engine/utility; T chooses schemes |
-| `fountain_utility` | Padding, EncodingPlan, repair emitter, reference operator and test utilities | Runtime support changes affect provenance and attribution |
-| `fountain_operators` | Slab/Simd implementations, GF kernels, storage and tooling | Operator package depending on engine |
-| `fountain-arena-operator` | Arena storage and CPU/runtime arithmetic backends | Operator currently requiring exact public engine 2.1.0 |
-
-The monorepo snapshot labels its engine `3.0.0-dev`. Public engine 2.1 is a separate integration target. This package-level dependency diagram does not imply arbitrary revisions link together; dashed edges are optional and development dependencies are omitted.
+The framework is one Cargo package. `src/main.rs` is the CLI; library modules own requests, resolution, build views, execution, metrics and evidence. Native Fountain crates are not linked into the framework package. Embedded source templates produce an independent generated driver executable with its own lockfile and release build. The product library has a separate native build and lockfile as well.
 
 ```mermaid
 flowchart TD
-    S["fountain_scheme"] --> E["fountain_engine"]
-    S --> U["fountain_utility"]
-    U --> E
-    O["fountain_operators"] --> E
-    U -. "profile" .-> O
-    A["fountain-arena-operator"] --> E
+  User[Engine reference + operator reference + T] --> Eval[fountain-eval package]
+  Eval --> Frozen[Immutable source snapshots]
+  Eval --> Registry[I and T catalog]
+  Frozen --> View[Generated build view]
+  Registry --> View
+  View --> Driver[Native driver process]
+  View --> Product[Product shared library when selected]
+  Product --> Driver
+  Driver --> Evidence[Validation, raw samples and sealed results]
+  Evidence --> Compare[T/E and I-equivalence checks]
 ```
 
-The product path includes `fountain_bin_ffi`, `fountain_engine_sys` bindings and RQ/R10 facades. Product symbol callbacks expose read/write and optional XOR/copy operations, not the full source DataOperator interface. Product integrations must identify this execution path explicitly. The two-component model still applies to the engine product and supported operator implementation.
+Component authors keep their normal repositories and Cargo manifests. They do not copy code into eval, write target manifests, select I, or manually reproduce K/width/repair settings. Changes to registered package identity, workspace layout, features, traits, constructors, operation semantics or product ABI must be communicated to the eval maintainer when the existing mapping cannot compile or preserve the contract.
 
-## 4. One package, internal modules
+A stable trait is necessary but not sufficient: its semantics, lifecycle, required support dependencies and available capabilities also matter. The correctness stage detects behavioral conflicts that Cargo cannot see. Version constraints and duplicated trait identities are checked before measurement.
 
-`fountain-eval` is one Cargo package with a library and CLI. Internal modules provide responsibility boundaries; protocol, runner and CLI are not separately published crates.
+## Source freezing and build composition
 
-```text
-fountain_eval/
-├── Cargo.toml / Cargo.lock / rust-toolchain.toml
-├── src/
-│   ├── lib.rs              library entry point
-│   ├── main.rs             CLI
-│   ├── protocol.rs         independent request/inspection models
-│   └── runner.rs           offline declaration inspection
-├── tests/                  framework checks
-├── specs/                  protocol and identity boundaries
-├── suites/                 future immutable T recipes
-├── fixtures/               future fixed test assets
-├── targets/                future maintainer-owned build recipes
-├── drivers/                future native API-specific build roots
-├── docs/                   internal module roadmap
-└── scripts/                repository checks
-```
+Local Git inputs include tracked and nonignored untracked files, including current modifications and deletions. Non-Git inputs retain their package/workspace layout. Git references fetch exactly the selected full commit, initialize submodules and reject a modified cached checkout. Registry references use an exact version and verify the crate archive against its Cargo lock checksum before extracting it into an owned snapshot.
 
-Source resolution/building, measurement, independent reference validation and analysis become internal modules as implemented. Documentation describes their boundaries until then; no empty crates or placeholder traits are needed.
+Path dependencies are captured before computing a build-cache key, including dependencies outside the original repository. Snapshot checks detect concurrent file changes; source hashes include relative paths, bytes and executable bits. Monorepo-relative source includes remain intact. File symlinks within the snapshot are materialized; links escaping the snapshot and directory symlinks are rejected.
 
-Future native drivers may require independent Cargo build roots and lockfiles to bind incompatible engine APIs or product ABIs. This does not split the public framework package or force native drivers into one engine dependency graph.
+Generated build views preserve source files and record original/effective manifests. They expand workspace inheritance and bind selected native dependencies through paths. They do not edit upstream manifests or relax declared semantic version requirements. Native-only dependency feature choices are I-owned and recorded with Cargo's actual resolved features. Unmapped workspace patches/replacements fail explicitly.
 
-```mermaid
-flowchart TD
-    U["User: engine / operator / T"] --> R["CLI and runner"]
-    R --> C["Resolve component pair and dependencies"]
-    R --> I["Select compatible I"]
-    R --> E["Derive recipe and observe E"]
-    C --> B["Isolated driver build"]
-    I --> B
-    E --> B
-    B --> V["Correctness checks"]
-    V --> M["T-defined measurements"]
-    M --> O["Four-tuple, raw evidence and report"]
-```
+Public engine 2.1 integrations bind registered scheme and utility 2.1.0 releases. Engine 3 uses the selected monorepo's corresponding packages. The current Arena's exact engine 2.1 requirement rejects source engine 3. Successful compilation establishes concrete Rust type identity, and metadata checks reject duplicated/misbound engine identities in the driver graph.
 
-The scaffold currently stops at parsing and preliminary declaration inspection.
+Product integration builds the selected monorepo's real `fountain_bin_ffi` shared library and uses its RQ/R10 facades with SymbolOps callbacks into the selected operator. Binary-side dependencies and callback-side dependencies are separate graphs. Dynamic-loader traces and library hashes establish which shared library was actually loaded. A Linux SONAME alias and platform rpath support normal loading; resources are released through the real facade lifecycles.
 
-## 5. Cross-project integration
+Completed cache entries include manifests, source files, lockfiles, driver/library binaries, build logs and a checked metadata index. Reuse verifies these artifacts. Source closure, implementation, I/T identities and common conditions form the cache key. A new external path dependency revision cannot reuse an old build. Dependency resolution is locked per completed build; a fresh cache may resolve different allowed supporting releases, which are recorded in C provenance.
 
-Components stay in their own repositories. Eval owns reference resolution and build composition, not vendored component implementations.
+## Interface process boundary
 
-Current syntax covers local crate paths, exact crates.io versions and pinned HTTPS/SSH Git references with a package selector. Remote references are parsed without fetching. An optional implementation selector distinguishes operators within a package; future drivers must reject ambiguous/unsupported selections.
+Drivers communicate through a versioned NDJSON protocol on stdout; stderr and build output remain separate logs. The framework checks a hello identity, permitted event types, sample coverage and an explicit completion event. Each invocation uses a bounded child process group. Timeout, interrupt, nonzero exit and protocol errors produce failed/interrupted evidence and terminate remaining child processes.
 
-Future resolution preserves complete monorepo layouts and relative dependencies. Git inputs use isolated checkouts. Local development sources are frozen into temporary build-input snapshots with source identity and dirty changes recorded. Snapshots are build evidence, not source copies committed into eval. Continued edits to an original worktree cannot change a prepared execution.
+Correctness and measurement are separate process invocations. Correctness can wrap operators with participation and destruction counters; measurement uses the raw selected operator. A product API without the full operation surface returns unsupported for operator-only tests, rather than constructing a substitute workload.
 
-The resolver generates an isolated driver build root and locks its actual dependency graph. It does not silently edit upstream manifests. The selected operator and support libraries must share compatible engine trait identities. Cargo patches select compatible sources; they cannot defeat version constraints or repair arbitrary API differences.
+The three integration families share the same T-owned input generation, scalar oracle, workload ordering, clock boundaries and metrics. Their native binding implementations are I-owned. This permits equal T identities across different API families without hiding the effect of a different interface path.
 
-For example, an operator requiring `fountain_engine = "=2.1.0"` cannot automatically consume engine `3.0.0-dev`. Maintainers supply compatible revisions. Explicit experimental source/manifest adaptations must appear in provenance and attribution.
+## Acceptance recipes and current boundary
 
-## 6. Configuration ownership
+`operator-smoke@0.1.0` uses widths 1, 31 and 128, a fixed 14-operation trace, execute/direct dispatch, and an independent scalar GF(256) implementation. Untimed correctness checks every trace prefix so a later zero operation cannot hide an earlier wrong result. Measurement preloads inputs and constructs the operation program before starting the clock.
 
-Users supply three references. Shared recipes and integration mappings are maintainer-owned. Optional local settings may locate caches or named source bindings without introducing hidden workload/compiler/timing overrides.
+`codec-smoke@0.1.0` covers RQ/R10 at K=64 and symbol width 128, with either all sources or the first eight sources missing. Encoding materializes all source symbols and 128 repair symbols. Decoding receives fixed source/repair order until complete, within that repair budget. Validation checks systematic and recovered bytes, an incomplete prefix, operator participation, and operator release. Timing includes construction, input loading, engine work and owned result materialization. Final checks, serialization and destruction are outside the timer.
 
-T determines schemes, parameter combinations, input/receive generation, seeds, initialization/cache modes, warmups, repeats, scheduling, statistics and build/environment requirements. E records the full expansion. I converts native parameters while preserving those meanings.
+Each case uses one warmup and three recorded repetitions. Raw nanoseconds and workload counts are authoritative. Median/minimum/maximum are descriptive; original-payload Gbit/s is `bytes * 8 / nanoseconds`, and operator rate is `operations * 1e9 / nanoseconds`. Neither test has a performance pass threshold.
 
-The host cannot be derived from T. The framework observes effective toolchain, hardware, OS and execution conditions, then validates them against the recipe. Equal T on different hosts does not imply equal E. Dynamic observations qualify run validity without turning every incidental observation into a manually selected parameter.
+Same-ID arithmetic is deliberately deferred by the project owner pending team discussion. Arena returns zero for self-XOR while current Slab/Simd implementations treat it as a no-op. Version 0.1.0 uses distinct IDs and checks copy/write isolation and distinct-ID cancellation. It does not certify equivalence for the deferred cases. Initial diagnostic failures remain identified in the implementation acceptance summary; they are not silently relabeled as passes.
 
-Global Cargo settings, environment build flags and other effective overrides must be controlled or recorded. Credentials remain outside experiment files. Standard execution does not accept arbitrary workload overrides under an unchanged recipe.
+## Comparability and attribution
 
-The complete configuration is a generated artifact, not a form for each developer. Support dependency resolution, private-source access and build failures remain explicit.
+Two results can be compared when both succeeded, all required validation/samples are present, T version and digest match, and E's common conditions match. Registered I implementations must support that T and agree on its timing/semantic contract; matching correctness witnesses supply per-run behavioral evidence. Different I values are therefore not an automatic rejection, and a matching trait name is not equivalence evidence by itself.
 
-## 7. Stable boundaries and version ownership
+E excludes component-specific dependency graphs, native feature mappings, binary hashes and internal implementation choices. Including these as common environment requirements would prevent the component comparisons the framework exists to support. It includes the common build recipe, toolchain/compiler details, relevant Cargo configuration digests, hardware/OS and observable power/affinity conditions. Run IDs, temporary paths, timestamps and uptime observations do not affect equality.
 
-| Boundary | Stable meaning | Owner |
-|---|---|---|
-| Component selection | Engine/operator references and implementation selection | Request format; resolved components are C |
-| Native API binding | Constructors, methods, argument/status conversions and capabilities | I |
-| Workload/workflow | Task, parameters, lifecycle, required outputs and validation | T |
-| Timing/metrics | Included work, endpoints, units and statistics | T |
-| Execution conditions | Recipe plus actual build/runtime conditions | E |
-| Evidence | Original identities, raw observations, failures and provenance | Output format |
+A C-only change is attributed to the selected component combination, including changed supporting dependencies when applicable. An I-only change is attributed to the interface path. When both change, the report states their joint effect. Comparing multiple simultaneous changes does not isolate a single optimization. Equal measured conditions and short smoke samples do not establish statistical stability.
 
-Each I publishes the minimal native API surface it consumes. There is no single engine trait: integration can use Encoder/Decoder methods, DataOperator, CodeScheme, configurations, operations and statuses. Compatible behavior matters alongside signatures.
+## Evidence lifecycle and ownership
 
-Internal layout, SIMD, solvers, operation counts, matrix representation, fusion and native scheduling may evolve in C. An operator-trace test fixes its trace input; an engine optimization may legitimately generate a different trace.
+Each invocation creates a unique output directory. Checkpoints record stage state; failures retain already completed phases, live logs and any valid sample prefix. Seals detect accidental evidence modification. `report` and `compare` can operate after build cache deletion. Prepared execution still requires its verified build cache.
 
-Renaming a constructor or mapping an equivalent status updates I. Moving initialization outside timing, changing output materialization or changing a requested execution mode affects T. Internal dispatch improvements under unchanged requested session semantics belong to C.
+The CLI does not upload, archive, retry into success, overwrite existing results or delete normal user results. Git ignores `runs/` and `.fountain-eval/`. Implementation acceptance artifacts are temporary: maintainers write an acceptance summary, then clean their explicitly identified test work directories. Private source access does not authorize upstream writes.
 
-Published I/T identities are immutable. Equivalent API adaptation can update I without changing T. Measurement/validation fixes affecting results update the relevant identity and identify affected historical results. Report presentation may evolve independently; metric/statistical semantics belong to T.
-
-The CLI crate version and inspection JSON format version are development metadata. This scaffold publishes no I or T release.
-
-## 8. Conflicts and correctness
-
-Explicit conflicts fail before formal evaluation: invalid/unavailable references, dependency constraints, native type identity, build failures and missing capabilities. The scaffold detects syntax, local manifest errors and some unconditional engine version mismatches only.
-
-Correctness validation checks implicit semantic conflicts against T-defined independent evidence. A pass covers those scenarios, not every possible defect. Failed validation does not yield valid performance conclusions.
-
-Reference validation is independent of the tested implementation. Existing utility operators may be comparison subjects or integration aids; their names do not make them the sole authority. Private-source access does not authorize upstream writes or publication.
-
-## 9. Comparability and attribution
-
-For valid runs with the relevant correctness checks passed, **equal T and E plus equivalent I semantics permit comparison across different C values. I versions need not match.**
-
-Equivalent integration preserves inputs, parameter meaning, task/mode, lifecycle, required outputs, timing and validation. It introduces no undeclared precomputation, caching or transfer of work outside measurement. Real bridging costs inside the measured path remain included. Internal algorithms and operation sequences may differ.
-
-Maintainers verify and record I/T compatibility, including capability/configuration limits. Users need not audit adapter code manually. Selection resolves to an immutable verified implementation, not a floating branch.
-
-| Change | Direct conclusion |
-|---|---|
-| One tested component changes; I/T/E fixed | Effect of that component, after checking dependency differences |
-| Both components or support dependencies change | Effect of the recorded combination |
-| C and I change; T/E match and I semantics are equivalent | Effect of the component and integration path together |
-| I equivalence is unverified | Direct comparability is not established |
-| T or E changes | Different methods/conditions; requires further equivalence evidence or a shared-condition rerun |
-
-A baseline is a fixed component pair, not a reused historical number. Paired comparisons rerun both sides under the same T/E with compatible I. Historical identities and failures are preserved; reanalysis creates a separate record without relabeling execution.
-
-## 10. Evidence and lifecycle
-
-Future runs record the four-tuple, complete dependency/build evidence, binary digests, environment observations, validation, raw samples and comparison limits. Unavailable, unsupported, failed, unexecuted and successful outcomes are distinct. Missing timings cannot become zero-valued measurements.
-
-Prepared inputs are immutable. Each repeated execution receives a new run ID and retains earlier attempts. Inputs are not silently refreshed during execution. Cache/result retention policies must be defined before real runs; completion alone does not authorize long-term publication or archival.
-
-Inspection currently produces no resolved I/E, source snapshot identity or performance samples and cannot substitute for an evaluation record.
-
-## 11. Next implementation boundaries
-
-The current package implements reference parsing, local declaration inspection, structured diagnostics and explicit execution-unavailable behavior.
-
-Next work defines real T recipes, native I catalogs and semantic equivalence checks, then implements source snapshots/resolution, isolated builds, environment validation, correctness, timing, evidence and comparisons. Artifact access/retention/publication rules precede real runs. These capabilities extend internal modules; native-driver build roots are introduced only when integration needs isolation.
-
-## 12. Source basis
-
-Architectural observations use fixed snapshots:
-
-- `shhyang/erasure_coding_lib` at `2b603359f883448d257ec7c5401fc8a9b4054621`: [workspace](https://github.com/shhyang/erasure_coding_lib/blob/2b603359f883448d257ec7c5401fc8a9b4054621/Cargo.toml), [DataOperator](https://github.com/shhyang/erasure_coding_lib/blob/2b603359f883448d257ec7c5401fc8a9b4054621/fountain_engine/src/traits/data_operator.rs), [CodeScheme](https://github.com/shhyang/erasure_coding_lib/blob/2b603359f883448d257ec7c5401fc8a9b4054621/fountain_engine/src/traits/code_scheme.rs), [product integration](https://github.com/shhyang/erasure_coding_lib/blob/2b603359f883448d257ec7c5401fc8a9b4054621/product/README.md). Links require private upstream access.
-- `Gideon-0709/fountain-arena-operator` at `d777cad6b512ee17663e129512bae10bca3397b1`: [dependency declaration](https://github.com/Gideon-0709/fountain-arena-operator/blob/d777cad6b512ee17663e129512bae10bca3397b1/Cargo.toml).
-
-This repository contains architectural observations and references, not copies of private upstream source.
+Linux/macOS CI checks the framework and publicly accessible native combinations. Private Arena and monorepo combinations are checked on an authorized local host. Platform coverage is explicit; missing CI credentials do not count as private-component coverage. Formal performance matrices, statistical methodology and performance standards remain a separate design task.

@@ -1,7 +1,7 @@
-# Test content versions
+# Acceptance test content
 
-No T versions are registered yet. This directory will contain immutable recipes and their asset/implementation references.
+The registered recipes are `operator-smoke@0.1.0` and `codec-smoke@0.1.0`, both with purpose `acceptance`. `src/catalog.rs` expands them; `drivers/common.rs` and `src/measurement.rs` participate in their content identities.
 
-T determines the complete workload and execution recipe. Users select T, not K, symbol widths, cache policy, repair schedule or timing boundaries. E combines the expanded recipe with observed conditions.
+Operator coverage uses widths 1, 31 and 128, execute/direct dispatch, scalar GF arithmetic, and copy/write isolation. Same-ID arithmetic is deferred pending a team contract. Codec coverage uses RQ/R10, K=64, 128-byte symbols, missing-source counts 0/8 and a fixed 128-repair budget. Each case has one warmup and three measured repetitions.
 
-The first test content and parameter matrix require a separate design decision. Do not add synthetic codec success or throughput to exercise the CLI.
+These are framework acceptance recipes. They do not define a formal performance matrix, statistical performance standard or optimization threshold. See the [usage guide](../README.md) for precise timing and units.

@@ -1,15 +1,25 @@
-# Internal module roadmap
+# Implementation map
 
-The framework remains one Rust package.
+The repository contains one package and these responsibility boundaries:
 
-| Responsibility | Current location | Next boundary |
-|---|---|---|
-| Request/inspection | `src/protocol.rs` | Resolved identities and driver protocol |
-| Declaration inspection | `src/runner.rs` | Orchestration over resolution/build stages |
-| CLI | `src/main.rs` | Keep only engine/operator/test mandatory |
-| Source/build | Planned internal module | Freeze sources, resolve dependencies, build isolated drivers |
-| Measurement | Planned internal module | T-defined timing and sampling |
-| Reference validation | Planned internal module | Check behavior independently of the tested algorithm |
-| Analysis | Planned internal module | Validate I equivalence and T/E comparability before attribution |
+| Location | Responsibility |
+|---|---|
+| `src/protocol.rs` | Three-input request, reference grammar and offline inspection records |
+| `src/runner.rs` | Offline declaration inspection |
+| `src/source.rs` | Immutable local/Git/registry snapshots and path dependency closure |
+| `src/catalog.rs` | I/T registrations, supported families and embedded assets |
+| `src/build.rs` | Workspace expansion, generated manifests, native builds and cache integrity |
+| `src/process.rs` | Controlled build environment, subprocess logs, timeouts and process-group cleanup |
+| `src/execution.rs` | Stage orchestration, prepared replay, capability and protocol checks |
+| `src/measurement.rs` | Raw sample schema, units and deterministic summaries; part of T identity |
+| `src/evidence.rs` | Common conditions, result records, seals and comparability |
+| `src/util.rs` | Canonical hashing, file formats and common errors |
+| `src/main.rs` | CLI parsing, JSON output and exit codes |
+| `drivers/common.rs` | T-owned correctness, workload and timing implementation |
+| `drivers/operator.rs` | I-owned operator binding and untimed participation wrapper |
+| `drivers/native.rs` | Source engine 2/3 constructors, symbol conversion and materialization |
+| `drivers/product.rs` | Real product facades and SymbolOps callbacks |
+| `scripts/native_acceptance.py` | Maintainer native, failure and reproducibility checks |
+| `tests/` | Framework contracts, source capture, evidence, units, processes and CLI tests |
 
-Introduce modules when their responsibilities are implemented. Avoid empty crates, placeholder trait hierarchies and duplicate implementations of the tested codecs.
+Driver templates are embedded by `include_str!`. A generated driver is an isolated executable build artifact, not another published framework package. Native component code is never checked into this repository.

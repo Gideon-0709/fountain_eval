@@ -1,164 +1,164 @@
 # fountain_eval
 
-Independent evaluation infrastructure for Fountain engines and operators.
+`fountain-eval` resolves and freezes Fountain components, builds an isolated native driver, checks correctness, records acceptance measurements, and compares compatible results. It is **one Cargo package** with a library and CLI. Component source code remains in its own repository; local snapshots and generated drivers live in the ignored cache.
 
-The standard request has three inputs: **an engine reference, an operator reference, and a test content version**. Arena, Slab, and Simd are operator implementations. Supporting schemes, utility code, and transitive dependencies are handled by the framework.
+A normal request has three inputs: **engine**, **operator**, and **test version**. Arena, Slab and Simd are operator implementations. The framework chooses the interface integration (I), resolves supporting schemes/utilities, and generates the effective experiment configuration (E).
 
-## Current status
+The registered tests are **acceptance tests for this framework**, not a formal performance standard. They establish functioning integration and measurement boundaries. Three short samples do not establish optimization gains, sustained throughput or production stability.
 
-This repository is a **single Rust package**, `fountain-eval`, providing a library and a CLI through internal modules.
+## Install
 
-| Available now | Planned after test content is agreed |
-|---|---|
-| Reference parsing and an empty catalog | Released test versions and interface implementations |
-| Read-only inspection of local Cargo declarations | Source fetching, snapshots, and full dependency resolution |
-| Some explicit engine version conflict checks | Isolated native-driver builds and capability checks |
-| Structured inspection diagnostics | Codec correctness, timing, and comparison reports |
-
-**No codec test or benchmark is implemented.** `run` returns unavailable; it never fabricates measurements or a passing evaluation. Successful inspection does not establish build compatibility or codec correctness.
-
-## Build and install
-
-Requirements: Git and Rust managed by rustup. The repository pins Rust **1.89.0**, rustfmt and Clippy. Cargo obtains the pinned toolchain and dependencies when needed. Future native component toolchains will follow the selected test recipe.
+Requirements: Linux or macOS, Git, `tar`, a native C linker/toolchain, and Rust managed by rustup. The acceptance recipes use Rust **1.89.0** and release native drivers. On macOS install the Xcode command-line tools; on Linux install the platform's standard build tools.
 
 ```bash
 git clone https://github.com/Gideon-0709/fountain_eval.git
 cd fountain_eval
-cargo build --locked
-cargo run --locked -- --help
-cargo run --locked -- list
-```
-
-Cloning the private repository requires access through your normal Git credentials. `list` currently returns empty `interfaces` and `tests` arrays.
-
-For a local installation:
-
-```bash
+rustup toolchain install 1.89.0 --profile minimal --component rustfmt --component clippy --no-self-update
 cargo install --path . --locked
 fountain-eval --help
+fountain-eval list
 ```
 
-Registry publication is not enabled. Local installation does not publish the package.
+Private repositories require your existing Git credentials. Do not put tokens in component references. Installation embeds all driver templates and the process protocol; the installed CLI can run from a separate working directory without the eval checkout or a user-written Cargo manifest. Registry publication remains disabled pending a separate release decision.
 
-## Inspect a request now
+## First real run
 
-This command checks reference syntax without fetching components:
+From an empty working directory:
 
 ```bash
-cargo run --locked -- inspect \
-  --engine 'registry:fountain_engine@2.1.0' \
-  --operator 'git+https://github.com/Gideon-0709/fountain-arena-operator.git?rev=d777cad6b512ee17663e129512bae10bca3397b1&package=fountain-arena-operator#arena' \
-  --test 'example-unregistered@0.1.0'
+fountain-eval run \
+  --engine registry:fountain_engine@2.1.0 \
+  --operator registry:fountain_operators@2.0.0#slab \
+  --test codec-smoke@0.1.0 > run.json
 ```
 
-`example-unregistered@0.1.0` is deliberately an unregistered example, not a test release. Inspection accepts syntactically valid test references without implying that they exist.
+The command resolves sources, freezes them, builds the driver, checks its identity, runs correctness validation, performs one warmup and three recorded repetitions, and writes a unique directory under `runs/`. Its JSON output includes `run_dir`, status, the four-tuple, validation, raw samples and summaries. The default cache is `.fountain-eval/`.
 
-JSON output contains `status: "inspection_only"`, `execution_available: false`, the request, local declarations where available, and diagnostics explaining unresolved checks. Redirect stdout to retain an inspection record. It is not a resolved four-tuple or an evaluation report.
+Read and compare results using the returned directories:
+
+```bash
+RUN_A=$(python3 -c 'import json; print(json.load(open("run.json"))["run_dir"])')
+fountain-eval report "$RUN_A"
+
+fountain-eval run \
+  --engine registry:fountain_engine@2.1.0 \
+  --operator registry:fountain_operators@2.0.0#simd \
+  --test codec-smoke@0.1.0 > simd.json
+RUN_B=$(python3 -c 'import json; print(json.load(open("simd.json"))["run_dir"])')
+fountain-eval compare "$RUN_A" "$RUN_B"
+```
+
+These are acceptance timings. `source_payload_gbps` is original source bytes × 8 / elapsed nanoseconds: decimal Gbit/s, not output wire rate. Both encoder and decoder use K × symbol_bytes as the numerator. Encoder work materializes all source symbols plus 128 repair symbols. Operator results report operations/s for their fixed trace; they do not invent a payload throughput numerator.
 
 ## Component references
 
-Shell-quote references containing spaces, `&`, or `#`.
+| Form | Example | Resolution |
+|---|---|---|
+| Local package directory or manifest | `path:../fountain-arena-operator` | Includes current tracked and nonignored untracked files, including uncommitted edits |
+| Exact registry version | `registry:fountain_engine@2.1.0` | Verifies the downloaded crate archive against Cargo's locked checksum |
+| Fixed Git commit and package name | `git+https://github.com/shhyang/fountain_operators.git?package=fountain_operators&rev=ce232222603876f3c033109c548cf1091e874c10#slab` | Fetches the complete commit ID and finds one matching package |
 
-| Form | Meaning |
-|---|---|
-| `path:<crate-directory>` | Read a local crate's `Cargo.toml` |
-| `path:<path-to-Cargo.toml>` | Read a specific local manifest |
-| `registry:<package>@<exact-version>` | Select a crates.io version; syntax only in this scaffold |
-| `git+<https-or-ssh-url>?rev=<full-commit>&package=<package>` | Select a package in a pinned repository; syntax only in this scaffold |
+Git revisions must be complete 40- or 64-digit hexadecimal commit IDs. Branch names, tags and abbreviated hashes are rejected. HTTPS and SSH URLs are supported; HTTPS credentials and embedded passwords are rejected. Quote Git references because they contain `&`. Use `#slab` or `#simd` for `fountain_operators`; Arena's package has an unambiguous implementation and accepts an omitted selector or `#arena`. Engine implementation selectors are not registered.
 
-Append `#<implementation>` to choose an implementation within a package, such as `#arena` or `#slab`. The scaffold records this selector but does not validate it against a catalog. Future drivers must reject ambiguous or unsupported selections rather than silently choose another implementation.
+Different forms can be mixed. Package version, source content and dependency provenance all contribute to C. A branch checkout's dirty working bytes are captured for a path reference; a Git reference always selects its specified commit.
 
-Rules:
+## Interface families
 
-- Registry and test versions require exact SemVer, such as `2.1.0` or `3.0.0-dev`, not ranges or `latest`.
-- Git references require a full 40- or 64-digit hexadecimal commit ID and a package name. Inspection does not check whether that commit exists.
-- Git URLs accept only `rev` and `package` query keys, each once. Embedded HTTPS credentials and URL passwords are rejected; use normal Git credentials.
-- Names/selectors begin with an ASCII letter and contain letters, digits, `_`, or `-`.
-- Local paths are relative to the command's working directory. The CLI does not expand `~` within a quoted reference; use an absolute path or a shell-expanded variable.
-- `#` is reserved for the implementation selector in this draft format.
+| Automatically selected I | Engine selection | Operators | Support dependencies |
+|---|---|---|---|
+| `native-2@0.1.0` | `fountain_engine` 2.1.x | Arena, Slab, Simd when compilation/validation succeeds | Registered scheme 2.1.0 and utility 2.1.0 |
+| `native-3@0.1.0` | Development `fountain_engine` 3.x | Current monorepo Slab/Simd | Matching monorepo scheme/utility |
+| `product-abi@0.1.0` | Monorepo `fountain_bin_ffi` package | Arena, Slab, Simd through SymbolOps | Product facades, sys bindings and binary source from the selected monorepo |
 
-### Local development
+The current Arena pins engine 2.1.0 and is rejected against source engine 3. The product path is different: the dynamic library uses its own engine graph, while Arena callbacks can use engine 2.1 in the separate caller graph. Both graphs, lockfiles, artifacts and the loaded library location are recorded.
 
-With an adjacent Arena checkout:
+The product driver builds and loads the real shared library; it does not substitute a source-engine benchmark. Full operator operations are not exposed through the product API, so `operator-smoke` is explicitly unsupported there. A new precompiled-binary reference format is outside this release.
 
-```bash
-cargo run --locked -- inspect \
-  --engine 'registry:fountain_engine@2.1.0' \
-  --operator 'path:../fountain-arena-operator#arena' \
-  --test 'example-unregistered@0.1.0'
-```
-
-Inspection reads the operator manifest without editing it, invoking Cargo on it, or copying source. It does not freeze source contents, Git state, or the dependency graph.
-
-### Monorepo components
-
-Select component crate directories, not a virtual workspace root:
+Examples with already available private checkouts:
 
 ```bash
-cargo run --locked -- inspect \
-  --engine 'path:../erasure_coding_lib/fountain_engine' \
+fountain-eval run \
+  --engine path:../erasure_coding_lib/fountain_engine \
   --operator 'path:../erasure_coding_lib/fountain_operators#slab' \
-  --test 'example-unregistered@0.1.0'
+  --test operator-smoke@0.1.0
+
+fountain-eval run \
+  --engine path:../erasure_coding_lib/fountain_bin_ffi \
+  --operator path:../fountain-arena-operator \
+  --test codec-smoke@0.1.0
 ```
 
-The future resolver will preserve complete monorepo layouts and relative dependencies. For Git sources, the `package` query key selects the component package.
+The registered development/product mappings use the existing monorepo layout. Layout, package or trait changes may require an I update; users do not maintain a parallel build manifest.
 
-### Explicit conflicts
+## Inspect, prepare, and replay frozen input
 
-If a local operator declares an unconditional, non-optional `fountain_engine = "=2.1.0"` dependency and the selected engine declares `3.0.0-dev`, inspection emits `engine_version_conflict` and exits with code 2.
-
-This is a preliminary declaration check. Workspace-inherited versions, optional/target-specific dependencies, features, Git/path identity, patches, and transitive constraints require the future resolver and driver build. Inherited package versions are reported as unresolved with a warning. A clean inspection does not mean those checks passed.
-
-## Formal test entry point
-
-The intended public command is already accepted:
+`inspect` is offline declaration inspection. It never downloads, compiles or claims native correctness. Its `execution_available: false` means execution was not established by inspection. `list` displays the registered I/T versions and content digests.
 
 ```bash
-cargo run --locked -- run \
-  --engine 'registry:fountain_engine@2.1.0' \
-  --operator 'path:../fountain-arena-operator#arena' \
-  --test 'example-unregistered@0.1.0'
+fountain-eval inspect \
+  --engine registry:fountain_engine@2.1.0 \
+  --operator path:../fountain-arena-operator \
+  --test operator-smoke@0.1.0
+
+fountain-eval prepare \
+  --engine registry:fountain_engine@2.1.0 \
+  --operator registry:fountain_operators@2.0.0#slab \
+  --test codec-smoke@0.1.0 > prepared.json
+PREPARED=$(python3 -c 'import json; print(json.load(open("prepared.json"))["run_dir"])')
+fountain-eval run --prepared "$PREPARED"
 ```
 
-Today it performs inspection and exits with code **3** because no test/interface implementations are registered. Inspection errors take precedence and return **2**. It does not fetch sources, build a driver, time code, or create a run directory.
+`prepare` ends after source resolution, snapshots, build and capability/loader checks. It does not claim validation or measurements. `run --prepared` checks the original build's integrity and executes it without reading the original component worktrees. Editing those worktrees cannot change that prepared run. Each replay creates a new result directory. Native binaries require the original CPU and OS family; current runtime conditions are observed again.
 
-Once real tests and drivers are registered, the same three-input command will:
+`--cache-dir PATH` and `--output PATH` are optional storage settings for new requests. `--prepared` selects its original cache, so it cannot be combined with new component/test inputs or `--cache-dir`. Use a separate evaluation working directory rather than placing custom result directories inside component sources.
 
-1. Resolve the component pair and support dependencies.
-2. Select a verified compatible interface implementation **I** automatically.
-3. Expand test version **T** into its fixed workload and execution recipe.
-4. Observe the host and derive effective experiment configuration **E**.
-5. Freeze inputs, build an isolated driver, and reject explicit conflicts.
-6. Validate correctness, then perform the T-defined measurements.
-7. Save the resolved `(C, I, T, E)`, raw evidence, and report under a unique run ID.
+## What is fixed by T
 
-Users will not need to author target files, Cargo manifests, or experiment JSON. T owns schemes, K, symbol widths, seeds, repair schedules, cache modes, repetitions, and build requirements. Host facts are observed. Output/cache locations can become optional operational settings; arbitrary test-parameter overrides are not part of standard execution.
+| Acceptance test | Workload | Correctness | Measured boundary |
+|---|---|---|---|
+| `operator-smoke@0.1.0` | Widths 1, 31 and 128; a 14-operation trace through execute and direct calls | Scalar GF(256) oracle, every trace prefix, copy isolation, move, zeroing, XOR and multiply-add | Preloaded operation execution only |
+| `codec-smoke@0.1.0` | RQ/R10; K=64, 128-byte symbols; no loss or first 8 source symbols missing; fixed order, up to 128 repairs | Systematic bytes, recovered payload bytes, incomplete state, selected operator participation and release | Construction and input loading through owned output materialization |
 
-## Exit codes
+Both use one warmup and three recorded repetitions. Input generation, validation, serialization and final resource release are outside measured intervals. Callback counters are enabled only in correctness runs; measured codec runs use the uninstrumented operator. No performance threshold determines success.
 
-| Code | Current meaning |
+**Deferred contract:** same-ID arithmetic, including self-XOR, is excluded while the team decides its semantics. Current Arena and Slab/Simd differ on self-XOR. This is a documented coverage boundary, not a passed equivalence claim. Distinct-ID cancellation and copy/write isolation remain checked.
+
+## Reading evidence and comparability
+
+Each run stores:
+
+- `request.json`, `sources.json`, and `configuration.json` for the requested and resolved inputs;
+- `result.json` with optional `(C,I,T,E)`, status, validation, raw samples and derived summaries;
+- `stages.json`, distinguishing succeeded, running, failed, unsupported, interrupted and not-executed stages;
+- `build.json`, `bindings.json`, `dependency-locks.json`, `dependency-graphs.json` and copied build logs;
+- live child stdout/stderr, `validation.json`, `samples.json`, and product loader evidence when applicable;
+- `evaluator.json` for framework/binary provenance and `seal.json` for evidence checksums.
+
+Failures retain completed stages and logs. Unfinished measurements can retain a raw sample prefix, but never a successful aggregate report. Early failures have no complete four-tuple. Report and comparison need the result directory, not its build cache.
+
+`compare` requires successful runs, equal T version/content, equal E conditions, valid samples, registered I support for that T, and matching independently checked correctness witnesses. Time stamps, run IDs, cache paths and observations such as uptime are excluded from E equality. Component-specific dependencies, features and binary hashes remain provenance rather than common environment fields.
+
+Different I versions can be comparable under the same T/E when their registered semantic/timing contract and runtime witnesses agree. If C and I both differ, attribution explicitly includes both. A comparison is rejected with a reason when content identity, environment, correctness or completeness differs. Equal E does not remove ordinary runtime noise; acceptance measurements are not a statistical performance study.
+
+## Failures and cache handling
+
+| Exit | Meaning |
 |---|---|
-| 0 | Help/catalog succeeded, or inspection found no errors; no evaluation occurred |
-| 1 | Output could not be written |
-| 2 | CLI/reference error, local manifest error, or detected declaration conflict |
-| 3 | Evaluation unavailable: no test/interface implementations are registered |
+| 0 | Successful command, prepared input, or successful run; inspect still remains inspection-only |
+| 2 | Invalid CLI/reference, unreadable evidence, or rejected comparison |
+| 3 | Unsupported test, interface selection or capability |
+| 4 | Resolution, dependency, build, correctness, timeout, cache or protocol failure during a run |
+| 130 | Interrupted run |
 
-Commands emit JSON except help/version output. Inspection diagnostics are included in JSON; syntax errors go to stderr. `run` also explains its unavailable status on stderr.
+Start with `result.json.error`, `stages.json`, then the referenced log. A source-engine version conflict is diagnosed before measurement; a shape mismatch can fail compilation; wrong results fail validation. Unknown/ambiguous registrations are not guessed.
 
-## Reproducibility and comparison
+Completed cached builds are verified before reuse. A corrupt or incomplete cache is rejected; the framework does not silently rebuild or retry it into a pass. Preserve the failed result, then explicitly choose a new cache directory or remove the identified failed cache entry if you want another attempt. Directory source symlinks, escaping file symlinks, and unmapped workspace `[patch]`/`[replace]` declarations are rejected explicitly.
 
-| Dimension | Ownership |
-|---|---|
-| **C** | User-selected engine/operator pair; framework records dependency/source provenance |
-| **I** | Automatically selected immutable native API adapter |
-| **T** | User-selected immutable test content and workflow |
-| **E** | Derived recipe plus actual build/runtime conditions |
+Normal results and caches are local and ignored by Git. The CLI never uploads, archives, overwrites previous runs or deletes results. You manage retention explicitly. Prepared replay requires its cache; report/compare remain usable after cache deletion.
 
-Different I versions remain comparable when they implement equivalent semantics for the same T and E. If C and I both change, the direct conclusion covers their combined path. The same T on different machines does not guarantee the same E.
+## Maintainer checks
 
-Crate versions, output formats, and run IDs are metadata, not additional tuple dimensions. No I or T release is published by this scaffold.
-
-## Development
+See [the implementation acceptance summary](docs/VALIDATION.md), [CONTRIBUTING.md](CONTRIBUTING.md), [DESIGN.md](DESIGN.md), [interface and artifact contract](specs/README.md), and [implementation map](docs/modules.md).
 
 ```bash
 cargo fmt --all -- --check
@@ -166,8 +166,8 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 cargo doc --locked --no-deps
 python3 scripts/check_repository.py
+cargo build --locked
+python3 scripts/native_acceptance.py --work .fountain-eval/public-acceptance --faults
 ```
 
-CI checks the scaffold on Linux and macOS. These are framework checks, not native Fountain correctness/performance results.
-
-See [DESIGN.md](DESIGN.md) for architecture and version boundaries, [CONTRIBUTING.md](CONTRIBUTING.md) for development rules, and [specs/README.md](specs/README.md) for the draft protocol boundary.
+The acceptance script requires a fresh work directory, records every attempt, stops on unexpected failure, and does not clean or upload its output. Add `--monorepo PATH --arena PATH` to cover all private integrations on an authorized local machine. CI runs framework checks and public native cases on Linux/macOS; private coverage is local and reported separately.
