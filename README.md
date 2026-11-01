@@ -170,4 +170,4 @@ cargo build --locked
 python3 scripts/native_acceptance.py --work .fountain-eval/public-acceptance --faults
 ```
 
-The acceptance script requires a fresh work directory, records every attempt, stops on unexpected failure, and does not clean or upload its output. Add `--monorepo PATH --arena PATH` to cover all private integrations on an authorized local machine. CI runs framework checks and public native cases on Linux/macOS; private coverage is local and reported separately.
+The acceptance script requires a fresh work directory, records every attempt, stops on unexpected failure, and does not clean or upload its output. Add `--monorepo PATH --arena PATH` to cover all private integrations on an authorized local machine. CI runs framework checks on Linux x86_64, Linux ARM64 and macOS. Public native positive cases run on Linux ARM64 and macOS; the pinned public AVX2 code currently fails compilation on x86_64, where CI verifies explicit rejection instead. This is an upstream component limitation, not a passing native evaluation. Private coverage is local and reported separately.

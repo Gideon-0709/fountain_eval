@@ -69,9 +69,15 @@ The first Linux CI pass exposed an external `kill` option-parsing difference: a 
 
 Normal formatting/lint corrections and a host-filtered dependency check were completed separately. The latter avoids downloading unrelated foreign-platform framework dependencies during repository inspection. Unexpected native failures stopped their candidate immediately. Subsequent corrected candidates used separate work directories; failed attempts were not retried or relabeled as successful measurements.
 
+## Public x86 component limitation
+
+Linux x86_64 framework checks passed after the process-group fix. Native compilation then exposed an upstream error in the pinned public operator's `src/gf_kernels/avx2.rs`: references to `portable::PORTABLE_KERNEL` are unresolved (`E0433`). The ARM NEON path compiles and passes its native cases. The component source was not patched or substituted.
+
+CI therefore separates Linux ARM64/macOS native positive checks from Linux x86_64 framework and explicit upstream-rejection checks. An x86 rejection is a failed component build with no measurements, not a passing operator/codec result. This limitation remains until an upstream revision with a working AVX2 implementation is selected.
+
 ## CI and evidence retention
 
-The [CI workflow](https://github.com/Gideon-0709/fountain_eval/actions/workflows/ci.yml) runs formatting, strict Clippy, framework tests, documentation, package-boundary checks, and public native/failure/reproducibility acceptance on Linux and macOS. Consult the workflow for the exact commit's remote status. This local summary does not substitute for CI evidence.
+The [CI workflow](https://github.com/Gideon-0709/fountain_eval/actions/workflows/ci.yml) runs formatting, strict Clippy, framework tests, documentation, package-boundary checks, and public native/failure/reproducibility acceptance on Linux ARM64 and macOS. Linux x86_64 runs the framework checks and verifies the known upstream compile rejection. Consult the workflow for the exact commit's remote status. This local summary does not substitute for CI evidence.
 
 Private Arena, development engine 3 and product API coverage in this delivery is **local macOS coverage**. Private combinations are not claimed as Linux or credential-free CI coverage. No upstream repository was modified or uploaded to.
 

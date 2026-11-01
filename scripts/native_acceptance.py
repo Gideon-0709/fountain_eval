@@ -52,6 +52,7 @@ def main():
     parser.add_argument("--monorepo", type=Path)
     parser.add_argument("--arena", type=Path)
     parser.add_argument("--faults", action="store_true")
+    parser.add_argument("--expect-upstream-x86-failure", action="store_true", help="Verify the pinned upstream AVX2 compile failure; this is not positive native coverage")
     args = parser.parse_args()
     cli = args.cli.resolve()
     work = args.work.resolve()
@@ -95,7 +96,10 @@ def main():
             logs=Path(row["run"]) / "logs"
             for log in sorted(logs.glob("*.stderr"), key=lambda p:p.stat().st_mtime)[-4:]:
                 detail=log.read_text(errors="replace")
-                if detail: print(f"--- {log.name} ---\n{detail[-16000:]}",flush=True)
+                if detail:
+                    lines=detail.splitlines()
+                    errors=["\n".join(lines[i:i+12]) for i,line in enumerate(lines) if line.startswith("error[") or line.startswith("error:")]
+                    print(f"--- {log.name} ---\n"+"\n".join(errors)+"\n"+detail[-4000:],flush=True)
         assert process.returncode == expected, (row, stderr[-2000:])
         return body
 
@@ -112,6 +116,22 @@ def main():
         else:
             assert not body["result"]["summary"], "A failed run must not publish an aggregate performance result"
         return body
+
+    if args.expect_upstream_x86_failure:
+        import platform
+        assert platform.machine() in ["x86_64","AMD64"], "This expectation is specific to x86_64"
+        for op in ["slab","simd"]:
+            body=run(f"upstream-x86-{op}",ENGINE,OPERATORS+"#"+op,"operator-smoke@0.1.0",4)
+            assert body["result"]["stage"]=="build"
+            detail=(Path(body["run_dir"])/"logs/driver-build.stderr").read_text()
+            assert "E0433" in detail and "portable" in detail, detail[-4000:]
+            lines=detail.splitlines()
+            for i,line in enumerate(lines):
+                if line.startswith("error["):print("\n".join(lines[i:i+12]),flush=True)
+            ledger[-1]["classification"]="known upstream x86 AVX2 compile error; no positive native coverage"
+            (work/"ledger.json").write_text(json.dumps(ledger,indent=2)+"\n")
+        print("Pinned upstream x86 failures verified; native positive coverage remains unavailable on this architecture.",flush=True)
+        return
 
     pairs = [("public-slab", ENGINE, OPERATORS + "#slab"),
              ("public-simd", ENGINE, OPERATORS + "#simd")]

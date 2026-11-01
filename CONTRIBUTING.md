@@ -15,6 +15,8 @@ cargo build --locked
 python3 scripts/native_acceptance.py --work .fountain-eval/acceptance-new --faults
 ```
 
+The normal public native suite currently requires ARM64 because the pinned upstream AVX2 source has unresolved `portable` references on x86_64. Linux x86_64 CI uses `--expect-upstream-x86-failure` to verify that rejection; it does not claim positive native coverage.
+
 Use a fresh acceptance work directory. Keep first failures and interruptions while debugging; a corrected candidate is a new attempt, not an automatic retry of the old result. The process interruption helper is an ignored test entry point invoked by its parent test in a separate process, so SIGINT cannot contaminate the normal test harness.
 
 For full authorized local coverage, add `--monorepo /path/to/erasure_coding_lib --arena /path/to/fountain-arena-operator`. These inputs are read-only. The acceptance script creates its own negative fixtures; never change the tested upstream components to obtain a pass. Private coverage on one platform does not establish coverage on another.
