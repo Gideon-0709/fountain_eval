@@ -1,0 +1,23 @@
+[package]
+name = "fountain-eval"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+description = "Evaluation infrastructure for Fountain engines and operators"
+repository = "https://github.com/Gideon-0709/fountain_eval"
+readme = "README.md"
+publish = false
+
+[dependencies]
+clap = { version = "4.6", features = ["derive"] }
+semver = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "1.1"
+url = "2.5"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"

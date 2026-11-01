@@ -1,0 +1,5 @@
+/target/
+/runs/
+/.fountain-eval/
+/.fountain-eval.local.json
+.DS_Store
