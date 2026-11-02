@@ -136,3 +136,126 @@ fn failed_and_prepared_stages_do_not_imply_measurement() {
     assert_eq!(states["probe"], "succeeded");
     assert_eq!(states["validate"], "not_executed");
 }
+
+#[test]
+fn semantic_warnings_preserve_success_measurements_and_comparison() {
+    let left = record("native-2", "operator-smoke@0.1.0");
+    let mut right = left.clone();
+    let case = "operator/1/direct/self-xor";
+    let event = right
+        .validation
+        .iter_mut()
+        .find(|v| v["case"] == case)
+        .unwrap();
+    event["actual"] = json!([17]);
+    event["witness"] = json!(util::digest(&event["actual"]));
+    event["status"] = json!("failed");
+    for sample in right.samples.iter_mut().filter(|s| s.case == case) {
+        sample.observation = Some(json!({"calls":256,"outcomes":[{"count":256,"actual":[17]}]}));
+        sample.witness = util::digest(sample.observation.as_ref().unwrap());
+        sample.elapsed_ns /= 2;
+    }
+    evidence::validate_samples(&right).unwrap();
+    let report = fountain_eval::validation::report(&right);
+    assert_eq!(report.status, "passed_with_warnings");
+    assert_eq!(report.warnings.len(), 1);
+    assert!(report.fatal_failures.is_empty());
+    let comparison = evidence::compare(&left, &right).unwrap();
+    assert_eq!(comparison["status"], "comparable");
+    let row = comparison["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["case"] == case)
+        .unwrap();
+    assert_eq!(row["left_over_right_time"], 2.0);
+    assert_eq!(row["right_warnings"].as_array().unwrap().len(), 1);
+    assert_eq!(row["right_operations_per_second"], 256_000_000.0);
+}
+
+#[test]
+fn measured_boundary_variation_is_reported_without_becoming_fatal() {
+    let mut r = record("native-2", "operator-smoke@0.1.0");
+    let sample = r
+        .samples
+        .iter_mut()
+        .find(|s| s.case.ends_with("/self-xor"))
+        .unwrap();
+    sample.observation = Some(
+        json!({"calls":256,"outcomes":[{"count":1,"actual":[99]},{"count":255,"actual":[0]}]}),
+    );
+    sample.witness = util::digest(sample.observation.as_ref().unwrap());
+    evidence::validate_samples(&r).unwrap();
+    let report = fountain_eval::validation::report(&r);
+    assert_eq!(report.status, "passed_with_warnings");
+    assert_eq!(report.warnings.len(), 1);
+    assert!(evidence::compare(&r, &r).is_ok());
+}
+
+#[test]
+fn fatal_failures_cannot_be_downgraded_and_warning_coverage_is_required() {
+    let good = record("native-2", "codec-smoke@0.1.0");
+    for mutation in 0..4 {
+        let mut bad = good.clone();
+        match mutation {
+            0 => bad.validation[0]["status"] = json!("failed"),
+            1 => bad.validation[0]["severity"] = json!("warning"),
+            2 => {
+                bad.validation.pop();
+            }
+            _ => {
+                let warning = bad
+                    .validation
+                    .iter_mut()
+                    .find(|v| v["severity"] == "warning")
+                    .unwrap();
+                warning["actual"] = json!([99]); // Unreported, incoherent observation.
+            }
+        }
+        assert!(
+            evidence::validate_samples(&bad).is_err(),
+            "mutation {mutation}"
+        );
+        assert!(evidence::compare(&good, &bad).is_err());
+    }
+}
+
+#[test]
+fn different_internal_candidate_digests_are_not_comparable() {
+    let left = record("native-2", "operator-smoke@0.1.0");
+    let mut earlier = left.clone();
+    earlier.quadruple.as_mut().unwrap().t.digest = "earlier-draft".into();
+    assert_eq!(
+        left.quadruple.as_ref().unwrap().t.id,
+        earlier.quadruple.as_ref().unwrap().t.id
+    );
+    assert!(evidence::compare(&earlier, &left).is_err());
+}
+
+#[test]
+fn boundary_batches_account_for_every_actual_call() {
+    let good = record("native-2", "operator-smoke@0.1.0");
+    for mutation in 0..4 {
+        let mut bad = good.clone();
+        let sample = bad
+            .samples
+            .iter_mut()
+            .find(|s| s.observation.is_some())
+            .unwrap();
+        let observed = sample.observation.as_mut().unwrap();
+        match mutation {
+            0 => observed["calls"] = json!(255),
+            1 => observed["outcomes"][0]["count"] = json!(255),
+            2 => observed["outcomes"] = json!([]),
+            _ => {
+                observed["outcomes"] =
+                    json!([{"count":128,"actual":[0]},{"count":128,"actual":[0]}])
+            }
+        }
+        sample.witness = util::digest(observed);
+        assert!(
+            evidence::validate_samples(&bad).is_err(),
+            "mutation {mutation}"
+        );
+    }
+}

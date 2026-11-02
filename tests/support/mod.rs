@@ -65,9 +65,24 @@ pub fn record(family: &str, test: &str) -> Record {
                 case: case.clone(),
                 repetition: rep,
                 elapsed_ns: (rep as u64 + 1) * 1000,
-                payload_bytes: if case.starts_with("codec/") { 8192 } else { 0 },
-                operations: if case.starts_with("operator/") { 14 } else { 0 },
-                witness: "synthetic-fixture-witness".into(),
+                payload_bytes: catalog::recipe(&test.parse().unwrap())
+                    .unwrap()
+                    .check(case)
+                    .unwrap()
+                    .payload_bytes,
+                operations: catalog::recipe(&test.parse().unwrap())
+                    .unwrap()
+                    .check(case)
+                    .unwrap()
+                    .operations,
+                witness: if case.ends_with("/self-xor") || case.ends_with("/duplicate-source-xor") {
+                    util::digest(&json!({"calls":256,"outcomes":[{"count":256,"actual":[0]}]}))
+                } else {
+                    "synthetic-fixture-witness".into()
+                },
+                observation: (case.ends_with("/self-xor")
+                    || case.ends_with("/duplicate-source-xor"))
+                .then(|| json!({"calls":256,"outcomes":[{"count":256,"actual":[0]}]})),
             })
         })
         .collect();
@@ -88,15 +103,20 @@ pub fn record(family: &str, test: &str) -> Record {
             },
         }),
         validation: recipe
-            .cases
+            .validation_cases()
             .iter()
-            .map(|c| json!({"event":"validation","case":c,"witness":"synthetic-fixture-witness"}))
+            .map(|c| {
+                let check=recipe.check(c).unwrap();
+                if check.severity == fountain_eval::validation::Severity::Warning {json!({"event":"validation","case":c,"severity":"warning","rule":check.rule,"status":"passed","expected":[0],"actual":[0],"witness":util::digest(&json!([0]))})}
+                else {json!({"event":"validation","case":c,"severity":"fatal","rule":check.rule,"status":"passed","witness":"synthetic-fixture-witness"})}
+            })
             .collect(),
         summary: measurement::summarize(&samples).unwrap(),
         samples,
         recipe: Some(recipe),
         built: None,
         error: None,
+        correctness: Default::default(),
     }
 }
 pub fn built(directory: &Path) -> Built {

@@ -122,6 +122,8 @@ pub struct Record {
     pub samples: Vec<Sample>,
     pub summary: Vec<Summary>,
     pub error: Option<String>,
+    #[serde(default)]
+    pub correctness: crate::validation::Report,
 }
 pub fn stage_states(record: &Record) -> BTreeMap<&'static str, &str> {
     let phases = ["resolve", "build", "probe", "validate", "measure"];
@@ -157,6 +159,7 @@ pub fn save(directory: &Path, record: &Record) -> Result<()> {
         &directory.join("evaluator.json"),
         &json!({"package_version":env!("CARGO_PKG_VERSION"),"binary_sha256":std::env::current_exe().ok().and_then(|p|util::file_hash(&p).ok())}),
     )?;
+    util::write_json(&directory.join("correctness.json"), &record.correctness)?;
     util::write_json(&directory.join("result.json"), record)
 }
 pub fn seal(directory: &Path) -> Result<()> {
@@ -185,7 +188,9 @@ pub fn load(directory: &Path) -> Result<Record> {
             return Err("evidence checksum mismatch".into());
         }
     }
-    util::read_json(&directory.join("result.json"))
+    let mut record: Record = util::read_json(&directory.join("result.json"))?;
+    record.correctness = crate::validation::report(&record);
+    Ok(record)
 }
 pub fn compare(left: &Record, right: &Record) -> Result<Value> {
     catalog::verify_lock()?;
@@ -204,10 +209,9 @@ pub fn compare(left: &Record, right: &Record) -> Result<Value> {
         let q = record.quadruple.as_ref().unwrap();
         let recipe = catalog::recipe(&record.request.test)?;
         if q.t != recipe.identity {
-            return Err("test identity collision or unavailable historical content".into());
+            return Err("test identity collision or different catalog candidate".into());
         }
-        let family = q.i.id.split('@').next().unwrap_or("");
-        if !catalog::supports(family, &recipe.identity.id) || q.i != catalog::interface(family) {
+        if !catalog::registered_interface(&q.i, &recipe.identity.id) {
             return Err("interface identity collision or unavailable interface".into());
         }
         validate_samples(record)?;
@@ -215,6 +219,12 @@ pub fn compare(left: &Record, right: &Record) -> Result<Value> {
     let witnesses = |r: &Record| {
         r.validation
             .iter()
+            .filter(|v| {
+                r.recipe
+                    .as_ref()
+                    .and_then(|p| p.check(v["case"].as_str().unwrap_or("")))
+                    .is_some_and(|c| c.severity == crate::validation::Severity::Fatal)
+            })
             .map(|v| {
                 (
                     v["case"].as_str().unwrap_or("").to_owned(),
@@ -228,9 +238,11 @@ pub fn compare(left: &Record, right: &Record) -> Result<Value> {
     }
     let a_summary = crate::measurement::summarize(&left.samples)?;
     let b_summary = crate::measurement::summarize(&right.samples)?;
-    let rows:Vec<_>=a_summary.iter().zip(&b_summary).map(|(a,b)|json!({"case":a.case,"left_median_ns":a.median_ns,"right_median_ns":b.median_ns,"left_over_right_time":a.median_ns as f64/b.median_ns as f64})).collect();
+    let left_correctness = crate::validation::report(left);
+    let right_correctness = crate::validation::report(right);
+    let rows:Vec<_>=a_summary.iter().zip(&b_summary).map(|(a,b)|json!({"case":a.case,"left_median_ns":a.median_ns,"right_median_ns":b.median_ns,"left_over_right_time":a.median_ns as f64/b.median_ns as f64,"left_operations_per_second":a.operations_per_second,"right_operations_per_second":b.operations_per_second,"left_source_payload_gbps":a.source_payload_gbps,"right_source_payload_gbps":b.source_payload_gbps,"left_warnings":left_correctness.warnings.iter().filter(|w|w["case"]==a.case).collect::<Vec<_>>(),"right_warnings":right_correctness.warnings.iter().filter(|w|w["case"]==b.case).collect::<Vec<_>>()})).collect();
     Ok(
-        json!({"status":"comparable","purpose":"acceptance","left":left.run_id,"right":right.run_id,"interface_equivalence":{"contract":a.t,"evidence":"registered timing contract and matching independently checked acceptance witnesses","interfaces":[a.i,b.i]},"attribution":if a.i!=b.i&&a.c!=b.c{"component and interface path together"}else if a.i!=b.i{"interface path"}else if a.c["dependencies"]["support_packages"]!=b.c["dependencies"]["support_packages"]{"component combination including support dependency changes"}else{"selected component combination"},"warning":"Acceptance timings are not a formal performance standard or an optimization conclusion.","rows":rows}),
+        json!({"status":"comparable","purpose":"acceptance","left":left.run_id,"right":right.run_id,"interface_equivalence":{"contract":a.t,"evidence":"registered timing contract and matching fatal-check witnesses; warning outcomes may differ","interfaces":[a.i,b.i]},"attribution":if a.i!=b.i&&a.c!=b.c{"component and interface path together"}else if a.i!=b.i{"interface path"}else if a.c["dependencies"]["support_packages"]!=b.c["dependencies"]["support_packages"]{"component combination including support dependency changes"}else{"selected component combination"},"correctness":{"left":left_correctness,"right":right_correctness},"warning":"Acceptance timings are not a formal performance standard or an optimization conclusion.","rows":rows}),
     )
 }
 pub fn validate_samples(record: &Record) -> Result<()> {
@@ -248,12 +260,13 @@ pub fn validate_samples(record: &Record) -> Result<()> {
     }
     let mut cases = BTreeMap::<String, BTreeMap<usize, &Sample>>::new();
     for sample in &record.samples {
-        let (bytes, operations) = if sample.case.starts_with("operator/") {
-            (0, 14)
-        } else {
-            (64 * 128, 0)
-        };
-        if sample.payload_bytes != bytes || sample.operations != operations {
+        let check = recipe
+            .check(&sample.case)
+            .ok_or("unregistered sample case")?;
+        if !check.measured
+            || sample.payload_bytes != check.payload_bytes
+            || sample.operations != check.operations
+        {
             return Err("sample work counter does not match the test recipe".into());
         }
         if !recipe.cases.contains(&sample.case)
@@ -267,16 +280,12 @@ pub fn validate_samples(record: &Record) -> Result<()> {
             return Err("unexpected or duplicate sample".into());
         }
     }
-    let mut validation = BTreeMap::new();
-    for event in &record.validation {
-        let case = event["case"].as_str().ok_or("validation case missing")?;
-        if validation.insert(case, event).is_some() {
-            return Err("duplicate validation case".into());
-        }
-    }
-    if validation.len() != recipe.cases.len() {
-        return Err("incomplete correctness evidence".into());
-    }
+    crate::validation::verify(recipe, &record.validation)?;
+    let validation: BTreeMap<_, _> = record
+        .validation
+        .iter()
+        .map(|v| (v["case"].as_str().unwrap(), v))
+        .collect();
     for case in &recipe.cases {
         let values = cases.get(case).ok_or("missing sample case")?;
         if values.len() != recipe.repetitions {
@@ -286,12 +295,23 @@ pub fn validate_samples(record: &Record) -> Result<()> {
             .get(case.as_str())
             .ok_or("missing validation case")?;
         for sample in values.values() {
-            if sample.witness
-                != event["witness"]
-                    .as_str()
-                    .ok_or("validation witness missing")?
+            if recipe.check(case).unwrap().severity == crate::validation::Severity::Fatal
+                && sample.witness
+                    != event["witness"]
+                        .as_str()
+                        .ok_or("validation witness missing")?
             {
-                return Err("measured result differs from correctness validation".into());
+                return Err("measured result differs from fatal correctness validation".into());
+            }
+            if recipe.check(case).unwrap().severity == crate::validation::Severity::Warning {
+                let actual = sample
+                    .observation
+                    .as_ref()
+                    .ok_or("missing measured semantic observation")?;
+                crate::validation::verify_observation(actual, sample.operations)?;
+                if sample.witness != util::digest(actual) {
+                    return Err("measured observation checksum mismatch".into());
+                }
             }
         }
     }

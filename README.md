@@ -4,7 +4,7 @@
 
 A normal request has three inputs: **engine**, **operator**, and **test version**. Arena, Slab and Simd are operator implementations. The framework chooses the interface integration (I), resolves supporting schemes/utilities, and generates the effective experiment configuration (E).
 
-The registered tests are **acceptance tests for this framework**, not a formal performance standard. They establish functioning integration and measurement boundaries. Three short samples do not establish optimization gains, sustained throughput or production stability.
+The registered tests are **acceptance fixtures for this framework**, not the team's formal correctness suite or performance standard. Formal test content has not yet been designed. These small fixtures establish functioning integration, fatal/warning handling, evidence and measurement boundaries. Their specific checks and severity assignments are fixture examples, not the final team test policy. Three short samples do not establish optimization gains, sustained throughput or production stability.
 
 ## Install
 
@@ -34,7 +34,7 @@ fountain-eval run \
   --test codec-smoke@0.1.0 > run.json
 ```
 
-The command resolves sources, freezes them, builds the driver, checks its identity, runs correctness validation, performs one warmup and three recorded repetitions, and writes a unique directory under `runs/`. Its JSON output includes `run_dir`, status, the four-tuple, validation, raw samples and summaries. The default cache is `.fountain-eval/`.
+The command resolves sources, freezes them, builds the driver, checks its identity, runs correctness validation, performs one warmup and three recorded repetitions, and writes a unique directory under `runs/`. Its JSON output includes `run_dir`, status, the four-tuple, a `correctness` report, validation observations, raw samples and summaries. A run with semantic warnings still succeeds and returns exit code 0. The default cache is `.fountain-eval/`.
 
 Read and compare results using the returned directories:
 
@@ -118,12 +118,36 @@ fountain-eval run --prepared "$PREPARED"
 
 | Acceptance test | Workload | Correctness | Measured boundary |
 |---|---|---|---|
-| `operator-smoke@0.1.0` | Widths 1, 31 and 128; a 14-operation trace through execute and direct calls | Scalar GF(256) oracle, every trace prefix, copy isolation, move, zeroing, XOR and multiply-add | Preloaded operation execution only |
-| `codec-smoke@0.1.0` | RQ/R10; K=64, 128-byte symbols; no loss or first 8 source symbols missing; fixed order, up to 128 repairs | Systematic bytes, recovered payload bytes, incomplete state, selected operator participation and release | Construction and input loading through owned output materialization |
+| `operator-smoke@0.1.0` | Widths 1, 31 and 128; a 14-operation core trace plus independent self-XOR and repeated-source cases through execute and direct calls | Fatal: scalar reference, every core trace prefix, copy isolation, move, zeroing and GF arithmetic. Warning: boundary semantics | Preloaded operation execution only |
+| `codec-smoke@0.1.0` | RQ/R10; K=64, 128-byte symbols; no loss or first 8 source symbols missing; fixed order, up to 128 repairs | Fatal: systematic/recovered bytes, incomplete state, participation and release. Warning: selected operator boundary diagnostics outside codec timing | Construction and input loading through owned output materialization |
 
 Both use one warmup and three recorded repetitions. Input generation, validation, serialization and final resource release are outside measured intervals. Callback counters are enabled only in correctness runs; measured codec runs use the uninstrumented operator. No performance threshold determines success.
 
-**Deferred contract:** same-ID arithmetic, including self-XOR, is excluded while the team decides its semantics. Current Arena and Slab/Simd differ on self-XOR. This is a documented coverage boundary, not a passed equivalence claim. Distinct-ID cancellation and copy/write isolation remain checked.
+## Fatal checks and semantic warnings
+
+The selected T fixes each check's severity. A **fatal** mismatch rejects correctness and prevents a successful performance report. These checks include incorrect ordinary arithmetic, codec payload corruption, invalid completion, resource lifecycle and evidence integrity. A **warning** records a boundary deviation while allowing measurements and comparison to continue. Current warning rules are self-XOR (`AddOneToVector(0, 0)`) and repeated source IDs (`AddTwoToVector(0, 0, 1)`). Their reference expectations are zero and cancellation, respectively.
+
+Warnings include the rule, exact operation, dispatch path, symbol width, reference output and observed output. Operator tests time each boundary case as a fixed batch of 256 independently preloaded operators, one call per operator, including a component that immediately returns. This avoids zero-duration single-call readings; initialization and grouped output inspection stay outside the timer. Codec tests run the same diagnostics outside the codec timers; product diagnostics inspect the selected callback operator and label that scope explicitly. They do not claim that the product API exposes all operator operations.
+
+The result's `correctness.status` is `passed`, `passed_with_warnings`, `failed`, `incomplete` or `not_executed`. Its `warnings` array includes validation and measured observations. `status: succeeded` plus `correctness.status: passed_with_warnings` means the fatal checks passed and the warnings must be reviewed alongside the performance data. Warning output differences, including variation between repetitions, do not suppress timing rows or block comparison. Developers decide the tradeoff; the framework reports both behavior and performance.
+
+For example, after the first run:
+
+```bash
+python3 - <<'PYREPORT'
+import json
+r = json.load(open("run.json"))["result"]
+print(r["status"], r["correctness"]["status"])
+for warning in r["correctness"]["warnings"]:
+    print(warning["case"], warning["rule"], warning["expected"], warning["actual"])
+for row in r["summary"]:
+    print(row["case"], row["median_ns"], row["source_payload_gbps"], row["operations_per_second"])
+PYREPORT
+```
+
+The current `0.1.0` operator acceptance has 6 fatal core checks and 12 warning-level boundary checks, all measured: 54 recorded samples. Codec acceptance has 8 fatal codec checks and 12 untimed boundary checks: 24 recorded samples. A passing boundary check creates no warning entry. Crashes, timeouts, missing required observations and corrupted evidence remain execution failures.
+
+This repository is in internal development. Package, I and T labels use the planned `0.1.0` baseline throughout this round. The project owner will create the first team release after acceptance. The catalog lock records each candidate's actual content digests; results from changed drafts are not silently treated as equivalent. No historical compatibility layer or additional release series is maintained at this stage.
 
 ## Reading evidence and comparability
 
@@ -133,14 +157,14 @@ Each run stores:
 - `result.json` with optional `(C,I,T,E)`, status, validation, raw samples and derived summaries;
 - `stages.json`, distinguishing succeeded, running, failed, unsupported, interrupted and not-executed stages;
 - `build.json`, `bindings.json`, `dependency-locks.json`, `dependency-graphs.json` and copied build logs;
-- live child stdout/stderr, `validation.json`, `samples.json`, and product loader evidence when applicable;
+- live child stdout/stderr, `validation.json`, `correctness.json`, `samples.json`, and product loader evidence when applicable;
 - `evaluator.json` for framework/binary provenance and `seal.json` for evidence checksums.
 
 Failures retain completed stages and logs. Unfinished measurements can retain a raw sample prefix, but never a successful aggregate report. Early failures have no complete four-tuple. Report and comparison need the result directory, not its build cache.
 
-`compare` requires successful runs, equal T version/content, equal E conditions, valid samples, registered I support for that T, and matching independently checked correctness witnesses. Time stamps, run IDs, cache paths and observations such as uptime are excluded from E equality. Component-specific dependencies, features and binary hashes remain provenance rather than common environment fields.
+`compare` requires successful runs, equal T version/content, equal E conditions, valid samples, registered I support for that T, and matching independently checked fatal-check witnesses. Time stamps, run IDs, cache paths and observations such as uptime are excluded from E equality. Component-specific dependencies, features and binary hashes remain provenance rather than common environment fields.
 
-Different I versions can be comparable under the same T/E when their registered semantic/timing contract and runtime witnesses agree. If C and I both differ, attribution explicitly includes both. A comparison is rejected with a reason when content identity, environment, correctness or completeness differs. Equal E does not remove ordinary runtime noise; acceptance measurements are not a statistical performance study.
+Different I versions can be comparable under the same T/E when their registered timing contract and fatal-check witnesses agree. Warning differences are carried into the comparison, including each affected timing row, and do not cause rejection. If C and I both differ, attribution explicitly includes both. A comparison is rejected with a reason when content identity, environment, fatal correctness evidence or completeness differs. Equal E does not remove ordinary runtime noise; acceptance measurements are not a statistical performance study.
 
 ## Failures and cache handling
 
@@ -149,7 +173,7 @@ Different I versions can be comparable under the same T/E when their registered 
 | 0 | Successful command, prepared input, or successful run; inspect still remains inspection-only |
 | 2 | Invalid CLI/reference, unreadable evidence, or rejected comparison |
 | 3 | Unsupported test, interface selection or capability |
-| 4 | Resolution, dependency, build, correctness, timeout, cache or protocol failure during a run |
+| 4 | Resolution, dependency, build, fatal correctness, timeout, cache or protocol failure during a run |
 | 130 | Interrupted run |
 
 Start with `result.json.error`, `stages.json`, then the referenced log. A source-engine version conflict is diagnosed before measurement; a shape mismatch can fail compilation; wrong results fail validation. Unknown/ambiguous registrations are not guessed.
@@ -160,7 +184,7 @@ Normal results and caches are local and ignored by Git. The CLI never uploads, a
 
 ## Maintainer checks
 
-See [the implementation acceptance summary](docs/VALIDATION.md), [CONTRIBUTING.md](CONTRIBUTING.md), [DESIGN.md](DESIGN.md), [interface and artifact contract](specs/README.md), and [implementation map](docs/modules.md).
+See [warning-policy acceptance](docs/VALIDATION_WARNINGS.md), [the initial implementation acceptance summary](docs/VALIDATION.md), [CONTRIBUTING.md](CONTRIBUTING.md), [DESIGN.md](DESIGN.md), [interface and artifact contract](specs/README.md), and [implementation map](docs/modules.md).
 
 ```bash
 cargo fmt --all -- --check

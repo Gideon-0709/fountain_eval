@@ -1,6 +1,6 @@
 # Implementation acceptance — 2026-11-01–02
 
-This summary covers framework v0.2.0 implementation acceptance. It is not a formal performance report, and none of the short timings establish an optimization advantage. Registered I/T digests are frozen in [the catalog lock](../specs/catalog-lock.json).
+This summary records an earlier construction candidate, not a published release. The current fatal/warning policy is documented in [warning-policy acceptance](VALIDATION_WARNINGS.md). The first team release is planned as 0.1.0 after the project owner accepts this development round. It is not a formal performance report, and none of the short timings establish an optimization advantage. The [catalog lock](../specs/catalog-lock.json) describes the current candidate; the coverage below describes the earlier construction run.
 
 ## Local platform and component inputs
 
@@ -59,7 +59,7 @@ Framework tests cover metrics in decimal Gbit/s and operations/s, stage/not-exec
 
 An initial strict self-XOR diagnostic found different behavior: Arena returned zero, while public and development Slab/Simd treated the same-ID operation as a no-op. The public trait does not settle that contract. The project owner explicitly deferred this question for discussion with the component developers.
 
-Consequently, the released acceptance trace uses distinct IDs, including distinct-ID cancellation and copy/write isolation. Same-ID arithmetic is not certified, scored as a component failure, or included in I equivalence claims. A future agreed contract requires a new T identity; this release must not be silently repointed.
+Consequently, that construction candidate used distinct IDs, including distinct-ID cancellation and copy/write isolation. Same-ID arithmetic is not certified, scored as a component failure, or included in I equivalence claims. The owner subsequently chose warning-level checks for these cases; that policy is implemented in the current unreleased 0.1.0 candidate.
 
 ## Development failure ledger
 

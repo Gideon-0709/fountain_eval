@@ -84,6 +84,7 @@ pub fn start(
         samples: Vec::new(),
         summary: Vec::new(),
         error: None,
+        correctness: Default::default(),
     };
     evidence::save(&directory, &record)?;
     let result = util::catch(|| {
@@ -167,7 +168,9 @@ pub fn from_prepared(prepared: &Path, output: &Path) -> Result<(PathBuf, Record)
         catalog::verify_lock()?;
         let recipe = catalog::recipe(&record.request.test)?;
         let tuple = record.quadruple.as_mut().ok_or("missing prepared tuple")?;
-        if recipe.identity != tuple.t || catalog::interface(&built.family) != tuple.i {
+        if recipe.identity != tuple.t
+            || !catalog::registered_interface(&tuple.i, &recipe.identity.id)
+        {
             return Err("prepared I/T identity differs from this installed framework".into());
         }
         let mut current = evidence::environment(
@@ -211,29 +214,20 @@ fn finish(directory: &Path, record: &mut Record, result: Result<()>) -> Result<(
         .into();
         record.error = Some(error);
     }
+    record.correctness = crate::validation::report(record);
+    util::write_json(&directory.join("validation.json"), &record.validation)?;
     evidence::save(directory, record)?;
     evidence::seal(directory)
 }
 fn execute(directory: &Path, record: &mut Record) -> Result<()> {
     record.stage = "validate".into();
     evidence::save(directory, record)?;
-    let events = invoke(directory, record, "validate")?;
-    record.validation = events
-        .into_iter()
-        .filter(|v| v["event"] == "validation")
-        .collect();
+    let outcome = invoke(directory, record, "validate");
+    collect_validation(directory, record, "validate");
+    outcome?;
     let recipe = record.recipe.as_ref().ok_or("missing recipe")?;
-    let mut cases = record
-        .validation
-        .iter()
-        .filter_map(|v| v["case"].as_str())
-        .collect::<Vec<_>>();
-    cases.sort();
-    let mut expected = recipe.cases.iter().map(String::as_str).collect::<Vec<_>>();
-    expected.sort();
-    if cases != expected {
-        return Err("correctness validation did not cover the requested cases".into());
-    }
+    crate::validation::verify(recipe, &record.validation)?;
+    record.correctness = crate::validation::report(record);
     util::write_json(&directory.join("validation.json"), &record.validation)?;
     record.stage = "measure".into();
     evidence::save(directory, record)?;
@@ -249,12 +243,34 @@ fn execute(directory: &Path, record: &mut Record) -> Result<()> {
         }
     }
     util::write_json(&directory.join("samples.json"), &record.samples)?;
+    if outcome.is_err() {
+        collect_validation(directory, record, "measure");
+    }
     outcome?;
     evidence::validate_samples(record)?;
     record.summary = crate::measurement::summarize(&record.samples)?;
     record.stage = "complete".into();
     record.status = "succeeded".into();
     Ok(())
+}
+fn collect_validation(directory: &Path, record: &mut Record, mode: &str) {
+    let raw = fs::read_to_string(directory.join(format!("logs/{mode}.stdout"))).unwrap_or_default();
+    for line in raw.lines() {
+        if let Ok(value) = serde_json::from_str::<Value>(line)
+            && value["event"] == "validation"
+        {
+            if mode == "measure"
+                && let Some(old) = record
+                    .validation
+                    .iter_mut()
+                    .find(|v| v["case"] == value["case"])
+            {
+                *old = value;
+            } else {
+                record.validation.push(value);
+            }
+        }
+    }
 }
 fn invoke(directory: &Path, record: &Record, mode: &str) -> Result<Vec<Value>> {
     let built = record.built.as_ref().ok_or("build missing")?;

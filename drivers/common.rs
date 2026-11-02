@@ -22,6 +22,7 @@ pub enum Action {
     Copy(usize, usize),
     Move(usize, usize),
     Xor(usize, usize),
+    XorTwo(usize, usize, usize),
     Scale(u8, usize),
     MulAdd(usize, u8, usize),
     Remove(usize),
@@ -39,7 +40,22 @@ pub fn hit(counter: &AtomicUsize) {
 fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
-fn emit(value: Value) {
+thread_local! { static CURRENT_CASE: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) }; }
+fn begin_case(case: &str) {
+    CURRENT_CASE.with(|v| *v.borrow_mut() = case.to_owned());
+}
+fn emit(mut value: Value) {
+    if value["event"] == "validation" && value.get("severity").is_none() {
+        value["severity"] = json!("fatal");
+        value["status"] = json!("passed");
+        value["rule"] = json!(
+            if value["case"].as_str().unwrap_or("").starts_with("codec/") {
+                "codec-payload"
+            } else {
+                "operator-core"
+            }
+        );
+    }
     let mut out = std::io::stdout().lock();
     serde_json::to_writer(&mut out, &value).unwrap();
     writeln!(out).unwrap();
@@ -122,6 +138,14 @@ fn reference(width: usize, actions: &[Action]) -> BTreeMap<usize, Vec<u8>> {
                     *x ^= y;
                 }
             }
+            Action::XorTwo(a, b, target) => {
+                for id in [a, b] {
+                    let src = values[&id].clone();
+                    for (x, y) in values.get_mut(&target).unwrap().iter_mut().zip(src) {
+                        *x ^= y;
+                    }
+                }
+            }
             Action::Scale(c, i) => {
                 for v in values.get_mut(&i).unwrap() {
                     *v = mul(*v, c);
@@ -162,6 +186,7 @@ fn operator_suite(measure: bool) {
                 "operator/{width}/{}",
                 if direct { "direct" } else { "execute" }
             );
+            begin_case(&case);
             let program = Program::new(&actions, direct);
             if !measure {
                 for end in 1..actions.len() {
@@ -213,10 +238,80 @@ fn operator_suite(measure: bool) {
         }
     }
 }
+/// Each timed sample uses independent preloaded operators, so repeated calls cannot cancel a deviation.
+fn boundary_suite(measure: bool) {
+    for width in [1, 31, 128] {
+        for direct in [false, true] {
+            for rule in ["self-xor", "duplicate-source-xor"] {
+                let case = format!(
+                    "operator/{width}/{}/{rule}",
+                    if direct { "direct" } else { "execute" }
+                );
+                begin_case(&case);
+                let actions = if rule == "self-xor" {
+                    vec![Action::Xor(0, 0)]
+                } else {
+                    vec![Action::XorTwo(0, 0, 1)]
+                };
+                let program = Program::new(&actions, direct);
+                let expected = serde_json::to_value(reference(width, &actions)).unwrap();
+                let initial = reference(width, &[]);
+                let calls = if measure { 256 } else { 1 };
+                for rep in 0..if measure { 4 } else { 1 } {
+                    let mut operators: Vec<_> = (0..calls)
+                        .map(|_| {
+                            let mut op = Operator::new(width);
+                            for (id, bytes) in &initial {
+                                op.insert(*id, bytes);
+                            }
+                            op
+                        })
+                        .collect();
+                    let ns = if measure {
+                        let start = Instant::now();
+                        for op in &mut operators {
+                            std::hint::black_box(op).run(std::hint::black_box(&program));
+                        }
+                        checked_ns(start)
+                    } else {
+                        operators[0].run(&program);
+                        0
+                    };
+                    let mut outcomes: BTreeMap<String, (u64, Value)> = BTreeMap::new();
+                    for op in &operators {
+                        let actual: BTreeMap<_, _> = (0..8).map(|id| (id, op.read(id))).collect();
+                        let actual = serde_json::to_value(actual).unwrap();
+                        let key = digest(&serde_json::to_vec(&actual).unwrap());
+                        outcomes.entry(key).or_insert((0, actual)).0 += 1;
+                    }
+                    drop(operators);
+                    if !measure {
+                        let (witness, (_, actual)) = outcomes.into_iter().next().unwrap();
+                        emit(
+                            json!({"event":"validation","case":case,"rule":rule,"severity":"warning","status":if actual==expected {"passed"} else {"failed"},"expected":expected,"actual":actual,"witness":witness,"operation":if rule=="self-xor" {json!({"kind":"AddOneToVector","src_id":0,"target_id":0})}else{json!({"kind":"AddTwoToVector","s0":0,"s1":0,"target_id":1})},"symbol_bytes":width,"dispatch":if direct {"direct"}else{"execute"},"scope":if config::FAMILY=="product-abi" {"callback-operator"} else {"operator"},"message":if actual==expected {"Matches the scalar reference"} else {"Boundary behavior differs from the scalar reference; reported without failing the run"}}),
+                        );
+                    } else if rep > 0 {
+                        let outcomes: Vec<_> = outcomes
+                            .into_values()
+                            .map(|(count, actual)| json!({"count":count,"actual":actual}))
+                            .collect();
+                        let observation = json!({"calls":calls,"outcomes":outcomes});
+                        let witness = digest(&serde_json::to_vec(&observation).unwrap());
+                        emit(
+                            json!({"event":"sample","case":case,"repetition":rep-1,"elapsed_ns":ns,"payload_bytes":0,"operations":calls,"witness":witness,"observation":observation}),
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
 const K: usize = 64;
 const WIDTH: usize = 128;
 const REPAIRS: usize = 128;
 fn codec_round(codec: &str, missing: usize, measure: bool, rep: usize) {
+    let prefix = format!("codec/{codec}/missing-{missing}");
+    begin_case(&format!("{prefix}/encode"));
     let bytes = source(K * WIDTH);
     let probe = (!measure).then(|| Arc::new(Probe::default()));
     let start = Instant::now();
@@ -245,6 +340,7 @@ fn codec_round(codec: &str, missing: usize, measure: bool, rep: usize) {
     );
     drop(encoder);
     let received: Vec<_> = packets.iter().filter(|(id, _)| *id >= missing).collect();
+    begin_case(&format!("{prefix}/decode"));
     let start = Instant::now();
     let mut decoder = api::Decoder::new(codec, K, WIDTH, probe.clone());
     let mut consumed = 0;
@@ -274,7 +370,6 @@ fn codec_round(codec: &str, missing: usize, measure: bool, rep: usize) {
         assert!(consumed > K - missing, "repair path was not exercised");
     }
     drop(decoder);
-    let prefix = format!("codec/{codec}/missing-{missing}");
     if let Some(probe) = probe {
         let reads = probe.reads.load(Ordering::Relaxed);
         let writes = probe.writes.load(Ordering::Relaxed);
@@ -326,8 +421,16 @@ fn main() {
     let result = std::panic::catch_unwind(|| match mode {
         "describe" => {}
         "validate" | "measure" => match config::TEST {
-            "operator-smoke@0.1.0" => operator_suite(mode == "measure"),
-            "codec-smoke@0.1.0" => codec_suite(mode == "measure"),
+            "operator-smoke@0.1.0" => {
+                operator_suite(mode == "measure");
+                boundary_suite(mode == "measure");
+            }
+            "codec-smoke@0.1.0" => {
+                codec_suite(mode == "measure");
+                if mode == "validate" {
+                    boundary_suite(false);
+                }
+            }
             _ => panic!("unknown compiled test"),
         },
         _ => panic!("unknown driver command"),
@@ -340,6 +443,10 @@ fn main() {
                 .cloned()
                 .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
                 .unwrap_or_else(|| "driver panic".into());
+            let case = CURRENT_CASE.with(|v| v.borrow().clone());
+            emit(
+                json!({"event":"validation","case":case,"severity":"fatal","status":"failed","rule":"execution-integrity","phase":mode,"message":message}),
+            );
             emit(json!({"event":"error","message":message}));
             std::process::exit(4);
         }

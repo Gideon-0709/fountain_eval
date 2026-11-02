@@ -11,6 +11,7 @@ The repository contains one package and these responsibility boundaries:
 | `src/build.rs` | Workspace expansion, generated manifests, native builds and cache integrity |
 | `src/process.rs` | Controlled build environment, subprocess logs, timeouts and process-group cleanup |
 | `src/execution.rs` | Stage orchestration, prepared replay, capability and protocol checks |
+| `src/validation.rs` | Registered fatal/warning severity, evidence checks and correctness reports |
 | `src/measurement.rs` | Raw sample schema, units and deterministic summaries; part of T identity |
 | `src/evidence.rs` | Common conditions, result records, seals and comparability |
 | `src/util.rs` | Canonical hashing, file formats and common errors |

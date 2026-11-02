@@ -25,6 +25,9 @@ impl Program {
                     Action::Xor(src_id, target_id) => {
                         Operation::AddOneToVector { src_id, target_id }
                     }
+                    Action::XorTwo(s0, s1, target_id) => {
+                        Operation::AddTwoToVector { s0, s1, target_id }
+                    }
                     Action::Scale(scalar, id) => Operation::MultiplyScalar { scalar, id },
                     Action::MulAdd(src_id, scalar, target_id) => Operation::MulAdd {
                         src_id,
@@ -62,6 +65,9 @@ impl Operator {
                 Operation::MoveTo { src_id, target_id } => self.0.move_to(src_id, target_id),
                 Operation::AddOneToVector { src_id, target_id } => {
                     self.0.add_one_to_vector(src_id, target_id)
+                }
+                Operation::AddTwoToVector { s0, s1, target_id } => {
+                    self.0.add_two_to_vector(s0, s1, target_id)
                 }
                 Operation::MultiplyScalar { scalar, id } => self.0.multiply_scalar(scalar, id),
                 Operation::MulAdd {

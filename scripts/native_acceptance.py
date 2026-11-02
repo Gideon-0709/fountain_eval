@@ -110,8 +110,17 @@ def main():
             record = body["result"]
             assert record["status"] == ("prepared" if action == "prepare" else "succeeded")
             if action == "run":
-                assert len(record["samples"]) == (18 if test.startswith("operator-") else 24)
-                assert len(record["validation"]) == (6 if test.startswith("operator-") else 8)
+                operator_test=test.startswith("operator-")
+                assert len(record["samples"]) == (54 if operator_test else 24)
+                assert len(record["validation"]) == (18 if operator_test else 20)
+                checks=record["correctness"]
+                assert checks["fatal_checks"]==(6 if operator_test else 8)
+                assert checks["warning_checks"]==12
+                expected_warnings=0 if record["built"]["implementation"]=="arena" else 12
+                assert len(checks["warnings"])==expected_warnings, checks
+                assert checks["status"]==("passed_with_warnings" if expected_warnings else "passed")
+                assert not checks["fatal_failures"]
+                assert json.loads((Path(body["run_dir"])/"correctness.json").read_text())==checks
             command(label + "-report", ["report", body["run_dir"]])
         else:
             assert not body["result"]["summary"], "A failed run must not publish an aggregate performance result"
@@ -218,6 +227,9 @@ def main():
         bad = fixture("wrong-operator", template.replace("BODY", ""))
         wrong = run("wrong-operator-result", ENGINE, bad, "operator-smoke@0.1.0", 4)
         assert wrong["result"]["stage"] == "validate"
+        assert wrong["result"]["correctness"]["status"]=="failed"
+        assert wrong["result"]["correctness"]["fatal_failures"]
+        assert not wrong["result"]["samples"]
         crashed = fixture("crash-operator", template.replace("BODY", "std::process::exit(23);"))
         run("driver-crash", ENGINE, crashed, "operator-smoke@0.1.0", 4)
         hung = fixture("hang-operator", template.replace("BODY", "std::thread::sleep(std::time::Duration::from_secs(90));"))

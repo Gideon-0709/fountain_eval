@@ -25,10 +25,10 @@ For full authorized local coverage, add `--monorepo /path/to/erasure_coding_lib 
 
 - C owns component implementations and their resolved dependencies.
 - I owns native calls, conversions, feature/source binding and capabilities.
-- T owns workloads, timing, correctness and metric semantics.
+- T owns workloads, timing, correctness severity, reference expectations and metric semantics.
 - E is derived from the recipe and actual common conditions.
 
-Registered I/T content is frozen by `specs/catalog-lock.json`. Do not overwrite an existing released identity after changing its content; add a new version and migrate registrations deliberately. A reporting-only fix does not require changing the methodology. Keep API changes separate from test-content changes when their semantics permit it.
+The repository is an unreleased internal 0.1.0 candidate. Update this baseline and `specs/catalog-lock.json` deliberately during the current round; do not invent additional versions or create tags/releases. The project owner will release 0.1.0 after acceptance. Once released, I/T content identities are immutable. A reporting-only fix does not require changing the methodology. Keep API changes separate from test-content changes when their semantics permit it.
 
 ## Documentation and retention
 
@@ -37,3 +37,5 @@ Write docs and diagnostics in English. README examples must execute the implemen
 Do not commit caches, component checkouts, credentials, personal bindings or raw acceptance outputs. After writing an implementation acceptance summary, remove only the explicitly identified temporary validation directories. The CLI never cleans normal user results automatically.
 
 Repository work targets main as directed by the project owner. Upstream access grants no write permission. Keep `publish = false`; crates.io publication and licensing policy are separate decisions.
+
+Fatal failures must remain blocking. Boundary warnings must be shown with expected/actual observations and timing rows, and must not block comparison solely because outputs differ. Severity and coverage are T-owned content. During the current unreleased round they remain part of the same 0.1.0 candidate; content digests identify each revision.

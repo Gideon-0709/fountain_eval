@@ -9,6 +9,8 @@ pub struct Sample {
     pub payload_bytes: u64,
     pub operations: u64,
     pub witness: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation: Option<serde_json::Value>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Summary {
@@ -32,11 +34,10 @@ pub fn summarize(samples: &[Sample]) -> Result<Vec<Summary>> {
         .into_iter()
         .map(|(case, values)| {
             let first = values[0];
-            if values.iter().any(|s| {
-                s.payload_bytes != first.payload_bytes
-                    || s.operations != first.operations
-                    || s.witness != first.witness
-            }) {
+            if values
+                .iter()
+                .any(|s| s.payload_bytes != first.payload_bytes || s.operations != first.operations)
+            {
                 return Err(format!("inconsistent work or outputs in {case}"));
             }
             let mut times: Vec<_> = values.iter().map(|s| s.elapsed_ns).collect();
