@@ -43,13 +43,24 @@ def main():
             if interrupt:
                 deadline = time.monotonic() + 180
                 while process.poll() is None and time.monotonic() < deadline:
-                    if any((p / "logs/validate.stdout").exists() for p in set(runs.glob("*")) - before):
+                    if any(list(p.glob("C*/*/logs/validate.stdout")) for p in set(runs.glob("*")) - before):
                         process.send_signal(signal.SIGINT)
                         break
                     time.sleep(.05)
             code = process.wait(timeout=7200)
         text = (work / (label + ".stdout")).read_text()
         body = json.loads(text) if text.strip() else {}
+        if "batch" in body:
+            batch_dir = Path(body["run_dir"])
+            entries = body["batch"]["entries"]
+            assert len(entries) == 1, "This helper inspects one C; multi-C contracts are in tests/batch.rs"
+            entry = entries[0]
+            assert entry["directory"], entry
+            child = batch_dir / entry["directory"]
+            body = {"batch_dir":str(batch_dir), "batch":body["batch"], "run_dir":str(child), "result":json.loads((child/"result.json").read_text())}
+            for name in ["batch.json", "report.html", "report.md", "runs.csv", "seal.json"]:
+                assert (batch_dir/name).is_file(), name
+            subprocess.run([str(cli),"report",str(batch_dir)],stdout=subprocess.DEVNULL,check=True)
         row = dict(label=label, exit=code, seconds=round(time.monotonic()-started, 3))
         if "result" in body:
             row.update(run=body["run_dir"], status=body["result"]["status"], stage=body["result"]["stage"], error=body["result"].get("error"))
@@ -62,7 +73,7 @@ def main():
 
     def run(label, engine, operator, scheme="rq", action="run", expected=None, interrupt=False, test="0.1.0"):
         config = work / (label + ".toml")
-        config.write_text(f"engine={json.dumps(engine)}\noperator={json.dumps(operator)}\nscheme={json.dumps(scheme)}\ntest={json.dumps(test)}\n[run]\ncache={json.dumps(str(cache))}\noutput={json.dumps(str(runs))}\n")
+        config.write_text((f"engine0={json.dumps(engine)}\n" if engine else "") + (f"operator0={json.dumps(operator)}\n" if operator else "") + f"scheme={json.dumps(scheme)}\ntest={json.dumps(test)}\n[run]\ncache={json.dumps(str(cache))}\noutput={json.dumps(str(runs))}\n")
         body, code = command(label, [action, "--config", config], expected, interrupt)
         if "result" in body: attempts.append(body)
         if body.get("result", {}).get("status") == "succeeded":
@@ -90,6 +101,9 @@ def main():
         ledger[-1]["classification"] = "Verified fatal GF mul-add-zero defect; later cases remain not executed; no positive whole-suite coverage"
         (work / "ledger.json").write_text(json.dumps(ledger, indent=2)+"\n")
 
+    for scheme in ["rq", "r10"]:
+        run("public-engine-only-"+scheme, ENGINE, None, scheme, expected=0)
+
     if args.expect_upstream_x86_failure:
         import platform
         assert platform.machine() in ["x86_64", "AMD64"]
@@ -98,7 +112,7 @@ def main():
             assert body["result"]["stage"] == "build"
             log = (Path(body["run_dir"])/"logs/driver-build.stderr").read_text()
             assert "E0433" in log and "portable" in log
-        print("Verified pinned upstream x86 build rejection; no positive native coverage", flush=True)
+        print("Verified pinned upstream x86 operator build rejection; engine-only planning covered separately", flush=True)
         return
 
     arena = f"path:{args.arena.resolve()}" if args.arena else None
@@ -121,7 +135,10 @@ def main():
     for scheme in ["rq", "r10"]:
         matching = [v for key, v in results.items() if key.endswith("-"+scheme)]
         for index, other in enumerate(matching):
-            command(f"compare-{scheme}-{index}", ["compare", matching[0]["run_dir"], other["run_dir"]], 0)
+            common = set(matching[0]["result"]["recipe"]["cases"]) & set(other["result"]["recipe"]["cases"])
+            command(f"compare-{scheme}-{index}", ["compare", matching[0]["run_dir"], other["run_dir"]], 0 if common else 2)
+            if not common:
+                assert "no common measured cases" in (work/f"compare-{scheme}-{index}.stderr").read_text()
     if arena:command("different-scheme", ["compare", results["public-arena-rq"]["run_dir"], results["public-arena-r10"]["run_dir"]], 2)
 
     if args.reproduction:
@@ -134,13 +151,13 @@ def main():
         prepared,_=run("snapshot",ENGINE,f"path:{checkout}",action="prepare",expected=0)
         lib=checkout/"src/lib.rs"
         lib.write_text('compile_error!("changed original after preparation");\n'+lib.read_text())
-        repeated,_=command("prepared-whole-run",["run","--prepared",prepared["run_dir"]],0)
+        repeated,_=command("prepared-whole-run",["run","--prepared",prepared["batch_dir"]],0)
         command("prepared-compare",["compare",first["run_dir"],repeated["run_dir"]],0)
         failed,_=run("changed-input",ENGINE,f"path:{checkout}",expected=4)
         assert failed["result"]["stage"]=="build"
         binary=Path(prepared["result"]["built"]["binary"])
         with binary.open("ab") as out:out.write(b"corruption fixture")
-        corrupt,_=command("corrupt-cache",["run","--prepared",prepared["run_dir"]],4)
+        corrupt,_=command("corrupt-cache",["run","--prepared",prepared["batch_dir"]],4)
         assert "checksum" in corrupt["result"]["error"]
 
     if args.faults:

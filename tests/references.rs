@@ -88,8 +88,8 @@ fn test_versions_select_whole_content_and_scheme_is_explicit() {
         assert!(invalid.parse::<TestReference>().is_err());
     }
     let request = EvaluationRequest::parse(
-        "registry:engine@3.0.0-dev",
-        "path:../operator#slab",
+        Some("registry:engine@3.0.0-dev"),
+        Some("path:../operator#slab"),
         "rq",
         "0.1.0",
     )

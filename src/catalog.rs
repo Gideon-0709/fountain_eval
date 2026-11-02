@@ -1,6 +1,6 @@
 use crate::validation::{Check, Severity};
 use crate::{
-    protocol::{SchemeSelection, TestReference},
+    protocol::{SchemeSelection, Scope, TestReference},
     source::Package,
     util::{self, Result},
 };
@@ -15,6 +15,7 @@ pub const COMMON: &str = include_str!("../drivers/common.rs");
 pub const OPERATOR: &str = include_str!("../drivers/operator.rs");
 pub const NATIVE: &str = include_str!("../drivers/native.rs");
 pub const PRODUCT: &str = include_str!("../drivers/product.rs");
+pub const SCALAR_OPERATOR: &str = include_str!("../drivers/scalar_operator.rs");
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Identity {
     pub id: String,
@@ -113,6 +114,8 @@ pub fn interface(family: &str) -> Identity {
             family,
             capabilities(family),
             OPERATOR,
+            SCALAR_OPERATOR,
+            "single-component-v1: engine=plan-build/export; operator=operator-surface",
             if family == "product-abi" {
                 PRODUCT
             } else {
@@ -177,7 +180,12 @@ pub fn validate_scheme(scheme: &SchemeSelection) -> Result<()> {
     Ok(())
 }
 /// Expand the complete catalog. Every inapplicable case remains present with its reason.
-pub fn plan(test: &TestReference, scheme: &SchemeSelection, family: &str) -> Result<Recipe> {
+pub fn plan(
+    test: &TestReference,
+    scheme: &SchemeSelection,
+    family: &str,
+    scope: Scope,
+) -> Result<Recipe> {
     validate_scheme(scheme)?;
     if !supports(family, &test.version) {
         return Err("unsupported: unknown interface capability set".into());
@@ -197,6 +205,15 @@ pub fn plan(test: &TestReference, scheme: &SchemeSelection, family: &str) -> Res
                     scheme.name,
                     check.spec.scheme.as_deref().unwrap()
                 ),
+            });
+        } else if (scope == Scope::Engine
+            && !matches!(check.spec.workload.as_str(), "plan-build" | "plan-export"))
+            || (scope == Scope::Operator && check.spec.scheme.is_some())
+        {
+            check.skip = Some(crate::coverage::Skip {
+                code: "component_not_selected".into(),
+                reason: if scope == Scope::Engine { "This case requires a selected operator; engine-only C executes standalone planning capabilities" }
+                    else { "This case requires a selected engine; the operator's trait dependency is build support, not a tested codec" }.into(),
             });
         } else if check.spec.scheme.as_deref() == Some("r10") && check.spec.k < 4 {
             check.skip=Some(crate::coverage::Skip{code:"outside_api_domain".into(),reason:"The registered R10 scheme accepts source K in 4..=8192; product invalid-input rejection is checked in C11, and native invalid-input behavior has no recoverable API contract".into()});

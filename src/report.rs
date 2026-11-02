@@ -7,6 +7,148 @@ fn escape(s: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
 }
+fn seconds(ns: Option<u64>) -> String {
+    ns.map(|n| format!("{:.2}", n as f64 / 1e9))
+        .unwrap_or_else(|| "—".into())
+}
+pub fn batch_markdown(r: &crate::batch::Record) -> String {
+    let mut text = format!(
+        "# Fountain evaluation batch\n\nRun: `{}`. Action: **{}**. Status: **{}**. Elapsed: **{} s**.\n\n",
+        r.run_id,
+        r.action,
+        r.status,
+        seconds(Some(r.elapsed_ns))
+    );
+    text.push_str("Each C runs the complete selected T with its own applicability and evidence. Components execute sequentially in numeric order. A fatal result ends that C; other selections continue. Interruption leaves later selections unexecuted.\n\nElapsed seconds are host wall time, including resolution, build, validation, measurements, diagnostics and per-C report/seal generation. They are not codec timings. The batch total also includes orchestration/checkpoints, but excludes writing its own final report and seal. A failed or unsupported row is time to that outcome, not the time needed to complete T.\n\n| C | Scope | Status | Elapsed s | Resolve s | Build s | Validate s | Measure s | Diagnose s | Checks | Warnings | Samples | Diagnostics | Skipped checks | Report |\n| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |\n");
+    for e in &r.entries {
+        let scope = e
+            .request
+            .components
+            .scope()
+            .map(|s| format!("{s:?}"))
+            .unwrap_or_else(|_| "Invalid".into());
+        let link = e
+            .directory
+            .as_ref()
+            .map(|p| format!("[details]({}/report.md)", p.display()))
+            .unwrap_or_else(|| "No child result".into());
+        let _ = writeln!(
+            text,
+            "| C{} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+            e.component_id,
+            scope,
+            e.status,
+            seconds(e.elapsed_ns),
+            seconds(e.phases_ns.get("resolve").copied()),
+            seconds(e.phases_ns.get("build").copied()),
+            seconds(e.phases_ns.get("validate").copied()),
+            seconds(e.phases_ns.get("measure").copied()),
+            seconds(e.phases_ns.get("diagnose").copied()),
+            e.validation_observations,
+            e.warnings,
+            e.samples,
+            e.diagnostics,
+            e.skipped,
+            link
+        );
+    }
+    text.push_str("\nPhase columns describe host orchestration, including checks and evidence processing within that phase. Probe, setup and final report/seal work explain the remaining time. Do not add benchmark medians to reproduce these wall times.\n\n## Selected inputs and outcomes\n\n");
+    for e in &r.entries {
+        let _ = writeln!(
+            text,
+            "### C{}\n\n```json\n{}\n```\n",
+            e.component_id,
+            serde_json::to_string_pretty(&e.request).unwrap()
+        );
+        if let Some(error) = &e.error {
+            let _ = writeln!(text, "Outcome detail:\n\n```text\n{error}\n```\n");
+        }
+    }
+    text.push_str("## Reading performance\n\nFollow each C's detailed report for primitive timings, plan generation, codec throughput, dispersion and separate stage/resource observations. These summaries are not an automatic ranking. Use `compare` on two per-C result directories to check T/E/I compatibility before interpreting relative changes. Missing components remain explicit skips; an inferred trait dependency or validation reference is never a second tested component.\n");
+    text
+}
+pub fn batch_html(r: &crate::batch::Record) -> String {
+    let mut text = format!(
+        "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\"><title>Fountain evaluation batch</title><style>body{{font:15px system-ui;margin:32px;color:#172033}}table{{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}}td,th{{padding:9px;border-bottom:1px solid #ddd;text-align:left}}pre{{white-space:pre-wrap;overflow-wrap:anywhere}}details{{margin:12px 0}}</style><h1>Fountain evaluation batch</h1><p>Run <code>{}</code> · <strong>{}</strong> · {} s</p><p>Elapsed time includes building and producing each C's evidence. Failed rows show time to failure. Benchmark performance is in the linked reports.</p><table><thead><tr><th>C</th><th>Scope</th><th>Status</th><th>Elapsed s</th><th>Checks</th><th>Warnings</th><th>Samples</th><th>Diagnostics</th><th>Skipped</th><th>Report</th></tr></thead><tbody>",
+        escape(&r.run_id),
+        escape(&r.status),
+        seconds(Some(r.elapsed_ns))
+    );
+    for e in &r.entries {
+        let scope = e
+            .request
+            .components
+            .scope()
+            .map(|s| format!("{s:?}"))
+            .unwrap_or_else(|_| "Invalid".into());
+        let link = e
+            .directory
+            .as_ref()
+            .map(|p| {
+                format!(
+                    "<a href=\"{}/report.html\">Detailed results</a>",
+                    escape(&p.to_string_lossy())
+                )
+            })
+            .unwrap_or_else(|| "Not executed".into());
+        let _ = write!(
+            text,
+            "<tr><td>C{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+            e.component_id,
+            scope,
+            escape(&e.status),
+            seconds(e.elapsed_ns),
+            e.validation_observations,
+            e.warnings,
+            e.samples,
+            e.diagnostics,
+            e.skipped,
+            link
+        );
+    }
+    text.push_str("</tbody></table><h2>Inputs and failures</h2>");
+    for e in &r.entries {
+        let _ = write!(
+            text,
+            "<details><summary>C{} · {}</summary><pre>{}</pre><pre>{}</pre></details>",
+            e.component_id,
+            escape(&e.status),
+            escape(&serde_json::to_string_pretty(&e.request).unwrap()),
+            escape(
+                e.error
+                    .as_deref()
+                    .unwrap_or("No failure recorded; review warning and coverage details.")
+            )
+        );
+    }
+    let _ = write!(
+        text,
+        "<details><summary>Phase timings and interpretation</summary><pre>{}</pre></details></html>",
+        escape(&batch_markdown(r))
+    );
+    text
+}
+pub fn write_batch(directory: &Path, r: &crate::batch::Record) -> Result<()> {
+    fs::write(directory.join("report.md"), batch_markdown(r)).map_err(|e| e.to_string())?;
+    fs::write(directory.join("report.html"), batch_html(r)).map_err(|e| e.to_string())?;
+    let mut csv="component_id,scope,status,elapsed_ns,validation_observations,warnings,samples,diagnostics,skipped_validation\n".to_owned();
+    for e in &r.entries {
+        let _ = writeln!(
+            csv,
+            "C{},{:?},{},{},{},{},{},{},{}",
+            e.component_id,
+            e.request.components.scope().map_err(|e| e.to_string())?,
+            e.status,
+            e.elapsed_ns.map(|n| n.to_string()).unwrap_or_default(),
+            e.validation_observations,
+            e.warnings,
+            e.samples,
+            e.diagnostics,
+            e.skipped
+        );
+    }
+    fs::write(directory.join("runs.csv"), csv).map_err(|e| e.to_string())
+}
 fn number(v: Option<f64>) -> String {
     v.map(|v| format!("{v:.3}")).unwrap_or_else(|| "—".into())
 }
@@ -18,6 +160,13 @@ pub fn markdown(r: &Record) -> String {
     if let Some(e) = &r.error {
         let _ = writeln!(s, "Failure: {e}\n");
     }
+    let _ = writeln!(
+        s,
+        "Component selection: C{}. Execution through the last phase: **{} s**, excluding final report/seal generation. Phase durations (host orchestration, not benchmark samples):\n\n```json\n{}\n```\n",
+        r.configuration.component_id,
+        seconds(Some(r.timing.elapsed_ns)),
+        serde_json::to_string_pretty(&r.timing.phases_ns).unwrap()
+    );
     let _ = writeln!(
         s,
         "Correctness: **{}**; {} fatal checks, {} boundary checks, {} warning observations.\n",

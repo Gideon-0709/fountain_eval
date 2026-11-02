@@ -115,7 +115,7 @@ pub struct Record {
     pub status: String,
     pub stage: String,
     pub request: EvaluationRequest,
-    pub configuration: crate::config::Configuration,
+    pub configuration: crate::config::RunConfiguration,
     pub coverage: Value,
     pub quadruple: Option<Quadruple>,
     pub recipe: Option<Recipe>,
@@ -126,6 +126,7 @@ pub struct Record {
     pub diagnostics: Vec<Value>,
     pub summary: Vec<Summary>,
     pub error: Option<String>,
+    pub timing: crate::execution::Timing,
     #[serde(default)]
     pub correctness: crate::validation::Report,
 }
@@ -191,9 +192,9 @@ pub fn seal(directory: &Path) -> Result<()> {
     }
     util::write_json(&directory.join("seal.json"), &hashes)
 }
-pub fn load(directory: &Path) -> Result<Record> {
+pub fn verify_seal(directory: &Path, required: &str) -> Result<()> {
     let hashes: BTreeMap<PathBuf, String> = util::read_json(&directory.join("seal.json"))?;
-    if !hashes.contains_key(Path::new("result.json")) {
+    if !hashes.contains_key(Path::new(required)) {
         return Err("result is not sealed".into());
     }
     for (path, expected) in hashes {
@@ -208,6 +209,10 @@ pub fn load(directory: &Path) -> Result<Record> {
             return Err("evidence checksum mismatch".into());
         }
     }
+    Ok(())
+}
+pub fn load(directory: &Path) -> Result<Record> {
+    verify_seal(directory, "result.json")?;
     let mut record: Record = util::read_json(&directory.join("result.json"))?;
     record.correctness = crate::validation::report(&record);
     record.coverage = crate::coverage::report(&record);
@@ -275,7 +280,16 @@ pub fn validate_samples(record: &Record) -> Result<()> {
         .map(|q| q.i.id.split('@').next().unwrap_or(""))
         .or_else(|| record.built.as_ref().map(|b| b.family.as_str()))
         .ok_or("missing interface identity")?;
-    let canonical = catalog::plan(&record.request.test, &record.request.scheme, family)?;
+    let canonical = catalog::plan(
+        &record.request.test,
+        &record.request.scheme,
+        family,
+        record
+            .request
+            .components
+            .scope()
+            .map_err(|e| e.to_string())?,
+    )?;
     if serde_json::to_value(recipe).map_err(|e| e.to_string())?
         != serde_json::to_value(&canonical).map_err(|e| e.to_string())?
     {

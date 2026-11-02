@@ -1,5 +1,5 @@
 use clap::{Args, Parser, Subcommand};
-use fountain_eval::{catalog, config::Configuration, evidence, execution, runner, util::Result};
+use fountain_eval::{batch, catalog, config::Configuration, evidence, runner, util::Result};
 use serde_json::json;
 use std::{
     io::{self, Write},
@@ -67,14 +67,10 @@ fn emit(value: &impl serde::Serialize) -> Result<()> {
     serde_json::to_writer_pretty(&mut out, value).map_err(|e| e.to_string())?;
     writeln!(out).map_err(|e| e.to_string())
 }
-fn outcome(directory: PathBuf, record: evidence::Record) -> Result<u8> {
-    emit(&json!({"run_dir":directory,"result":record}))?;
-    Ok(match record.status.as_str() {
-        "prepared" | "succeeded" => 0,
-        "unsupported" => 3,
-        "interrupted" => 130,
-        _ => 4,
-    })
+fn outcome(directory: PathBuf, record: batch::Record) -> Result<u8> {
+    let code = batch::exit_code(&record);
+    emit(&json!({"run_dir":directory,"batch":record}))?;
+    Ok(code)
 }
 fn execute(command: Command) -> Result<u8> {
     match command {
@@ -84,19 +80,26 @@ fn execute(command: Command) -> Result<u8> {
         }
         Command::Inspect(input) => {
             let configuration = Configuration::load(&input.config)?;
-            let report = runner::inspect(configuration.request.clone());
-            emit(&json!({"configuration":configuration,"inspection":report}))?;
-            Ok(if report.has_errors() { 2 } else { 0 })
+            let reports: Vec<_> = configuration
+                .selections
+                .iter()
+                .map(|s| (s.id, runner::inspect(s.request.clone())))
+                .collect();
+            let failed = reports.iter().any(|(_, r)| r.has_errors());
+            emit(
+                &json!({"configuration":configuration,"inspections":reports.iter().map(|(id,r)|json!({"component_id":id,"inspection":r})).collect::<Vec<_>>()}),
+            )?;
+            Ok(if failed { 2 } else { 0 })
         }
         Command::Prepare(input) => {
-            let (path, record) = execution::start(Configuration::load(&input.config)?, true)?;
+            let (path, record) = batch::run(Configuration::load(&input.config)?, true)?;
             outcome(path, record)
         }
         Command::Run { config, prepared } => {
             let (path, record) = if let Some(path) = prepared {
-                execution::from_prepared(&path)?
+                batch::from_prepared(&path)?
             } else {
-                execution::start(
+                batch::run(
                     Configuration::load(&config.unwrap_or_else(|| "fountain-eval.toml".into()))?,
                     false,
                 )?
@@ -104,12 +107,21 @@ fn execute(command: Command) -> Result<u8> {
             outcome(path, record)
         }
         Command::Report { run, format } => {
-            let r = evidence::load(&run)?;
-            match format {
-                Format::Json => emit(&r)?,
-                Format::Markdown => emit_text(&fountain_eval::report::markdown(&r))?,
-                Format::Html => emit_text(&fountain_eval::report::html(&r))?,
-            };
+            if run.join("batch.json").exists() {
+                let r = batch::load(&run)?;
+                match format {
+                    Format::Json => emit(&r)?,
+                    Format::Markdown => emit_text(&fountain_eval::report::batch_markdown(&r))?,
+                    Format::Html => emit_text(&fountain_eval::report::batch_html(&r))?,
+                }
+            } else {
+                let r = evidence::load(&run)?;
+                match format {
+                    Format::Json => emit(&r)?,
+                    Format::Markdown => emit_text(&fountain_eval::report::markdown(&r))?,
+                    Format::Html => emit_text(&fountain_eval::report::html(&r))?,
+                };
+            }
             Ok(0)
         }
         Command::Compare {
@@ -117,6 +129,9 @@ fn execute(command: Command) -> Result<u8> {
             right,
             format,
         } => {
+            if left.join("batch.json").exists() || right.join("batch.json").exists() {
+                return Err("compare requires two per-C result directories; choose the detailed result paths listed in each batch report".into());
+            }
             let r = evidence::compare(&evidence::load(&left)?, &evidence::load(&right)?)?;
             match format {
                 Format::Json => emit(&r)?,

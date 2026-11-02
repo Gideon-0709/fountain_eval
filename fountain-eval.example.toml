@@ -1,6 +1,9 @@
-# Copy to fountain-eval.toml. All applicable acceptance cases run automatically.
-engine = "registry:fountain_engine@2.1.0"
-operator = "registry:fountain_operators@2.0.0#slab"
+# Copy to fountain-eval.toml. All applicable test cases run automatically.
+engine0 = "registry:fountain_engine@2.1.0"
+operator0 = "registry:fountain_operators@2.0.0#slab"
+# Each index is a separate C. Omit the other component for a single-component C.
+engine1 = "registry:fountain_engine@2.1.0"
+
 scheme = "rq"
 test = "0.1.0"
 

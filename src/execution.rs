@@ -1,7 +1,7 @@
 use crate::{
     build::{self, Built},
     catalog,
-    config::Configuration,
+    config::RunConfiguration,
     evidence::{self, Quadruple, Record},
     process,
     source::Resolver,
@@ -12,8 +12,47 @@ use std::{
     fs::{self, OpenOptions},
     path::{Path, PathBuf},
     process::Command,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+/// Host-side elapsed time. These clocks do not enter measured operation/codec samples.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct Timing {
+    pub elapsed_ns: u64,
+    pub phases_ns: std::collections::BTreeMap<String, u64>,
+}
+struct PhaseClock {
+    start: Instant,
+    phase: Instant,
+    name: String,
+}
+impl PhaseClock {
+    fn new() -> Self {
+        let now = Instant::now();
+        Self {
+            start: now,
+            phase: now,
+            name: "setup".into(),
+        }
+    }
+    fn enter(&mut self, record: &mut Record, name: &str) {
+        *record
+            .timing
+            .phases_ns
+            .entry(self.name.clone())
+            .or_default() += self.phase.elapsed().as_nanos() as u64;
+        self.phase = Instant::now();
+        self.name = name.into();
+        record.stage = name.into();
+    }
+    fn finish(&self, record: &mut Record) {
+        *record
+            .timing
+            .phases_ns
+            .entry(self.name.clone())
+            .or_default() += self.phase.elapsed().as_nanos() as u64;
+        record.timing.elapsed_ns = self.start.elapsed().as_nanos() as u64;
+    }
+}
 fn lock(cache: &Path) -> Result<std::fs::File> {
     fs::create_dir_all(cache).map_err(|e| e.to_string())?;
     let f = OpenOptions::new()
@@ -50,12 +89,13 @@ fn new_directory(root: &Path) -> Result<(String, PathBuf)> {
     fs::create_dir(&path).map_err(|e| e.to_string())?;
     Ok((id, path.canonicalize().map_err(|e| e.to_string())?))
 }
-pub fn start(configuration: Configuration, prepare_only: bool) -> Result<(PathBuf, Record)> {
+pub fn start(configuration: RunConfiguration, prepare_only: bool) -> Result<(PathBuf, Record)> {
     process::install_handler()?;
     let options = configuration.run.clone();
     fs::create_dir_all(&options.cache).map_err(|e| e.to_string())?;
     let cache = options.cache.canonicalize().map_err(|e| e.to_string())?;
     let (id, directory) = new_directory(&options.output)?;
+    let mut clock = PhaseClock::new();
     let mut record = Record {
         format_version: 1,
         run_id: id,
@@ -71,51 +111,83 @@ pub fn start(configuration: Configuration, prepare_only: bool) -> Result<(PathBu
         diagnostics: Vec::new(),
         summary: Vec::new(),
         error: None,
+        timing: Timing::default(),
         correctness: Default::default(),
         coverage: json!({}),
     };
     evidence::save(&directory, &record)?;
     let result = util::catch(|| {
         let _lock = lock(&cache)?;
-        record.stage = "resolve".into();
+        clock.enter(&mut record, "resolve");
         evidence::save(&directory, &record)?;
         catalog::verify_lock()?;
         let recipe = catalog::recipe(&record.request.test)?;
         record.recipe = Some(recipe.clone());
         let mut resolver = Resolver::new(&cache, &directory.join("logs"));
-        let engine = resolver.resolve(&record.request.components.engine)?;
-        let operator = resolver.resolve(&record.request.components.operator)?;
-        util::write_json(
-            &directory.join("sources.json"),
-            &json!({"engine":engine,"operator":operator}),
-        )?;
+        let scope = record
+            .request
+            .components
+            .scope()
+            .map_err(|e| e.to_string())?;
+        let operator = record
+            .request
+            .components
+            .operator
+            .as_ref()
+            .map(|r| resolver.resolve(r))
+            .transpose()?;
+        let engine = if let Some(reference) = &record.request.components.engine {
+            if reference.implementation.is_some() {
+                return Err(
+                    "unsupported: engine implementation selectors are not registered".into(),
+                );
+            }
+            resolver.resolve(reference)?
+        } else {
+            build::operator_engine(
+                &mut resolver,
+                operator.as_ref().ok_or("empty component selection")?,
+            )?
+        };
         let family = catalog::family(&engine)?;
+        let recipe = catalog::plan(&record.request.test, &record.request.scheme, &family, scope)?;
+        record.recipe = Some(recipe.clone());
+        if recipe.validation_cases().is_empty() {
+            return Err("unsupported: no test cases are applicable to this single component; see the complete coverage plan".into());
+        }
         let scheme = build::resolve_scheme(&mut resolver, &engine, &record.request.scheme)?;
         util::write_json(
             &directory.join("sources.json"),
-            &json!({"engine":engine,"operator":operator,"scheme":scheme}),
+            &json!({"engine":if scope==crate::protocol::Scope::Operator{None}else{Some(&engine)},"support_engine":if scope==crate::protocol::Scope::Operator{Some(&engine)}else{None},"operator":operator,"scheme":scheme}),
         )?;
-        let recipe = catalog::plan(&record.request.test, &record.request.scheme, &family)?;
-        record.recipe = Some(recipe.clone());
-        let implementation = catalog::implementation(
-            &operator,
-            record.request.components.operator.implementation.as_deref(),
-        )?;
-        if record.request.components.engine.implementation.is_some() {
-            return Err("unsupported: engine implementation selectors are not registered".into());
-        }
+        let implementation = if let Some(operator) = &operator {
+            catalog::implementation(
+                operator,
+                record
+                    .request
+                    .components
+                    .operator
+                    .as_ref()
+                    .and_then(|r| r.implementation.as_deref()),
+            )?
+        } else {
+            "scalar-validation-only".into()
+        };
         let mut environment = evidence::environment(&cache)?;
         environment.conditions["recipe"] = recipe.definition.clone();
         environment.conditions["scheme"] =
             json!({"name":record.request.scheme.name,"mode":record.request.scheme.mode});
         environment.digest = util::digest(&environment.conditions);
         util::write_json(&directory.join("configuration.json"), &environment)?;
-        record.stage = "build".into();
+        clock.enter(&mut record, "build");
         evidence::save(&directory, &record)?;
         let built = build::prepare(
             &mut resolver,
-            &engine,
-            &operator,
+            build::BuildSelection {
+                engine: &engine,
+                operator: operator.as_ref(),
+                scope,
+            },
             &scheme,
             &implementation,
             &recipe,
@@ -123,7 +195,7 @@ pub fn start(configuration: Configuration, prepare_only: bool) -> Result<(PathBu
         )?;
         util::write_json(&directory.join("build.json"), &built)?;
         record.built = Some(built);
-        record.stage = "probe".into();
+        clock.enter(&mut record, "probe");
         evidence::save(&directory, &record)?;
         invoke(&directory, &record, "describe")?;
         record.quadruple = Some(Quadruple {
@@ -136,14 +208,15 @@ pub fn start(configuration: Configuration, prepare_only: bool) -> Result<(PathBu
             record.status = "prepared".into();
             record.stage = "prepared".into();
         } else {
-            execute(&directory, &mut record)?;
+            execute(&directory, &mut record, &mut clock)?;
         }
         Ok(())
     });
+    clock.finish(&mut record);
     finish(&directory, &mut record, result)?;
     Ok((directory, record))
 }
-pub fn from_prepared(prepared: &Path) -> Result<(PathBuf, Record)> {
+pub fn from_prepared(prepared: &Path, output: &Path) -> Result<(PathBuf, Record)> {
     process::install_handler()?;
     let old = evidence::load(prepared)?;
     if old.status != "prepared" {
@@ -157,15 +230,27 @@ pub fn from_prepared(prepared: &Path) -> Result<(PathBuf, Record)> {
             .and_then(Path::parent)
             .ok_or("invalid build location")?,
     )?;
-    let (id, directory) = new_directory(&old.configuration.run.output)?;
+    let (id, directory) = new_directory(output)?;
+    let mut clock = PhaseClock::new();
     let mut record = old.clone();
     record.run_id = id;
+    record.configuration.run.output = output.into();
+    record.timing = Timing::default();
     record.status = "running".into();
-    record.stage = "probe".into();
+    clock.enter(&mut record, "probe");
     record.error = None;
     let result = util::catch(|| {
         catalog::verify_lock()?;
-        let recipe = catalog::plan(&record.request.test, &record.request.scheme, &built.family)?;
+        let recipe = catalog::plan(
+            &record.request.test,
+            &record.request.scheme,
+            &built.family,
+            record
+                .request
+                .components
+                .scope()
+                .map_err(|e| e.to_string())?,
+        )?;
         let tuple = record.quadruple.as_mut().ok_or("missing prepared tuple")?;
         if recipe.identity != tuple.t
             || !catalog::registered_interface(&tuple.i, &recipe.identity.id)
@@ -198,8 +283,9 @@ pub fn from_prepared(prepared: &Path) -> Result<(PathBuf, Record)> {
         )?;
         util::write_json(&directory.join("build.json"), built)?;
         invoke(&directory, &record, "describe")?;
-        execute(&directory, &mut record)
+        execute(&directory, &mut record, &mut clock)
     });
+    clock.finish(&mut record);
     finish(&directory, &mut record, result)?;
     Ok((directory, record))
 }
@@ -222,8 +308,8 @@ fn finish(directory: &Path, record: &mut Record, result: Result<()>) -> Result<(
     crate::report::write(directory, record)?;
     evidence::seal(directory)
 }
-fn execute(directory: &Path, record: &mut Record) -> Result<()> {
-    record.stage = "validate".into();
+fn execute(directory: &Path, record: &mut Record, clock: &mut PhaseClock) -> Result<()> {
+    clock.enter(record, "validate");
     evidence::save(directory, record)?;
     let outcome = invoke(directory, record, "validate");
     collect_validation(directory, record, "validate");
@@ -232,7 +318,7 @@ fn execute(directory: &Path, record: &mut Record) -> Result<()> {
     crate::validation::verify(recipe, &record.validation)?;
     record.correctness = crate::validation::report(record);
     util::write_json(&directory.join("validation.json"), &record.validation)?;
-    record.stage = "measure".into();
+    clock.enter(record, "measure");
     evidence::save(directory, record)?;
     let fresh: Vec<_> = record
         .recipe
@@ -266,7 +352,7 @@ fn execute(directory: &Path, record: &mut Record) -> Result<()> {
         }
     }
     util::write_json(&directory.join("samples.json"), &record.samples)?;
-    record.stage = "diagnose".into();
+    clock.enter(record, "diagnose");
     evidence::save(directory, record)?;
     for worker in 0..crate::content::WORKERS {
         run_measurement(

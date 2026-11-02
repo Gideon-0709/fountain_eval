@@ -44,31 +44,51 @@ pub struct TestReference {
 /// Engine and operator references; scheme selection is recorded separately.
 /// Support crates are resolved later.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ComponentPair {
-    pub engine: ComponentReference,
-    pub operator: ComponentReference,
+pub struct ComponentSelection {
+    pub engine: Option<ComponentReference>,
+    pub operator: Option<ComponentReference>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Scope {
+    Pair,
+    Engine,
+    Operator,
+}
+impl ComponentSelection {
+    pub fn scope(&self) -> Result<Scope, ReferenceError> {
+        match (&self.engine, &self.operator) {
+            (Some(_), Some(_)) => Ok(Scope::Pair),
+            (Some(_), None) => Ok(Scope::Engine),
+            (None, Some(_)) => Ok(Scope::Operator),
+            (None, None) => Err(invalid("a C must select an engine, an operator, or both")),
+        }
+    }
 }
 
 /// The normalized configuration request. This is not a resolved (C, I, T, E) identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EvaluationRequest {
-    pub components: ComponentPair,
+    pub components: ComponentSelection,
     pub test: TestReference,
     pub scheme: SchemeSelection,
 }
 
 impl EvaluationRequest {
     pub fn parse(
-        engine: &str,
-        operator: &str,
+        engine: Option<&str>,
+        operator: Option<&str>,
         scheme: &str,
         test: &str,
     ) -> Result<Self, ReferenceError> {
+        let components = ComponentSelection {
+            engine: engine.map(str::parse).transpose()?,
+            operator: operator.map(str::parse).transpose()?,
+        };
+        components.scope()?;
         Ok(Self {
-            components: ComponentPair {
-                engine: engine.parse()?,
-                operator: operator.parse()?,
-            },
+            components,
             test: test.parse()?,
             scheme: SchemeSelection {
                 name: scheme.into(),

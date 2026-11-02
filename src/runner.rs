@@ -21,7 +21,11 @@ fn diagnostic(severity: Severity, code: &str, message: impl Into<String>) -> Dia
 /// Inspect selected local manifests without invoking Cargo or modifying sources.
 pub fn inspect(request: EvaluationRequest) -> Inspection {
     let mut diagnostics = Vec::new();
-    let engine = inspect_local("engine", &request.components.engine, &mut diagnostics);
+    let engine = request
+        .components
+        .engine
+        .as_ref()
+        .and_then(|r| inspect_local("engine", r, &mut diagnostics));
     if let Err(error) = crate::catalog::recipe(&request.test) {
         diagnostics.push(diagnostic(Severity::Error, "unknown_test_content", error));
     }
@@ -33,17 +37,24 @@ pub fn inspect(request: EvaluationRequest) -> Inspection {
         .source
         .as_ref()
         .and_then(|r| inspect_local("scheme", r, &mut diagnostics));
-    let operator = inspect_local("operator", &request.components.operator, &mut diagnostics);
+    let operator = request
+        .components
+        .operator
+        .as_ref()
+        .and_then(|r| inspect_local("operator", r, &mut diagnostics));
 
-    let selected = match (&request.components.engine.source, &engine) {
+    let selected = match (
+        request.components.engine.as_ref().map(|r| &r.source),
+        &engine,
+    ) {
         (_, Some(declaration)) => declaration
             .version
             .as_deref()
             .filter(|_| declaration.package == "fountain_engine"),
         (
-            SourceReference::Registry {
+            Some(SourceReference::Registry {
                 package, version, ..
-            },
+            }),
             _,
         ) if package == "fountain_engine" => Some(version.as_str()),
         _ => None,

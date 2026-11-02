@@ -48,9 +48,16 @@ impl Drop for Temp {
     }
 }
 pub fn record(family: &str, scheme: &str) -> Record {
-    let configuration = fountain_eval::config::Configuration::parse("/fixture/fountain-eval.toml".into(),format!("engine = \"registry:fountain_engine@2.1.0\"\noperator = \"registry:fountain_operators@2.0.0#slab\"\nscheme = {scheme:?}\ntest = \"0.1.0\"\n")).unwrap();
+    let configuration = fountain_eval::config::Configuration::parse("/fixture/fountain-eval.toml".into(),format!("engine0 = \"registry:fountain_engine@2.1.0\"\noperator0 = \"registry:fountain_operators@2.0.0#slab\"\nscheme = {scheme:?}\ntest = \"0.1.0\"\n")).unwrap();
+    let configuration = configuration.selection(&configuration.selections[0]);
     let request = configuration.request.clone();
-    let recipe = catalog::plan(&request.test, &request.scheme, family).unwrap();
+    let recipe = catalog::plan(
+        &request.test,
+        &request.scheme,
+        family,
+        fountain_eval::protocol::Scope::Pair,
+    )
+    .unwrap();
     let conditions = json!({"runtime":{"cpu":"synthetic-test-fixture","os":"test"},"build":{"profile":"release"},"scheme":{"name":scheme,"mode":"systematic"}});
     let samples: Vec<_> = recipe
         .cases
@@ -73,6 +80,7 @@ pub fn record(family: &str, scheme: &str) -> Record {
         .collect();
     Record {
         format_version: 1,
+        timing: Default::default(),
         run_id: "fixture".into(),
         status: "succeeded".into(),
         stage: "complete".into(),

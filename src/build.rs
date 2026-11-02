@@ -330,15 +330,71 @@ pub fn resolve_scheme(
     Ok(scheme)
 }
 
+/// Resolve only the trait-providing engine declared by an operator-only selection.
+/// This dependency is recorded as support, never promoted to a tested engine.
+pub fn operator_engine(resolver: &mut Resolver, operator: &Package) -> Result<Package> {
+    let manifest = util::read_toml(&operator.path())?;
+    let (alias, original) = manifest
+        .get("dependencies")
+        .and_then(toml::Value::as_table)
+        .and_then(|ds| {
+            ds.iter().find(|(name, d)| {
+                d.get("package")
+                    .and_then(toml::Value::as_str)
+                    .unwrap_or(name)
+                    == "fountain_engine"
+            })
+        })
+        .ok_or("unsupported: operator has no registered engine trait dependency")?;
+    let mut declaration = original.clone();
+    let mut base = operator.path().parent().unwrap().to_owned();
+    if declaration.get("workspace").and_then(toml::Value::as_bool) == Some(true) {
+        base = workspace_root(&operator.path()).ok_or("operator workspace missing")?;
+        let workspace = util::read_toml(&base.join("Cargo.toml"))?;
+        declaration = workspace
+            .get("workspace")
+            .and_then(|v| v.get("dependencies"))
+            .and_then(|v| v.get(alias))
+            .ok_or("inherited operator engine dependency missing")?
+            .clone();
+    }
+    if let Some(path) = declaration.get("path").and_then(toml::Value::as_str) {
+        return resolver.path_dependency(operator, &base, path);
+    }
+    if declaration.get("git").is_some() || declaration.get("registry").is_some() {
+        return Err("unsupported: operator-only non-default registry/Git trait dependency needs a registered mapping".into());
+    }
+    let requirement = declaration
+        .as_str()
+        .or_else(|| declaration.get("version").and_then(toml::Value::as_str))
+        .ok_or("unsupported: operator trait dependency has no path or version")?;
+    let requirement = semver::VersionReq::parse(requirement).map_err(|e| e.to_string())?;
+    if !requirement.matches(&semver::Version::new(2, 1, 0)) {
+        return Err(
+            "unsupported: no registered registry trait dependency matching this operator".into(),
+        );
+    }
+    resolver.registry("fountain_engine", "2.1.0")
+}
+pub struct BuildSelection<'a> {
+    pub engine: &'a Package,
+    pub operator: Option<&'a Package>,
+    pub scope: crate::protocol::Scope,
+}
+
 pub fn prepare(
     resolver: &mut Resolver,
-    engine: &Package,
-    operator: &Package,
+    selection: BuildSelection<'_>,
     scheme: &Package,
     implementation: &str,
     recipe: &Recipe,
     environment: &Value,
 ) -> Result<Built> {
+    let BuildSelection {
+        engine,
+        operator,
+        scope,
+    } = selection;
     let family = catalog::family(engine)?;
     let interface = catalog::interface(&family);
     let mut overrides = BTreeMap::new();
@@ -356,7 +412,8 @@ pub fn prepare(
     if let Some(p) = &utility {
         overrides.insert(p.name.clone(), p.clone());
     }
-    let mut initial = vec![engine.clone(), operator.clone(), scheme.clone()];
+    let mut initial = vec![engine.clone(), scheme.clone()];
+    initial.extend(operator.cloned());
     initial.extend(overrides.values().cloned());
     if family == "product-abi" {
         for name in ["product/fountain_raptor_q", "product/fountain_raptor_10"] {
@@ -367,7 +424,8 @@ pub fn prepare(
     let input_sources = resolver.identities();
     let key = util::digest(&(
         engine.identity(),
-        operator.identity(),
+        operator.map(Package::identity),
+        scope,
         scheme.identity(),
         implementation,
         &interface,
@@ -401,7 +459,7 @@ pub fn prepare(
         bindings: Vec::new(),
     };
     let engine_dir = composer.add(engine)?;
-    let operator_dir = composer.add(operator)?;
+    let operator_dir = operator.map(|p| composer.add(p)).transpose()?;
     let mut dependencies = toml::map::Map::new();
     let mut add = |name: &str, package: &str, path: &Path, features: Vec<&str>| {
         dependencies.insert(
@@ -412,16 +470,18 @@ pub fn prepare(
             .unwrap(),
         );
     };
-    add(
-        "tested_operator",
-        &operator.name,
-        &operator_dir,
-        if operator.name == "fountain_operators" {
-            vec!["simd"]
-        } else {
-            vec![]
-        },
-    );
+    if let (Some(operator), Some(operator_dir)) = (operator, &operator_dir) {
+        add(
+            "tested_operator",
+            &operator.name,
+            operator_dir,
+            if operator.name == "fountain_operators" {
+                vec!["simd"]
+            } else {
+                vec![]
+            },
+        );
+    }
     let mut product_library = None;
     let mut product_graph = None;
     if family == "product-abi" {
@@ -461,7 +521,12 @@ pub fn prepare(
             add(name, name, &path, vec![]);
         }
         // Callback-side engine identity belongs to the operator dependency graph.
-        let op_manifest = util::read_toml(&operator_dir.join("Cargo.toml"))?;
+        let op_manifest = util::read_toml(
+            &operator_dir
+                .as_ref()
+                .ok_or("product callbacks require an operator")?
+                .join("Cargo.toml"),
+        )?;
         let dependency = op_manifest["dependencies"]
             .as_table()
             .ok_or("operator dependencies missing")?
@@ -551,15 +616,19 @@ pub fn prepare(
             .is_some_and(|v| v.starts_with("3."));
     util::toml_set(&mut manifest,"features",toml::Value::try_from(json!({"default":if engine3{vec!["engine3"]}else{vec![]},"engine3":[],"diagnostics":if family=="native-3"{vec!["fountain_engine/profiling"]}else{vec![]}})).unwrap());
     util::write_toml(&directory.join("Cargo.toml"), &manifest)?;
-    let selected = match implementation {
-        "arena" => "pub type Selected = tested_operator::MemoryDataOperator;",
-        "slab" => "pub type Selected = tested_operator::SlabDataOperator;",
-        "simd" => "pub type Selected = tested_operator::SimdDataOperator;",
-        _ => return Err("unknown implementation".into()),
+    let selected = if operator.is_none() {
+        catalog::SCALAR_OPERATOR.to_owned()
+    } else {
+        let selected = match implementation {
+            "arena" => "pub type Selected = tested_operator::MemoryDataOperator;",
+            "slab" => "pub type Selected = tested_operator::SlabDataOperator;",
+            "simd" => "pub type Selected = tested_operator::SimdDataOperator;",
+            _ => return Err("unknown implementation".into()),
+        };
+        format!(
+            "{selected}\n#[cfg(feature=\"engine3\")] fn alias_selected(op:&mut Selected,src:usize,dst:usize)->bool {{fountain_engine::traits::DataOperator::alias_to(op,src,dst)}}\n#[cfg(not(feature=\"engine3\"))] fn alias_selected(_op:&mut Selected,_src:usize,_dst:usize)->bool {{false}}\n"
+        )
     };
-    let selected = format!(
-        "{selected}\n#[cfg(feature=\"engine3\")] fn alias_selected(op:&mut Selected,src:usize,dst:usize)->bool {{fountain_engine::traits::DataOperator::alias_to(op,src,dst)}}\n#[cfg(not(feature=\"engine3\"))] fn alias_selected(_op:&mut Selected,_src:usize,_dst:usize)->bool {{false}}\n"
-    );
     for (name, contents) in [
         ("main.rs", catalog::COMMON),
         ("operator.rs", catalog::OPERATOR),
@@ -771,8 +840,8 @@ pub fn prepare(
                 .as_array()
                 .ok_or("missing dependency packages")?
             {
-                if p["name"] == engine.name
-                    || p["name"] == operator.name
+                if (scope != crate::protocol::Scope::Operator && p["name"] == engine.name)
+                    || operator.is_some_and(|op| p["name"] == op.name)
                     || p["name"] == "fountain-eval-driver"
                 {
                     continue;
@@ -820,7 +889,7 @@ pub fn prepare(
         interface,
         family,
         implementation: implementation.into(),
-        components: json!({"engine":engine.identity(),"operator":operator.identity(),"scheme":scheme.identity(),"scheme_selection":environment["scheme"],"implementation":implementation,"dependencies":closure,"input_sources":input_sources}),
+        components: json!({"scope":scope,"engine":if scope == crate::protocol::Scope::Operator {None} else {Some(engine.identity())},"operator":operator.map(Package::identity),"support_engine":if scope == crate::protocol::Scope::Operator {Some(engine.identity())} else {None},"validation_operator":if operator.is_none(){Some("embedded scalar reference; validation outside plan timers")}else{None},"scheme":scheme.identity(),"scheme_selection":environment["scheme"],"implementation":implementation,"dependencies":closure,"input_sources":input_sources}),
         dependency_graph: json!({"driver":graph,"product":product_graph}),
         bindings: json!(composer.bindings),
         product_library,

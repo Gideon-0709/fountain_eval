@@ -45,7 +45,7 @@ impl Drop for Inputs {
 }
 
 fn request(engine: &str, operator: &str) -> EvaluationRequest {
-    EvaluationRequest::parse(engine, operator, "rq", "0.1.0").unwrap()
+    EvaluationRequest::parse(Some(engine), Some(operator), "rq", "0.1.0").unwrap()
 }
 
 fn has_code(report: &Inspection, code: &str) -> bool {

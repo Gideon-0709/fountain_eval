@@ -1,12 +1,12 @@
 # Contributing
 
-Develop and publish one `fountain-eval` package. Native Fountain dependencies belong to generated independent drivers, not the root package. Standard users provide one config with engine, operator, scheme and a complete test content version. Individual test selection and silent skips are prohibited.
+Develop and publish one `fountain-eval` package. Native Fountain dependencies belong to generated independent drivers, not the root package. Standard users provide one config with indexed engine/operator selections, scheme and a complete test content version. Individual test selection and silent skips are prohibited.
 
 ## Quality checks
 
 ```bash
 cargo fmt --all -- --check
-rustfmt --edition 2024 --config skip_children=true --check drivers/common.rs drivers/operator.rs drivers/native.rs drivers/product.rs drivers/reference.rs drivers/workloads.rs drivers/telemetry.rs
+rustfmt --edition 2024 --config skip_children=true --check drivers/common.rs drivers/operator.rs drivers/native.rs drivers/product.rs drivers/reference.rs drivers/workloads.rs drivers/telemetry.rs drivers/scalar_operator.rs
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 RUSTDOCFLAGS='-D warnings' cargo doc --locked --no-deps
@@ -15,7 +15,7 @@ cargo build --locked
 python3 scripts/native_acceptance.py --work .fountain-eval/acceptance-new --faults
 ```
 
-Without private credentials, CI verifies the pinned Slab/Simd fatal `mul_add(..., 0, ...)` result without treating its unexecuted cases as passes. It writes an explicit reachability gap report and does not claim a successful public whole-suite run. Authorized local Arena and product checkouts provide positive coverage. The public native rejection suite currently requires ARM64 because the pinned upstream AVX2 source has unresolved `portable` references on x86_64. Linux x86_64 CI uses `--expect-upstream-x86-failure` to verify that rejection; it does not claim positive native coverage.
+Without private credentials, CI runs public engine-only planning positively and verifies the pinned Slab/Simd fatal `mul_add(..., 0, ...)` result without treating its unexecuted cases as passes. It writes an explicit reachability gap report and does not claim a successful public whole-suite run. Authorized local Arena and product checkouts provide positive coverage. The public native rejection suite currently requires ARM64 because the pinned upstream AVX2 source has unresolved `portable` references on x86_64. Linux x86_64 CI uses `--expect-upstream-x86-failure` to verify that rejection; it does not claim positive operator or full-codec coverage.
 
 Use a fresh acceptance work directory. Keep first failures and interruptions while debugging; a corrected candidate is a new attempt, not an automatic retry of the old result. The process interruption helper is an ignored test entry point invoked by its parent test in a separate process, so SIGINT cannot contaminate the normal test harness.
 

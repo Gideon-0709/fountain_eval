@@ -2,7 +2,7 @@
 
 `fountain-eval` freezes Fountain components, generates isolated native builds, executes every applicable check, records measurements and compares results. It is one Cargo package with a library and CLI. Component source remains in its own repository.
 
-The project is an unreleased internal **0.1.0** candidate. Its formal content covers correctness, individual operations, execution chains and integrated workflows. Encoding-plan construction/export and recorded execution belong to chain testing; plan reuse across blocks belongs to integrated testing. See the [test guide](docs/TEST_PLAN_0.1.0.md) for contracts and interpretation and the [construction record](docs/VALIDATION_FORMAL.md) for actual coverage and outstanding limitations. No release or performance ranking is implied.
+The project is an unreleased internal **0.1.0** candidate. Its formal content covers correctness, individual operations, execution chains and integrated workflows. Encoding-plan construction/export and recorded execution belong to chain testing; plan reuse across blocks belongs to integrated testing. See the [test guide](docs/TEST_PLAN_0.1.0.md) for contracts and interpretation and the automatically generated reports for executed coverage and limitations. No release or performance ranking is implied.
 
 ## Install and run
 
@@ -15,16 +15,16 @@ fountain-eval inspect
 fountain-eval run > run.json
 ```
 
-An installed CLI works without the eval checkout. Create a `fountain-eval.toml` containing four entries:
+An installed CLI works without the eval checkout. Create a `fountain-eval.toml` containing indexed component references plus a shared scheme and test version:
 
 ```toml
-engine = "registry:fountain_engine@2.1.0"
-operator = "registry:fountain_operators@2.0.0#slab"
+engine0 = "registry:fountain_engine@2.1.0"
+operator0 = "registry:fountain_operators@2.0.0#slab"
 scheme = "rq"
 test = "0.1.0"
 ```
 
-`test` selects the **entire content version**. Users cannot select individual cases or disable checks. Every registered case is considered. Inapplicable cases remain in the report with a machine-readable reason and explanation. Fatal failures stop execution; later cases remain `not_executed`, not `skipped`.
+`test` selects the **entire content version**. Users cannot select individual cases or disable checks. Every registered case is considered. Inapplicable cases remain in the report with a machine-readable reason and explanation. A fatal failure stops that C; later cases in that C remain `not_executed`. Independent Cs continue. An interrupt stops the batch and leaves subsequent Cs unexecuted.
 
 Commands default to `fountain-eval.toml` in the current directory. An explicit location works from any directory:
 
@@ -35,6 +35,29 @@ fountain-eval run --config /path/to/experiment.toml > run.json
 ```
 
 All relative paths are relative to the config file. There are no parent-directory searches, includes, environment interpolation, hidden global configuration or CLI overrides for component/test settings. Unknown fields, misspellings, duplicate keys and malformed references are errors. `--engine`, `--operator` and per-test `--test` flags have been removed.
+
+## Multiple component selections in one config
+
+Each index defines a C. For example:
+
+```toml
+# C0: a complete engine/operator combination.
+engine0 = "registry:fountain_engine@2.1.0"
+operator0 = "registry:fountain_operators@2.0.0#slab"
+# C1: engine alone.
+engine1 = "registry:fountain_engine@2.1.0"
+# C2: operator alone (requires your local checkout).
+operator2 = "path:../fountain-arena-operator"
+# C3: another complete combination.
+engine3 = "path:../erasure_coding_lib/fountain_engine"
+operator3 = "path:../erasure_coding_lib/fountain_operators#simd"
+scheme = "rq"
+test = "0.1.0"
+```
+
+Indices are nonnegative integers, may be sparse, and execute in numeric order. There is no implicit pairing across indices and no cross-product. Every C receives the complete T; unsupported cases stay visible with a reason. Engine-only runs test standalone plan generation/export. Operator-only runs test the pure-operator surface. The missing production component is never added to enable codec tests. Supporting trait dependencies and the engine-only scalar validation helper are recorded separately from selected components. A product engine alone currently has no exposed standalone planning API and is reported unsupported with explicit skipped cases.
+
+One C is also written with indexed keys (`engine0` and/or `operator0`). Unindexed `engine`/`operator` fields are rejected. All Cs share scheme, test version and storage settings. To test another scheme, use another config.
 
 ## Component references
 
@@ -53,8 +76,8 @@ Local inputs capture tracked and nonignored untracked modifications, deletions, 
 A local development configuration can be:
 
 ```toml
-engine = "path:../erasure_coding_lib/fountain_engine"
-operator = "path:../erasure_coding_lib/fountain_operators#simd"
+engine0 = "path:../erasure_coding_lib/fountain_engine"
+operator0 = "path:../erasure_coding_lib/fountain_operators#simd"
 scheme = "r10"
 test = "0.1.0"
 ```
@@ -68,8 +91,8 @@ The current integrations support `rq` and `r10` in `systematic` mode. `scheme = 
 Default sources are deterministic: public engine 2.1 uses registered `fountain_scheme` and `fountain_utility` 2.1.0; development engine 3 uses its monorepo packages. An explicit scheme source replaces only the selected scheme package:
 
 ```toml
-engine = "registry:fountain_engine@2.1.0"
-operator = "registry:fountain_operators@2.0.0#slab"
+engine0 = "registry:fountain_engine@2.1.0"
+operator0 = "registry:fountain_operators@2.0.0#slab"
 test = "0.1.0"
 
 [scheme]
@@ -87,8 +110,8 @@ Scheme implementation identity belongs to C. The requested algorithm/mode is als
 To build the actual product shared library from an authorized monorepo checkout:
 
 ```toml
-engine = "path:../erasure_coding_lib/fountain_bin_ffi"
-operator = "path:../erasure_coding_lib/fountain_operators#slab"
+engine0 = "path:../erasure_coding_lib/fountain_bin_ffi"
+operator0 = "path:../erasure_coding_lib/fountain_operators#slab"
 scheme = "rq"
 test = "0.1.0"
 ```
@@ -146,11 +169,11 @@ RUN=$(python3 -c 'import json; print(json.load(open("run.json"))["run_dir"])')
 fountain-eval report "$RUN"
 # Open the already generated report.html, or render a human-readable view:
 fountain-eval report "$RUN" --format markdown
-fountain-eval compare /path/to/baseline-run /path/to/candidate-run --format html > comparison.html
-fountain-eval compare /path/to/baseline-run /path/to/candidate-run > comparison.json
+fountain-eval compare /path/to/batch/C0/run-id /path/to/batch/C1/run-id --format html > comparison.html
+fountain-eval compare /path/to/batch/C0/run-id /path/to/batch/C1/run-id > comparison.json
 ```
 
-`report` defaults to the complete JSON record; `--format markdown` and `--format html` render the same sealed evidence. Each run also saves `report.html`, `report.md`, `samples.csv` and `diagnostics.json`. Read these fields first:
+`report` defaults to the complete JSON record; `--format markdown` and `--format html` render the same sealed evidence. The batch root saves `batch.json`, `report.html`, `report.md` and `runs.csv`. Its overview links each C to `C<index>/<run-id>/report.html`. Each child saves `result.json`, `report.md`, `samples.csv`, `diagnostics.json` and its own seal. Batch elapsed seconds include preparation and report generation; failed rows show time to failure, not full-suite completion. Host phase times distinguish construction from validation/measurement and are separate from benchmark nanoseconds. Read these fields in each child first:
 
 - `status`, `stage`, `error`: execution outcome and failure boundary.
 - `correctness`: fatal failures, warning observations and executed check counts.
@@ -164,18 +187,27 @@ A successful run can have `coverage.status: completed_with_skips`. Review the ex
 ```bash
 python3 - <<'PYREPORT'
 import json
-r = json.load(open("run.json"))["result"]
-print(r["status"], r["correctness"]["status"], r["coverage"]["status"])
-for case in r["coverage"]["cases"]:
-    for phase in ("validation", "measurement"):
-        if case[phase]["status"] == "skipped":
-            print(case["case"], phase, case[phase]["reason"])
-for warning in r["correctness"]["warnings"]:
-    print("warning", warning["case"], warning["expected"], warning["actual"])
+from pathlib import Path
+batch_dir = Path(json.load(open("run.json"))["run_dir"])
+batch = json.load(open(batch_dir / "batch.json"))
+for entry in batch["entries"]:
+    seconds = None if entry["elapsed_ns"] is None else entry["elapsed_ns"] / 1e9
+    print("C", entry["component_id"], entry["status"], "elapsed s:", seconds)
+    if entry["directory"] is None:
+        print(entry["error"])
+        continue
+    child = batch_dir / entry["directory"]
+    r = json.load(open(child / "result.json"))
+    print("details:", child / "report.html")
+    for warning in r["correctness"]["warnings"]:
+        print("warning", warning["case"], warning["expected"], warning["actual"])
+    for case in r["coverage"]["cases"]:
+        if case["validation"]["status"] == "skipped":
+            print("skipped", case["case"], case["validation"]["reason"])
 PYREPORT
 ```
 
-Comparison verifies every applicable observation against the registered plan before comparing common measured cases. It requires matching T/content and common E conditions, valid I integrations and matching common fatal witnesses. It returns both coverage tables and explicitly labels its scope; product/native comparisons contain codec timing rows, not fabricated operator rows. Warning differences remain visible. A change to C and I together is attributed to both.
+`compare` takes per-C directories, not batch roots. Comparison verifies every applicable observation against the registered plan before comparing common measured cases. It requires matching T/content and common E conditions, valid I integrations and matching common fatal witnesses. It returns both coverage tables and explicitly labels its scope; product/native comparisons contain codec timing rows, not fabricated operator rows. Warning differences remain visible. A change to C and I together is attributed to both.
 
 ## Evidence, failures and retention
 
@@ -185,12 +217,12 @@ Each result includes `config.toml`, `config-resolved.json`, `request.json`, `tes
 |---|---|
 | 0 | Inspection, preparation or execution completed; review warnings and skips |
 | 2 | Invalid configuration/CLI, unreadable evidence or rejected comparison |
-| 3 | Unsupported content, scheme or interface |
-| 4 | Resolution, dependency, build, fatal correctness, timeout, cache or protocol failure |
+| 3 | At least one unsupported C, with no failed/interrupted C |
+| 4 | At least one failed or unexecuted C; inspect every batch entry |
 | 130 | Interrupted run |
 
 Start failures with `error`, `stages.json` and the referenced log. Incomplete/corrupt build entries fail without rebuilding or retrying silently. Use a new cache directory or explicitly remove a failed entry after inspection. The CLI never uploads, archives, overwrites or deletes normal results. Default results/caches are ignored by Git; custom storage outside those directories is the user's responsibility.
 
 ## Maintainer references
 
-See the [0.1.0 formal test plan and report guide](docs/TEST_PLAN_0.1.0.md), [DESIGN](docs/DESIGN.md), [CONTRIBUTING](CONTRIBUTING.md), [artifact contracts](specs/README.md), [implementation map](docs/modules.md) and [formal construction record](docs/VALIDATION_FORMAL.md). Earlier [initial acceptance](docs/VALIDATION.md), [warning-policy acceptance](docs/VALIDATION_WARNINGS.md) and [configuration acceptance](docs/VALIDATION_CONFIG.md) describe historical construction candidates.
+See the [0.1.0 test guide](docs/TEST_PLAN_0.1.0.md), [DESIGN and implementation map](docs/DESIGN.md), [CONTRIBUTING](CONTRIBUTING.md) and [artifact contracts](specs/README.md). Reports are produced by the CLI; historical construction summaries are not the source of component results.

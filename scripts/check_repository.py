@@ -28,7 +28,7 @@ def main():
     assert not native.intersection(package["name"] for package in packages), "Native dependencies belong to isolated drivers"
 
     files = command("git", "ls-files", "--cached", "--others", "--exclude-standard", "-z").split("\0")
-    documents = {ROOT / file for file in files if file.endswith(".md")}
+    documents = {ROOT / file for file in files if file.endswith(".md") and (ROOT / file).is_file()}
     for path in sorted(documents):
         text = path.read_text(encoding="utf-8")
         assert not re.search(r"[\u3400-\u9fff]", text), f"Translate documentation into English: {path}"

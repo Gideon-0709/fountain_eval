@@ -2,7 +2,7 @@
 
 ## From a component change to a comparable result
 
-A developer describes an engine/operator/scheme combination and a complete test content version in one TOML file. Arena is an operator implementation. Scheme selection is explicit; its implementation source defaults to a registered dependency or the selected monorepo and can be overridden for native APIs. Utility and product-facade dependencies remain supporting provenance.
+A developer describes one or more component selections (C), a shared scheme and a complete test content version in one TOML file. Each C contains an engine/operator pair, an engine alone, or an operator alone. Arena is an operator implementation. Scheme selection is explicit; its implementation source defaults to a registered dependency or the selected monorepo and can be overridden for native APIs. Utility and product-facade dependencies remain supporting provenance.
 
 The execution sequence is:
 
@@ -22,7 +22,7 @@ A completed input identity is `(C,I,T,E)`:
 
 | Dimension | Owns | May change independently |
 |---|---|---|
-| C: selected component combination | Engine/operator/scheme identities, implementation choice, source digests, resolved dependency provenance | Algorithms, layouts, kernels, allocation and internal implementation |
+| C: selected components | Selected engine and/or operator identities, scheme, implementation choice, source digests, resolved dependency provenance | Algorithms, layouts, kernels, allocation and internal implementation |
 | I: interface integration | Native API conversions, feature/source binding, supported capabilities, driver family | Package/API/trait/product ABI integration |
 | T: test content | Input generation, operations, correctness oracle and severity, timing boundary, sampling and metric semantics | Test scenarios, coverage, workload and methodology |
 | E: effective experiment configuration | Selected scheme algorithm/mode, T-derived parameters, common compiler/build settings and observed runtime conditions | Host, OS, toolchain, CPU/power/affinity and common build environment |
@@ -39,7 +39,7 @@ The framework is one Cargo package. `src/main.rs` is the CLI; library modules ow
 
 ```mermaid
 flowchart TD
-  User[One config: engine + operator + scheme + test version] --> Eval[fountain-eval package]
+  User[One config: indexed component selections, scheme and test] --> Eval[fountain-eval package]
   Eval --> Frozen[Immutable source snapshots]
   Eval --> Registry[I and T catalog]
   Frozen --> View[Generated build view]
@@ -65,7 +65,27 @@ The content version selects the full catalog, not an individual suite or categor
 
 Formal test content has four categories: correctness checks, individual operations, execution chains and integrated workflows. Encoding-plan generation is an engine stage within chain testing, not an atomic operation or fifth category. Plan reuse inside complete encoding is integrated testing. The registered formal content implements these four categories; driver and framework acceptance remain separate from component pass/fail results.
 
-The [0.1.0 test plan and report guide](TEST_PLAN_0.1.0.md) defines the concrete formal cases, their relationships, measurement boundaries and report interpretation. The construction record states which combinations have actually executed and which are blocked by component failures.
+The [0.1.0 test plan and report guide](TEST_PLAN_0.1.0.md) defines the concrete formal cases, their relationships, measurement boundaries and report interpretation. Automatically generated reports record which combinations actually executed and which were blocked by component failures.
+
+## Multiple C selections and single components
+
+The keys `engine0`/`operator0`, `engine1`/`operator1`, and so on group references by a nonnegative integer. Indices may be sparse and execute in numeric order. At least one reference is required per selection. Leading zeros, duplicate keys, unindexed legacy keys and unknown settings are rejected. Scheme and T apply to every C. There is no implicit cross-product or carry-over from another index.
+
+Each C independently traverses resolution, immutable preparation, validation, measurement and reporting. A failure or unsupported selection does not prevent independent later Cs from executing. An interrupt terminates active subprocesses and leaves later Cs `not_executed`. A failed C is never retried automatically. `prepare` applies the same ordering and isolation; `run --prepared` uses only successfully prepared entries and retains the previous statuses/errors for entries it cannot execute.
+
+Engine-only selections execute standalone planning/export capabilities. Their plans are checked after timing with an embedded scalar validation adapter. This is an I-owned validation helper, not a selected production operator; its source is included in I's digest. Codec, replay and operator cases requiring a selected operator remain explicit `component_not_selected` skips. Product APIs that expose no standalone planning capability yield an unsupported result with a complete skip plan.
+
+Operator-only selections execute the pure-operator surface. Their actual engine trait dependency is captured as supporting provenance, not as a tested engine. A captured path dependency or the registered public trait version is used without relaxing constraints; an unmapped trait source is rejected. Codec/plan cases requiring a selected engine remain explicit skips. No production partner is silently selected to expand either single-component scope.
+
+The full original configuration is retained in both the batch and derived per-C inputs. Each C retains its own C/I/T/E, status, coverage and evidence seal. Sharing a batch does not establish comparability: `compare` takes two per-C results and applies the ordinary compatibility checks.
+
+## Automatic reports and completion time
+
+A batch creates a unique directory containing `batch.json`, `report.html`, `report.md`, `runs.csv`, the original/resolved configuration and a seal. Under `C<index>/<run-id>/`, every executed C has its detailed report, raw evidence and its own seal. The batch overview links to those reports and lists the input references, result, warnings, coverage counts and completion time. Reports are generated by the framework from recorded evidence, including failed and unsupported outcomes.
+
+Per-C elapsed wall time covers its full invocation, including resolution, construction, validation, measurement, diagnostics and report/seal generation. A failed row reports time to failure, not time to complete T. Host phase times distinguish resolve/build/probe/validate/measure/diagnose and setup; they include orchestration and evidence work within each phase. They are not operation/codec sample timings. The batch total includes sequential execution and checkpoints, excluding its final report/seal write. Run IDs, wall-clock timestamps and these operational durations are provenance, outside experiment equality.
+
+`report` detects batch or per-C evidence and verifies its seal. Batch verification also checks child identities, statuses, counts and timings. A prepared replay preserves its origin seal and previous per-C outcomes. Reports remain readable after cache removal; replay requires the original verified build artifacts.
 
 ## Source freezing and build composition
 
@@ -89,17 +109,13 @@ Correctness and measurement are separate process invocations. Correctness can wr
 
 The three integration families share the same T-owned input generation, scalar oracle, workload ordering, clock boundaries and metrics. Their native binding implementations are I-owned. This permits equal T identities across different API families without hiding the effect of a different interface path.
 
-## Correctness severity and formal content
+## Correctness and measurement ownership
 
-T owns the complete case matrix, scalar reference and fatal/warning policy. The 0.1.0 candidate has four categories and 2,182 concrete cases. The [test guide](TEST_PLAN_0.1.0.md) defines each family and its relation to the others. `src/content.rs` declares the cases; `drivers/workloads.rs` executes them; bindings remain in I templates.
+T owns deterministic inputs, the scalar reference, fatal/warning severity, workloads, timers and sampling. I owns calls and observable boundaries. The [test guide](TEST_PLAN_0.1.0.md) defines concrete cases and methodology; `src/content.rs` and `drivers/workloads.rs` implement that content.
 
-Ordinary arithmetic, payload, ownership and evidence failures are fatal. Ambiguous alias/overlap/self-operation boundaries are observations: mismatches and caught boundary rejections remain warnings alongside their call timings. A panic outside those registered boundaries is fatal. There is no component-name-specific correctness exemption.
+Defined-domain errors are fatal. Registered ambiguous boundaries produce warnings alongside their actual performance. Diagnostic instrumentation is separate from ordinary performance measurement. Exclusive intervals can add up only within the same observed flow; inclusive counters and independent microbenchmarks cannot be summed into another sample's total.
 
-Three ordinary workers each execute one warmup and five recorded samples per applicable case. First-use cases instead use fifteen fresh processes. Inputs and output validation stay outside the measured scope. Ordinary builds have no allocator/profiling wrapper. Separate diagnostic binaries observe stage partitions and resources; their overhead remains visible and their timings never replace ordinary samples.
-
-The same-flow exclusive stages plus an explicit residual equal that diagnostic lifecycle observation. Inclusive upstream solver counters are a separate tree, not extra summands. Hidden product stages remain combined. Standalone plan construction and recorded replay are independent measurements and cannot be added to reconstruct a separate full-encode sample.
-
-Every successful run requires its full applicable validation, ordinary sample and diagnostic coverage. Bounded recovery may report an incomplete outcome with consumed work and no successful throughput. Construction failures and component failures preserve their prefixes and leave later work unexecuted. Actual coverage is documented in [formal construction validation](VALIDATION_FORMAL.md).
+Every successful C requires its complete applicable validation, sample and diagnostic coverage. Failed or interrupted Cs retain their prefixes and unexecuted cases. A valid bounded recovery observation can be incomplete without claiming successful throughput.
 
 ## Comparability and attribution
 
@@ -116,3 +132,40 @@ Each invocation creates a unique output directory. Checkpoints record stage stat
 The CLI does not upload, archive, retry into success, overwrite existing results or delete normal user results. Git ignores `runs/` and `.fountain-eval/`. Implementation acceptance artifacts are temporary: maintainers write an acceptance summary, then clean their explicitly identified test work directories. Private source access does not authorize upstream writes.
 
 Linux/macOS CI checks the framework and publicly accessible native combinations. Private Arena and monorepo combinations are checked on an authorized local host. Platform coverage is explicit; missing CI credentials do not count as private-component coverage. The formal content and applicability rules are specified in the test guide; an unexecuted private or fatal-blocked combination is not positive coverage.
+
+## Implementation map
+
+| Location | Responsibility |
+|---|---|
+| `src/protocol.rs` | Normalized component/scheme request, reference grammar and offline inspection records |
+| `src/config.rs` | Strict TOML input, config-relative paths, defaults and original/resolved input evidence |
+| `src/coverage.rs` | Complete per-case validation/measurement/diagnostic coverage and skip reasons |
+| `src/runner.rs` | Offline declaration inspection |
+| `src/source.rs` | Immutable local/Git/registry snapshots and path dependency closure |
+| `src/content.rs` | Pure T-owned expanded case definitions and deterministic matrix |
+| `src/report.rs` | Offline HTML/Markdown/CSV and comparison views of evidence |
+| `src/catalog.rs` | I/T registrations, supported families and embedded assets |
+| `src/build.rs` | Workspace expansion, generated manifests, native builds and cache integrity |
+| `src/process.rs` | Controlled build environment, subprocess logs, timeouts and process-group cleanup |
+| `src/batch.rs` | Ordered multi-C execution, checkpoints and child-evidence verification |
+| `src/execution.rs` | Stage orchestration, prepared replay, capability and protocol checks |
+| `src/validation.rs` | Registered fatal/warning severity, evidence checks and correctness reports |
+| `src/measurement.rs` | Raw sample schema, units and deterministic summaries; part of T identity |
+| `src/evidence.rs` | Common conditions, result records, seals and comparability |
+| `src/util.rs` | Canonical hashing, file formats and common errors |
+| `src/main.rs` | CLI parsing, report formats and exit codes |
+| `drivers/common.rs` | Embedded process protocol, worker dispatch and event emission |
+| `drivers/workloads.rs` | T-owned correctness, operation, chain and workflow execution |
+| `drivers/reference.rs` | Independent scalar GF/state model and small Gauss-Jordan oracle |
+| `drivers/telemetry.rs` | Diagnostic-only allocation accounting with explicit observation scope |
+| `drivers/operator.rs` | I-owned operator binding and untimed participation wrapper |
+| `drivers/scalar_operator.rs` | I-owned scalar adapter for untimed engine-only plan validation |
+| `drivers/native.rs` | Source engine 2/3 constructors, symbol conversion and materialization |
+| `drivers/product.rs` | Real product facades and SymbolOps callbacks |
+| `scripts/native_acceptance.py` | Maintainer native, failure and reproducibility checks |
+| `tests/` | Framework contracts, source capture, evidence, units, processes and CLI tests |
+
+Driver templates are embedded by `include_str!`. A generated driver is an isolated executable build artifact, not another published framework package. Native component code is never checked into this repository.
+
+
+Deterministic fixtures and scalar references are embedded T content. Framework tests create temporary synthetic sources; the acceptance script creates negative fixtures in its own work directory. These test fixtures are not production components or user performance results. Build views and snapshots live in the ignored cache.

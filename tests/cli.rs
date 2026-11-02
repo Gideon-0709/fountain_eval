@@ -9,7 +9,7 @@ fn cli(dir: &std::path::Path, args: &[&str]) -> Output {
         .unwrap()
 }
 fn config(engine: &str, operator: &str) -> String {
-    format!("engine={engine:?}\noperator={operator:?}\nscheme=\"rq\"\ntest=\"0.1.0\"\n")
+    format!("engine0={engine:?}\noperator0={operator:?}\nscheme=\"rq\"\ntest=\"0.1.0\"\n")
 }
 #[test]
 fn help_and_full_catalog_are_available() {
@@ -45,8 +45,14 @@ fn default_config_and_explicit_config_are_offline_and_equivalent() {
     );
     assert_eq!(a.stdout, b.stdout);
     let report: serde_json::Value = serde_json::from_slice(&a.stdout).unwrap();
-    assert_eq!(report["inspection"]["status"], "inspection_only");
-    assert_eq!(report["inspection"]["execution_available"], false);
+    assert_eq!(
+        report["inspections"][0]["inspection"]["status"],
+        "inspection_only"
+    );
+    assert_eq!(
+        report["inspections"][0]["inspection"]["execution_available"],
+        false
+    );
     assert!(!t.0.join("runs").exists());
     assert!(!t.0.join(".fountain-eval").exists());
 }
@@ -76,7 +82,7 @@ fn missing_config_invalid_sources_and_legacy_selectors_are_rejected() {
     assert_eq!(result.status.code(), Some(2));
     let report: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
     assert!(
-        report["inspection"]["diagnostics"]
+        report["inspections"][0]["inspection"]["diagnostics"]
             .as_array()
             .unwrap()
             .iter()
