@@ -65,6 +65,8 @@ The content version selects the full catalog, not an individual suite or categor
 
 Formal test content has four categories: correctness checks, individual operations, execution chains and integrated workflows. Encoding-plan generation is an engine stage within chain testing, not an atomic operation or fifth category. Plan reuse inside complete encoding is integrated testing. These classifications guide later formal test design; the current cases remain framework acceptance fixtures.
 
+The [0.1.0 test plan and report guide](docs/TEST_PLAN_0.1.0.md) is the review draft for concrete formal cases, their relationships, measurement boundaries and report interpretation. It does not change the currently implemented acceptance content or claim formal-test completion.
+
 ## Source freezing and build composition
 
 Local Git inputs include tracked and nonignored untracked files, including current modifications and deletions. Non-Git inputs retain their package/workspace layout. Git references fetch exactly the selected full commit, initialize submodules and reject a modified cached checkout. Registry references use an exact version and verify the crate archive against its Cargo lock checksum before extracting it into an owned snapshot.

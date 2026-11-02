@@ -6,6 +6,6 @@ Users select the entire `0.1.0` content version in config. Its 26 registered cas
 
 Validation and measurement coverage are separate. Failure/interruption leaves unfinished work `not_executed` or incomplete. A skipped check is not passed. Missing applicable observations fail evidence validation. Acceptance runs both schemes and requires the union of executed cases to cover the entire catalog, preventing unreachable fixtures from remaining unnoticed.
 
-Formal test categories are correctness, individual operations, execution chains and integrated workflows. Encoding-plan generation belongs to chain tests; plan reuse in complete encoding belongs to integrated tests. Formal scenarios, matrices and statistical methodology remain a later task.
+Formal test categories are correctness, individual operations, execution chains and integrated workflows. Encoding-plan generation belongs to chain tests; plan reuse in complete encoding belongs to integrated tests. The [0.1.0 test plan and report guide](../docs/TEST_PLAN_0.1.0.md) describes the proposed cases, matrix and methodology for review; their implementation remains pending.
 
 This is an unreleased internal 0.1.0 candidate. Content digests identify each candidate; the owner controls the first release. See the [usage guide](../README.md).
