@@ -1,8 +1,8 @@
 # Fatal and warning acceptance — 2026-11-02
 
-Historical construction summary. Current configuration and complete-catalog behavior are documented in [configuration acceptance](VALIDATION_CONFIG.md) and the [usage guide](../README.md).
+Historical construction summary. Current behavior and coverage are documented in the [formal test guide](TEST_PLAN_0.1.0.md), [formal construction record](VALIDATION_FORMAL.md) and [usage guide](../README.md). Positive coverage below applies to the earlier smoke content.
 
-The concrete checks in this summary are framework acceptance fixtures, not the team's formal test content. The fixtures exercise the general severity/reporting mechanism and remain available for development regression. Formal test design is a later task.
+The concrete checks in this summary were framework acceptance fixtures. They exercised the general severity/reporting mechanism before formal content was implemented. Current regression checks and the formal catalog supersede those earlier workload selections.
 
 This update implements the project owner's decision to classify ambiguous operator boundary deviations as warnings. Fatal checks still reject incorrect required behavior. Warning outcomes and timings are reported together, including comparisons between implementations with different warning outcomes.
 

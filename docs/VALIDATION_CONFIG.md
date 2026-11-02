@@ -1,6 +1,8 @@
 # Configuration and complete-catalog acceptance — 2026-11-02
 
-This internal 0.1.0 candidate introduces one strict TOML configuration, explicit scheme selection/source binding, complete test-content selection and per-case applicability coverage. It creates no tag or release. Concrete workloads remain framework acceptance fixtures; formal test-content implementation is deferred. Encoding-plan generation is classified as chain testing, and plan reuse in a complete encoding workload as integrated testing.
+Historical construction summary of the configuration milestone. The current formal content and its actual coverage are documented in the [test guide](TEST_PLAN_0.1.0.md) and [formal construction record](VALIDATION_FORMAL.md). The counts and positive coverage below describe the earlier smoke content, not the current formal catalog.
+
+That internal 0.1.0 candidate introduced one strict TOML configuration, explicit scheme selection/source binding, complete test-content selection and per-case applicability coverage. It created no tag or release. Its concrete workloads were framework acceptance fixtures; formal test-content implementation was deferred at that milestone. Encoding-plan generation was classified as chain testing, and plan reuse in a complete encoding workload as integrated testing.
 
 ## Scope
 

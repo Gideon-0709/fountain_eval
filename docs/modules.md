@@ -6,7 +6,7 @@ The repository contains one package and these responsibility boundaries:
 |---|---|
 | `src/protocol.rs` | Normalized component/scheme request, reference grammar and offline inspection records |
 | `src/config.rs` | Strict TOML input, config-relative paths, defaults and original/resolved input evidence |
-| `src/coverage.rs` | Complete per-case validation/measurement coverage and skip reasons |
+| `src/coverage.rs` | Complete per-case validation/measurement/diagnostic coverage and skip reasons |
 | `src/runner.rs` | Offline declaration inspection |
 | `src/source.rs` | Immutable local/Git/registry snapshots and path dependency closure |
 | `src/content.rs` | Pure T-owned expanded case definitions and deterministic matrix |
@@ -34,7 +34,7 @@ Driver templates are embedded by `include_str!`. A generated driver is an isolat
 
 ## Test content, build composition and fixtures
 
-The test catalog expands the entire selected content version against the scheme and verified capabilities. Validation and measurement coverage remain separate; skipped cases carry reasons, and interrupted or failed execution leaves unfinished cases unexecuted. The [formal test plan](TEST_PLAN_0.1.0.md) defines correctness, individual-operation, chain and integrated-workflow responsibilities. Maintainer acceptance checks catalog reachability so registered content cannot silently become unused.
+The test catalog expands the entire selected content version against the scheme and verified capabilities. Validation, ordinary measurement and diagnostic coverage remain separate; skipped cases carry reasons, and interrupted or failed execution leaves unfinished cases unexecuted. The [formal test plan](TEST_PLAN_0.1.0.md) defines correctness, individual-operation, chain and integrated-workflow responsibilities. Maintainer acceptance checks catalog reachability so registered content cannot silently become unused.
 
 Build composition is maintained in `src/build.rs`. Users do not supply target manifests. Public integrations use registered support dependencies; development and product integrations use their selected source layouts. The generated view retains original/effective manifests, actual features and dependency graphs without relaxing upstream constraints. Product and callback dependencies remain separate provenance. Snapshots and generated builds belong in the ignored cache.
 

@@ -1,6 +1,6 @@
 # Implementation acceptance — 2026-11-01–02
 
-Historical construction summary. Current configuration and complete-catalog behavior are documented in [configuration acceptance](VALIDATION_CONFIG.md) and the [usage guide](../README.md).
+Historical construction summary. Current behavior and coverage are documented in the [formal test guide](TEST_PLAN_0.1.0.md), [formal construction record](VALIDATION_FORMAL.md) and [usage guide](../README.md). Positive coverage below applies to the earlier smoke content.
 
 This summary records an earlier construction candidate, not a published release. The current fatal/warning policy is documented in [warning-policy acceptance](VALIDATION_WARNINGS.md). The first team release is planned as 0.1.0 after the project owner accepts this development round. It is not a formal performance report, and none of the short timings establish an optimization advantage. The [catalog lock](../specs/catalog-lock.json) describes the current candidate; the coverage below describes the earlier construction run.
 

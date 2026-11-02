@@ -193,4 +193,4 @@ Start failures with `error`, `stages.json` and the referenced log. Incomplete/co
 
 ## Maintainer references
 
-See the [0.1.0 formal test plan and report guide](docs/TEST_PLAN_0.1.0.md), [DESIGN](docs/DESIGN.md), [CONTRIBUTING](CONTRIBUTING.md), [artifact contracts](specs/README.md), [implementation map](docs/modules.md) and [configuration acceptance](docs/VALIDATION_CONFIG.md). Earlier [initial acceptance](docs/VALIDATION.md) and [warning-policy acceptance](docs/VALIDATION_WARNINGS.md) describe historical construction candidates.
+See the [0.1.0 formal test plan and report guide](docs/TEST_PLAN_0.1.0.md), [DESIGN](docs/DESIGN.md), [CONTRIBUTING](CONTRIBUTING.md), [artifact contracts](specs/README.md), [implementation map](docs/modules.md) and [formal construction record](docs/VALIDATION_FORMAL.md). Earlier [initial acceptance](docs/VALIDATION.md), [warning-policy acceptance](docs/VALIDATION_WARNINGS.md) and [configuration acceptance](docs/VALIDATION_CONFIG.md) describe historical construction candidates.

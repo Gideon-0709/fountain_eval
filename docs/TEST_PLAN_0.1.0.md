@@ -2,7 +2,7 @@
 
 ## 1. Document status and reading order
 
-**Status: implemented internal 0.1.0 candidate, under construction acceptance.** This guide defines the formal test contracts and report interpretation. The [construction record](VALIDATION_FORMAL.md) distinguishes actual passes, component failures and remaining coverage gaps. No release or additional version is introduced.
+**Status: implemented internal 0.1.0 candidate.** This guide defines the formal test contracts and report interpretation. The [construction record](VALIDATION_FORMAL.md) distinguishes actual passes, component failures and remaining coverage gaps. No release or additional version is introduced.
 
 The old 26-case smoke content has been replaced by the four-category catalog. The CLI now generates ordinary and diagnostic drivers and saves JSON, CSV, Markdown and self-contained HTML views. A registered case does not imply that every component can execute it or that every registered combination has passed.
 
@@ -348,7 +348,7 @@ Warnings do not change denominators. A boundary call that returns immediately st
 
 The formal implementation produces a self-contained HTML report, a concise human-readable summary, structured JSON/CSV and the sealed raw evidence needed to reproduce calculations. HTML is a view of the evidence, not a separate source of truth. It must work locally without uploading component information or results.
 
-The [artifact contracts](../specs/README.md) define `result.json`, configuration, correctness, coverage, raw samples, separate diagnostics and rendered views. Additional formal-report schemas must be implemented and verified before this plan is considered delivered.
+The [artifact contracts](../specs/README.md) define `result.json`, configuration, correctness, coverage, raw samples, separate diagnostics and rendered views. The views derive from the same sealed evidence; framework checks verify missing observations, inconsistent work counts and diagnostic accounting.
 
 ### 12.2 Read reports in this order
 
