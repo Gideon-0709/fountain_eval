@@ -34,13 +34,13 @@ def composition_acceptance(work, source, run):
     lib.write_text(lib.read_text()+'\nconst _:u8=eval_acceptance_helper::VALUE;\n')
     for root in [workspace,helper]:
         subprocess.run(["git","-C",str(root),"init","--quiet"],check=True)
-    first=run("workspace-and-external-path",ENGINE,f"path:{operator}#slab","operator-smoke@0.1.0")
+    first=run("workspace-and-external-path",ENGINE,f"path:{operator}#slab","0.1.0")
     graph=first["result"]["built"]["dependency_graph"]["driver"]
     package=next(p for p in graph["packages"] if p["name"]=="fountain_operators")
     node=next(n for n in graph["resolve"]["nodes"] if n["id"]==package["id"])
     assert "simd" in node["features"]
     (helper / "src/lib.rs").write_text('pub const VALUE:u8=8;\n')
-    second=run("external-path-change",ENGINE,f"path:{operator}#slab","operator-smoke@0.1.0")
+    second=run("external-path-change",ENGINE,f"path:{operator}#slab","0.1.0")
     assert first["result"]["built"]["key"]!=second["result"]["built"]["key"], "External input change reused a stale build"
     assert first["result"]["quadruple"]["c"]["operator"]["source_digest"]==second["result"]["quadruple"]["c"]["operator"]["source_digest"]
 
@@ -59,6 +59,9 @@ def main():
     if work.exists():
         raise SystemExit("Use a new work directory; previous attempts are not overwritten.")
     work.mkdir(parents=True)
+    frozen_cli=work / "fountain-eval"
+    shutil.copy2(cli,frozen_cli)
+    cli=frozen_cli
     cache, runs = work / "cache", work / "runs"
     ledger = []
     results = {}
@@ -103,25 +106,35 @@ def main():
         assert process.returncode == expected, (row, stderr[-2000:])
         return body
 
-    def run(label, engine, operator, test, expected=0, action="run", interrupt=False):
-        body = command(label, [action, "--engine", engine, "--operator", operator, "--test", test, "--cache-dir", cache, "--output", runs], expected, interrupt)
+    def run(label, engine, operator, test="0.1.0", expected=0, action="run", interrupt=False, scheme="rq", scheme_source=None):
+        scheme_value=json.dumps(scheme) if scheme_source is None else "{ name = " + json.dumps(scheme) + ", source = " + json.dumps(scheme_source) + " }"
+        config=work / f"{label}.toml"
+        config.write_text(f"engine = {json.dumps(engine)}\noperator = {json.dumps(operator)}\nscheme = {scheme_value}\ntest = {json.dumps(test)}\n[run]\ncache = {json.dumps(str(cache))}\noutput = {json.dumps(str(runs))}\n")
+        body = command(label, [action, "--config", config], expected, interrupt)
         if expected == 0:
             results[label] = body
             record = body["result"]
             assert record["status"] == ("prepared" if action == "prepare" else "succeeded")
             if action == "run":
-                operator_test=test.startswith("operator-")
-                assert len(record["samples"]) == (54 if operator_test else 24)
-                assert len(record["validation"]) == (18 if operator_test else 20)
+                product=record["built"]["family"]=="product-abi"
+                assert len(record["samples"]) == (12 if product else 66)
+                assert len(record["validation"]) == (16 if product else 22)
+                assert len(record["recipe"]["checks"])==26
+                assert record["coverage"]["skipped_validation"]==(10 if product else 4)
+                assert record["coverage"]["skipped_measurement"]==(22 if product else 4)
+                assert all(s["case"].startswith("operator/") or s["case"].startswith(f"codec/{scheme}/") for s in record["samples"])
+                assert record["quadruple"]["c"]["scheme"]["package"]=="fountain_scheme"
                 checks=record["correctness"]
-                assert checks["fatal_checks"]==(6 if operator_test else 8)
+                assert checks["fatal_checks"]==(4 if product else 10)
                 assert checks["warning_checks"]==12
                 expected_warnings=0 if record["built"]["implementation"]=="arena" else 12
                 assert len(checks["warnings"])==expected_warnings, checks
                 assert checks["status"]==("passed_with_warnings" if expected_warnings else "passed")
                 assert not checks["fatal_failures"]
                 assert json.loads((Path(body["run_dir"])/"correctness.json").read_text())==checks
-            command(label + "-report", ["report", body["run_dir"]])
+            report=command(label + "-report", ["report", body["run_dir"]])
+            assert report["coverage"]==record["coverage"]
+            assert (Path(body["run_dir"])/"config.toml").read_text()==config.read_text()
         else:
             assert not body["result"]["summary"], "A failed run must not publish an aggregate performance result"
         return body
@@ -130,7 +143,7 @@ def main():
         import platform
         assert platform.machine() in ["x86_64","AMD64"], "This expectation is specific to x86_64"
         for op in ["slab","simd"]:
-            body=run(f"upstream-x86-{op}",ENGINE,OPERATORS+"#"+op,"operator-smoke@0.1.0",4)
+            body=run(f"upstream-x86-{op}",ENGINE,OPERATORS+"#"+op,"0.1.0",4)
             assert body["result"]["stage"]=="build"
             detail=(Path(body["run_dir"])/"logs/driver-build.stderr").read_text()
             assert "E0433" in detail and "portable" in detail, detail[-4000:]
@@ -152,47 +165,66 @@ def main():
         for op in ["slab", "simd"]:
             pairs.append((f"dev-{op}", f"path:{mono / 'fountain_engine'}", f"path:{mono / 'fountain_operators'}#{op}"))
     for label, engine, operator in pairs:
-        for test in ["operator-smoke@0.1.0", "codec-smoke@0.1.0"]:
-            run(label + "-" + test.split("-")[0], engine, operator, test)
+        for scheme in ["rq","r10"]:
+            run(label + "-" + scheme, engine, operator, scheme=scheme)
+    registered=set(next(iter(results.values()))["result"]["recipe"]["checks"])
+    exercised={event["case"] for body in results.values() for event in body["result"]["validation"]}
+    assert exercised==registered, {"unreachable_cases":sorted(registered-exercised),"unexpected_cases":sorted(exercised-registered)}
     if args.monorepo:
         for op in ["slab", "simd", *(["arena"] if args.arena else [])]:
             operator = f"path:{arena}" if op == "arena" else f"path:{mono / 'fountain_operators'}#{op}"
-            run(f"product-{op}-codec", f"path:{mono / 'fountain_bin_ffi'}", operator, "codec-smoke@0.1.0")
-        run("product-operator-unsupported", f"path:{mono / 'fountain_bin_ffi'}", f"path:{mono / 'fountain_operators'}#slab", "operator-smoke@0.1.0", 3)
+            for scheme in ["rq","r10"]:
+                run(f"product-{op}-{scheme}", f"path:{mono / 'fountain_bin_ffi'}", operator, scheme=scheme)
+        run("product-external-scheme-rejected", f"path:{mono / 'fountain_bin_ffi'}", f"path:{mono / 'fountain_operators'}#slab", expected=3, scheme_source=f"path:{mono / 'fountain_scheme'}")
         if args.arena:
-            rejected = run("dev-arena-conflict", f"path:{mono / 'fountain_engine'}", f"path:{arena}", "codec-smoke@0.1.0", 4)
+            rejected = run("dev-arena-conflict", f"path:{mono / 'fountain_engine'}", f"path:{arena}", "0.1.0", 4)
             assert "conflict" in rejected["result"]["error"]
-    for test in ["operator", "codec"]:
+    for test in ["rq", "r10"]:
         labels = [k for k in results if k.endswith("-" + test)]
         for label in labels[1:]:
             command(f"compare-{test}-{label}", ["compare", results[labels[0]]["run_dir"], results[label]["run_dir"]])
-    command("rejected-different-tests", ["compare",results["public-slab-operator"]["run_dir"],results["public-slab-codec"]["run_dir"]],2)
+    command("rejected-different-schemes", ["compare",results["public-slab-rq"]["run_dir"],results["public-slab-r10"]["run_dir"]],2)
     if args.arena:
         revision = subprocess.check_output(["git", "-C", str(arena), "rev-parse", "HEAD"], text=True).strip()
         url = subprocess.check_output(["git", "-C", str(arena), "remote", "get-url", "origin"], text=True).strip()
-        run("pinned-git", ENGINE, f"git+{url}?package=fountain-arena-operator&rev={revision}", "operator-smoke@0.1.0")
+        run("pinned-git", ENGINE, f"git+{url}?package=fountain-arena-operator&rev={revision}", "0.1.0")
 
     # Copy a resolved package into an independent fixture checkout. Never edit upstream.
-    source = json.loads((Path(results["public-slab-operator"]["run_dir"]) / "sources.json").read_text())["operator"]
+    source = json.loads((Path(results["public-slab-rq"]["run_dir"]) / "sources.json").read_text())["operator"]
+    explicit=run("explicit-registry-scheme",ENGINE,OPERATORS+"#slab",scheme_source="registry:fountain_scheme@2.1.0")
+    assert explicit["result"]["built"]["key"]==results["public-slab-rq"]["result"]["built"]["key"]
+    scheme_source=json.loads((Path(explicit["run_dir"])/"sources.json").read_text())["scheme"]
+    local_scheme=work / "fixtures/selected-scheme"
+    shutil.copytree(scheme_source["source"]["root"],local_scheme)
+    subprocess.run(["git","-C",str(local_scheme),"init","--quiet"],check=True)
+    selected=run("prepare-explicit-scheme",ENGINE,OPERATORS+"#slab",action="prepare",scheme_source=f"path:{local_scheme}")
+    scheme_lib=local_scheme / "src/lib.rs"
+    scheme_lib.write_text('compile_error!("selected scheme changed after preparation");\n'+scheme_lib.read_text())
+    (work / "prepare-explicit-scheme.toml").write_text("invalid changed configuration")
+    replay=command("scheme-and-config-frozen",["run","--prepared",selected["run_dir"]])
+    assert replay["result"]["status"]=="succeeded"
+    assert replay["result"]["configuration"]==selected["result"]["configuration"]
+    failed_scheme=run("changed-scheme-compile-failure",ENGINE,OPERATORS+"#slab",expected=4,scheme_source=f"path:{local_scheme}")
+    assert failed_scheme["result"]["stage"]=="build"
     composition_acceptance(work, Path(source["source"]["root"]), run)
     snapshot = work / "fixtures/snapshot-operator"
     shutil.copytree(source["source"]["root"], snapshot)
     subprocess.run(["git", "-C", str(snapshot), "init", "--quiet"], check=True)
     operator = f"path:{snapshot}#slab"
-    prepared = run("prepare-snapshot", ENGINE, operator, "codec-smoke@0.1.0", action="prepare")
+    prepared = run("prepare-snapshot", ENGINE, operator, "0.1.0", action="prepare")
     lib = snapshot / "src/lib.rs"
     lib.write_text('compile_error!("source changed after preparation");\n' + lib.read_text())
-    replay = command("prepared-replay", ["run", "--prepared", prepared["run_dir"], "--output", runs])
+    replay = command("prepared-replay", ["run", "--prepared", prepared["run_dir"]])
     assert replay["result"]["status"] == "succeeded"
-    repeated = command("prepared-repeat", ["run", "--prepared", prepared["run_dir"], "--output", runs])
+    repeated = command("prepared-repeat", ["run", "--prepared", prepared["run_dir"]])
     command("compare-repeat", ["compare", replay["run_dir"], repeated["run_dir"]])
-    failed = run("fresh-input-compile-failure", ENGINE, operator, "codec-smoke@0.1.0", 4)
+    failed = run("fresh-input-compile-failure", ENGINE, operator, "0.1.0", 4)
     assert failed["result"]["stage"] == "build"
     # Binary corruption is rejected, without substituting a new build or rerunning the test.
     binary = Path(prepared["result"]["built"]["binary"])
     with binary.open("ab") as stream:
         stream.write(b"cache-corruption-fixture")
-    corrupt = command("corrupt-prepared-cache", ["run", "--prepared", prepared["run_dir"], "--output", runs], 4)
+    corrupt = command("corrupt-prepared-cache", ["run", "--prepared", prepared["run_dir"]], 4)
     assert "checksum" in corrupt["result"]["error"]
     command("rejected-incomplete-comparison", ["compare", replay["run_dir"], corrupt["run_dir"]], 2)
 
@@ -205,9 +237,9 @@ def main():
         changed,count=re.subn(r'(pub fn new\([^)]*\)\s*->\s*Self\s*\{)',r'\1 println!("not a protocol event");',path.read_text(),count=1)
         assert count==1
         path.write_text(changed)
-        protocol=run("driver-protocol-error",ENGINE,f"path:{noisy}#slab","operator-smoke@0.1.0",4)
+        protocol=run("driver-protocol-error",ENGINE,f"path:{noisy}#slab","0.1.0",4)
         assert "driver protocol" in protocol["result"]["error"]
-        run("registry-operator", ENGINE, "registry:fountain_operators@2.0.0#slab", "operator-smoke@0.1.0")
+        run("registry-operator", ENGINE, "registry:fountain_operators@2.0.0#slab", "0.1.0")
         def fixture(name, body, version="0.2.0", package="fountain-arena-operator"):
             root = work / "fixtures" / name
             (root / "src").mkdir(parents=True)
@@ -225,22 +257,23 @@ def main():
           fn execute(&mut self,_:&Operation){ BODY }
         }'''
         bad = fixture("wrong-operator", template.replace("BODY", ""))
-        wrong = run("wrong-operator-result", ENGINE, bad, "operator-smoke@0.1.0", 4)
+        wrong = run("wrong-operator-result", ENGINE, bad, "0.1.0", 4)
         assert wrong["result"]["stage"] == "validate"
         assert wrong["result"]["correctness"]["status"]=="failed"
         assert wrong["result"]["correctness"]["fatal_failures"]
         assert not wrong["result"]["samples"]
         crashed = fixture("crash-operator", template.replace("BODY", "std::process::exit(23);"))
-        run("driver-crash", ENGINE, crashed, "operator-smoke@0.1.0", 4)
+        run("driver-crash", ENGINE, crashed, "0.1.0", 4)
         hung = fixture("hang-operator", template.replace("BODY", "std::thread::sleep(std::time::Duration::from_secs(90));"))
-        interrupted = run("driver-interruption", ENGINE, hung, "operator-smoke@0.1.0", 130, interrupt=True)
+        interrupted = run("driver-interruption", ENGINE, hung, "0.1.0", 130, interrupt=True)
         assert interrupted["result"]["status"] == "interrupted"
-        timed = run("driver-timeout", ENGINE, hung, "operator-smoke@0.1.0", 4)
+        timed = run("driver-timeout", ENGINE, hung, "0.1.0", 4)
         assert "timeout" in timed["result"]["error"]
         unknown = fixture("unknown-interface", "", "4.0.0", "fountain_engine")
-        run("unknown-interface", unknown, bad, "operator-smoke@0.1.0", 3)
-        run("unknown-test", ENGINE, bad, "missing@0.1.0", 3)
-        run("invalid-local-reference", "path:/fountain-eval-fixture-does-not-exist", bad, "operator-smoke@0.1.0", 4)
+        run("unknown-interface", unknown, bad, "0.1.0", 3)
+        run("unknown-scheme", ENGINE, bad, expected=3, scheme="missing")
+        run("unknown-test", ENGINE, bad, "9.0.0", 3)
+        run("invalid-local-reference", "path:/fountain-eval-fixture-does-not-exist", bad, "0.1.0", 4)
     print(f"Acceptance passed: {len(ledger)} checked commands. Evidence: {work}", flush=True)
 
 

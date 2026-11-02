@@ -1,9 +1,9 @@
 use crate::{
     build::{self, Built},
     catalog,
+    config::Configuration,
     evidence::{self, Quadruple, Record},
     process,
-    protocol::EvaluationRequest,
     source::Resolver,
     util::{self, Result},
 };
@@ -14,18 +14,6 @@ use std::{
     process::Command,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-pub struct Options {
-    pub cache: PathBuf,
-    pub output: PathBuf,
-}
-impl Default for Options {
-    fn default() -> Self {
-        Self {
-            cache: ".fountain-eval".into(),
-            output: "runs".into(),
-        }
-    }
-}
 fn lock(cache: &Path) -> Result<std::fs::File> {
     fs::create_dir_all(cache).map_err(|e| e.to_string())?;
     let f = OpenOptions::new()
@@ -62,12 +50,9 @@ fn new_directory(root: &Path) -> Result<(String, PathBuf)> {
     fs::create_dir(&path).map_err(|e| e.to_string())?;
     Ok((id, path.canonicalize().map_err(|e| e.to_string())?))
 }
-pub fn start(
-    request: EvaluationRequest,
-    options: &Options,
-    prepare_only: bool,
-) -> Result<(PathBuf, Record)> {
+pub fn start(configuration: Configuration, prepare_only: bool) -> Result<(PathBuf, Record)> {
     process::install_handler()?;
+    let options = configuration.run.clone();
     fs::create_dir_all(&options.cache).map_err(|e| e.to_string())?;
     let cache = options.cache.canonicalize().map_err(|e| e.to_string())?;
     let (id, directory) = new_directory(&options.output)?;
@@ -76,7 +61,8 @@ pub fn start(
         run_id: id,
         status: "running".into(),
         stage: "queued".into(),
-        request,
+        request: configuration.request.clone(),
+        configuration,
         quadruple: None,
         recipe: None,
         built: None,
@@ -85,6 +71,7 @@ pub fn start(
         summary: Vec::new(),
         error: None,
         correctness: Default::default(),
+        coverage: json!({}),
     };
     evidence::save(&directory, &record)?;
     let result = util::catch(|| {
@@ -101,6 +88,14 @@ pub fn start(
             &directory.join("sources.json"),
             &json!({"engine":engine,"operator":operator}),
         )?;
+        let family = catalog::family(&engine)?;
+        let scheme = build::resolve_scheme(&mut resolver, &engine, &record.request.scheme)?;
+        util::write_json(
+            &directory.join("sources.json"),
+            &json!({"engine":engine,"operator":operator,"scheme":scheme}),
+        )?;
+        let recipe = catalog::plan(&record.request.test, &record.request.scheme, &family)?;
+        record.recipe = Some(recipe.clone());
         let implementation = catalog::implementation(
             &operator,
             record.request.components.operator.implementation.as_deref(),
@@ -110,6 +105,8 @@ pub fn start(
         }
         let mut environment = evidence::environment(&cache)?;
         environment.conditions["recipe"] = recipe.definition.clone();
+        environment.conditions["scheme"] =
+            json!({"name":record.request.scheme.name,"mode":record.request.scheme.mode});
         environment.digest = util::digest(&environment.conditions);
         util::write_json(&directory.join("configuration.json"), &environment)?;
         record.stage = "build".into();
@@ -118,6 +115,7 @@ pub fn start(
             &mut resolver,
             &engine,
             &operator,
+            &scheme,
             &implementation,
             &recipe,
             &environment.conditions,
@@ -144,7 +142,7 @@ pub fn start(
     finish(&directory, &mut record, result)?;
     Ok((directory, record))
 }
-pub fn from_prepared(prepared: &Path, output: &Path) -> Result<(PathBuf, Record)> {
+pub fn from_prepared(prepared: &Path) -> Result<(PathBuf, Record)> {
     process::install_handler()?;
     let old = evidence::load(prepared)?;
     if old.status != "prepared" {
@@ -158,7 +156,7 @@ pub fn from_prepared(prepared: &Path, output: &Path) -> Result<(PathBuf, Record)
             .and_then(Path::parent)
             .ok_or("invalid build location")?,
     )?;
-    let (id, directory) = new_directory(output)?;
+    let (id, directory) = new_directory(&old.configuration.run.output)?;
     let mut record = old.clone();
     record.run_id = id;
     record.status = "running".into();
@@ -166,7 +164,7 @@ pub fn from_prepared(prepared: &Path, output: &Path) -> Result<(PathBuf, Record)
     record.error = None;
     let result = util::catch(|| {
         catalog::verify_lock()?;
-        let recipe = catalog::recipe(&record.request.test)?;
+        let recipe = catalog::plan(&record.request.test, &record.request.scheme, &built.family)?;
         let tuple = record.quadruple.as_mut().ok_or("missing prepared tuple")?;
         if recipe.identity != tuple.t
             || !catalog::registered_interface(&tuple.i, &recipe.identity.id)
@@ -188,6 +186,8 @@ pub fn from_prepared(prepared: &Path, output: &Path) -> Result<(PathBuf, Record)
         }
         current.conditions["build"] = tuple.e.conditions["build"].clone();
         current.conditions["recipe"] = recipe.definition.clone();
+        current.conditions["scheme"] =
+            json!({"name":record.request.scheme.name,"mode":record.request.scheme.mode});
         current.digest = util::digest(&current.conditions);
         tuple.e = current;
         util::write_json(&directory.join("configuration.json"), &tuple.e)?;
@@ -215,6 +215,7 @@ fn finish(directory: &Path, record: &mut Record, result: Result<()>) -> Result<(
         record.error = Some(error);
     }
     record.correctness = crate::validation::report(record);
+    record.coverage = crate::coverage::report(record);
     util::write_json(&directory.join("validation.json"), &record.validation)?;
     evidence::save(directory, record)?;
     evidence::seal(directory)
@@ -334,6 +335,7 @@ pub fn check_events(events: &[Value], built: &Built, record: &Record, mode: &str
         || first["test"] != record.recipe.as_ref().ok_or("recipe missing")?.identity.id
         || first["operator"] != built.implementation
         || first["family"] != built.family
+        || first["scheme"] != record.request.scheme.name
     {
         return Err("driver identity or protocol mismatch".into());
     }

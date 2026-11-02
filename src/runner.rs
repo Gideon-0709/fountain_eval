@@ -22,6 +22,17 @@ fn diagnostic(severity: Severity, code: &str, message: impl Into<String>) -> Dia
 pub fn inspect(request: EvaluationRequest) -> Inspection {
     let mut diagnostics = Vec::new();
     let engine = inspect_local("engine", &request.components.engine, &mut diagnostics);
+    if let Err(error) = crate::catalog::recipe(&request.test) {
+        diagnostics.push(diagnostic(Severity::Error, "unknown_test_content", error));
+    }
+    if let Err(error) = crate::catalog::validate_scheme(&request.scheme) {
+        diagnostics.push(diagnostic(Severity::Error, "unknown_scheme", error));
+    }
+    let scheme = request
+        .scheme
+        .source
+        .as_ref()
+        .and_then(|r| inspect_local("scheme", r, &mut diagnostics));
     let operator = inspect_local("operator", &request.components.operator, &mut diagnostics);
 
     let selected = match (&request.components.engine.source, &engine) {
@@ -65,7 +76,11 @@ pub fn inspect(request: EvaluationRequest) -> Inspection {
         format_version: FORMAT_VERSION,
         status: InspectionStatus::InspectionOnly,
         request,
-        local_declarations: LocalDeclarations { engine, operator },
+        local_declarations: LocalDeclarations {
+            engine,
+            operator,
+            scheme,
+        },
         diagnostics,
         execution_available: false,
     }
@@ -88,7 +103,7 @@ fn inspect_local(
         Ok(declaration) => {
             if declaration.version.is_none() {
                 diagnostics.push(diagnostic(Severity::Warning, "version_inheritance_deferred",
-                    format!("{role}: package version is inherited; workspace resolution is not implemented")));
+                    format!("{role}: package version is inherited; workspace resolution is deferred to preparation")));
             }
             Some(declaration)
         }

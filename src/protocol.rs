@@ -38,32 +38,43 @@ pub struct ComponentReference {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TestReference {
-    pub name: String,
     pub version: String,
 }
 
-/// Exactly two user-selected components. Support crates are resolved later.
+/// Engine and operator references; scheme selection is recorded separately.
+/// Support crates are resolved later.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ComponentPair {
     pub engine: ComponentReference,
     pub operator: ComponentReference,
 }
 
-/// The public three-input request. This is not a resolved (C, I, T, E) identity.
+/// The normalized configuration request. This is not a resolved (C, I, T, E) identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EvaluationRequest {
     pub components: ComponentPair,
     pub test: TestReference,
+    pub scheme: SchemeSelection,
 }
 
 impl EvaluationRequest {
-    pub fn parse(engine: &str, operator: &str, test: &str) -> Result<Self, ReferenceError> {
+    pub fn parse(
+        engine: &str,
+        operator: &str,
+        scheme: &str,
+        test: &str,
+    ) -> Result<Self, ReferenceError> {
         Ok(Self {
             components: ComponentPair {
                 engine: engine.parse()?,
                 operator: operator.parse()?,
             },
             test: test.parse()?,
+            scheme: SchemeSelection {
+                name: scheme.into(),
+                mode: "systematic".into(),
+                source: None,
+            },
         })
     }
 }
@@ -181,19 +192,23 @@ impl FromStr for ComponentReference {
 
 impl FromStr for TestReference {
     type Err = ReferenceError;
-
     fn from_str(input: &str) -> Result<Self, Self::Err> {
-        let (name, version) = input
-            .split_once('@')
-            .ok_or_else(|| invalid("test reference requires name@exact-version"))?;
-        if !valid_name(name) || Version::parse(version).is_err() {
-            return Err(invalid("test reference requires a name and exact SemVer"));
+        if Version::parse(input).is_err() {
+            return Err(invalid(
+                "test requires an exact content version, for example 0.1.0; individual tests cannot be selected",
+            ));
         }
         Ok(Self {
-            name: name.into(),
-            version: version.into(),
+            version: input.into(),
         })
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SchemeSelection {
+    pub name: String,
+    pub mode: String,
+    pub source: Option<ComponentReference>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -224,6 +239,7 @@ pub struct PackageDeclaration {
 pub struct LocalDeclarations {
     pub engine: Option<PackageDeclaration>,
     pub operator: Option<PackageDeclaration>,
+    pub scheme: Option<PackageDeclaration>,
 }
 
 /// Declaration inspection never implies build compatibility or codec correctness.

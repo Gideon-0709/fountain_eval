@@ -4,7 +4,6 @@ use fountain_eval::{
     catalog,
     evidence::{Environment, Quadruple, Record},
     measurement::{self, Sample},
-    protocol::EvaluationRequest,
     util,
 };
 use serde_json::json;
@@ -48,33 +47,22 @@ impl Drop for Temp {
         let _ = fs::remove_dir_all(&self.0);
     }
 }
-pub fn record(family: &str, test: &str) -> Record {
-    let request = EvaluationRequest::parse(
-        "registry:fountain_engine@2.1.0",
-        "registry:fountain_operators@2.0.0#slab",
-        test,
-    )
-    .unwrap();
-    let recipe = catalog::recipe(&request.test).unwrap();
-    let conditions = json!({"runtime":{"cpu":"synthetic-test-fixture","os":"test"},"build":{"profile":"release"}});
+pub fn record(family: &str, scheme: &str) -> Record {
+    let configuration = fountain_eval::config::Configuration::parse("/fixture/fountain-eval.toml".into(),format!("engine = \"registry:fountain_engine@2.1.0\"\noperator = \"registry:fountain_operators@2.0.0#slab\"\nscheme = {scheme:?}\ntest = \"0.1.0\"\n")).unwrap();
+    let request = configuration.request.clone();
+    let recipe = catalog::plan(&request.test, &request.scheme, family).unwrap();
+    let conditions = json!({"runtime":{"cpu":"synthetic-test-fixture","os":"test"},"build":{"profile":"release"},"scheme":{"name":scheme,"mode":"systematic"}});
     let samples: Vec<_> = recipe
         .cases
         .iter()
         .flat_map(|case| {
+            let check = recipe.check(case).unwrap();
             (0..3).map(move |rep| Sample {
                 case: case.clone(),
                 repetition: rep,
                 elapsed_ns: (rep as u64 + 1) * 1000,
-                payload_bytes: catalog::recipe(&test.parse().unwrap())
-                    .unwrap()
-                    .check(case)
-                    .unwrap()
-                    .payload_bytes,
-                operations: catalog::recipe(&test.parse().unwrap())
-                    .unwrap()
-                    .check(case)
-                    .unwrap()
-                    .operations,
+                payload_bytes: check.payload_bytes,
+                operations: check.operations,
                 witness: if case.ends_with("/self-xor") || case.ends_with("/duplicate-source-xor") {
                     util::digest(&json!({"calls":256,"outcomes":[{"count":256,"actual":[0]}]}))
                 } else {
@@ -92,6 +80,8 @@ pub fn record(family: &str, test: &str) -> Record {
         status: "succeeded".into(),
         stage: "complete".into(),
         request,
+        configuration,
+        coverage: json!({}),
         quadruple: Some(Quadruple {
             c: json!({"engine":"fixture","operator":"fixture"}),
             i: catalog::interface(family),

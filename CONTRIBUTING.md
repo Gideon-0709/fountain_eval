@@ -1,6 +1,6 @@
 # Contributing
 
-Develop and publish one `fountain-eval` package. Native Fountain dependencies belong to generated independent drivers, not the root package. Standard users provide only engine, operator and test references.
+Develop and publish one `fountain-eval` package. Native Fountain dependencies belong to generated independent drivers, not the root package. Standard users provide one config with engine, operator, scheme and a complete test content version. Individual test selection and silent skips are prohibited.
 
 ## Quality checks
 
@@ -39,3 +39,5 @@ Do not commit caches, component checkouts, credentials, personal bindings or raw
 Repository work targets main as directed by the project owner. Upstream access grants no write permission. Keep `publish = false`; crates.io publication and licensing policy are separate decisions.
 
 Fatal failures must remain blocking. Boundary warnings must be shown with expected/actual observations and timing rows, and must not block comparison solely because outputs differ. Severity and coverage are T-owned content. During the current unreleased round they remain part of the same 0.1.0 candidate; content digests identify each revision.
+
+Every registered case must be reached in native acceptance or explicitly accounted for as inapplicable. Register applicability with a reason, keep failed/not-executed cases distinct, and test that missing observations cannot be hidden by changing coverage. Config parsing belongs to the framework; workload/severity/measurement policy belongs to T.

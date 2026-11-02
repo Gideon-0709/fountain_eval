@@ -83,14 +83,15 @@ fn mutable_ambiguous_and_credential_bearing_sources_are_rejected() {
 }
 
 #[test]
-fn test_versions_are_exact_and_requests_have_only_two_component_roles() {
+fn test_versions_select_whole_content_and_scheme_is_explicit() {
     for invalid in ["core", "core@latest", "core@^1.0.0", "core@1.0", "@1.0.0"] {
         assert!(invalid.parse::<TestReference>().is_err());
     }
     let request = EvaluationRequest::parse(
         "registry:engine@3.0.0-dev",
         "path:../operator#slab",
-        "example-unregistered@0.1.0",
+        "rq",
+        "0.1.0",
     )
     .unwrap();
     let json = serde_json::to_value(request).unwrap();

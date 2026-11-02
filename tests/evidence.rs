@@ -1,22 +1,27 @@
 mod support;
-use fountain_eval::{catalog, evidence, execution, measurement, util};
+use fountain_eval::{evidence, execution, measurement, util};
 use serde_json::json;
 use support::{Temp, record};
 #[test]
 fn metrics_are_decimal_gigabits_and_operations_per_second() {
-    let codec = record("native-2", "codec-smoke@0.1.0");
+    let codec = record("native-2", "rq");
     assert_eq!(codec.summary[0].source_payload_gbps, Some(32.768));
     assert_eq!(codec.summary[0].median_ns, 2000);
-    let op = record("native-2", "operator-smoke@0.1.0");
-    assert_eq!(op.summary[0].operations_per_second, Some(7_000_000.0));
-    assert_eq!(op.summary[0].source_payload_gbps, None);
+    let op = record("native-2", "rq");
+    let row = op
+        .summary
+        .iter()
+        .find(|s| s.case == "operator/1/direct")
+        .unwrap();
+    assert_eq!(row.operations_per_second, Some(7_000_000.0));
+    assert_eq!(row.source_payload_gbps, None);
     let mut bad = codec.samples;
     bad[0].elapsed_ns = 0;
     assert!(measurement::summarize(&bad).is_err());
 }
 #[test]
 fn incomplete_duplicate_corrupt_and_wrong_work_samples_fail() {
-    let good = record("native-2", "codec-smoke@0.1.0");
+    let good = record("native-2", "rq");
     assert!(evidence::validate_samples(&good).is_ok());
     for mutation in 0..6 {
         let mut bad = good.clone();
@@ -38,12 +43,12 @@ fn incomplete_duplicate_corrupt_and_wrong_work_samples_fail() {
 }
 #[test]
 fn comparison_separates_observations_conditions_and_identity_collisions() {
-    let left = record("native-2", "codec-smoke@0.1.0");
+    let left = record("native-2", "rq");
     let mut right = left.clone();
     right.run_id = "another-run".into();
     right.quadruple.as_mut().unwrap().e.observations = json!({"time":99});
     assert!(evidence::compare(&left, &right).is_ok());
-    right.quadruple.as_mut().unwrap().i = catalog::interface("product-abi");
+    right = record("product-abi", "rq");
     right.quadruple.as_mut().unwrap().c = json!({"engine":"another-component"});
     let result = evidence::compare(&left, &right).unwrap();
     assert_eq!(
@@ -73,7 +78,7 @@ fn comparison_separates_observations_conditions_and_identity_collisions() {
 #[test]
 fn sealed_results_do_not_need_a_build_cache_and_detect_corruption() {
     let t = Temp::new();
-    let record = record("native-2", "codec-smoke@0.1.0");
+    let record = record("native-2", "rq");
     evidence::save(&t.0, &record).unwrap();
     evidence::seal(&t.0).unwrap();
     assert_eq!(evidence::load(&t.0).unwrap().run_id, record.run_id);
@@ -98,9 +103,9 @@ fn artifact_mutation_and_unindexed_binary_fail() {
 fn subprocess_protocol_requires_identity_completion_and_expected_events() {
     let t = Temp::new();
     let built = support::built(&t.0);
-    let record = record("native-2", "codec-smoke@0.1.0");
+    let record = record("native-2", "rq");
     let events = vec![
-        json!({"event":"hello","protocol":1,"build":built.key,"interface":built.interface.id,"test":"codec-smoke@0.1.0","operator":"slab","family":"native-2"}),
+        json!({"event":"hello","protocol":1,"build":built.key,"interface":built.interface.id,"test":"0.1.0","operator":"slab","family":"native-2","scheme":"rq"}),
         json!({"event":"done","mode":"describe"}),
     ];
     execution::check_events(&events, &built, &record, "describe").unwrap();
@@ -120,7 +125,7 @@ fn subprocess_protocol_requires_identity_completion_and_expected_events() {
 
 #[test]
 fn failed_and_prepared_stages_do_not_imply_measurement() {
-    let mut r = record("native-2", "operator-smoke@0.1.0");
+    let mut r = record("native-2", "rq");
     r.status = "failed".into();
     r.stage = "build".into();
     r.quadruple = None;
@@ -139,7 +144,7 @@ fn failed_and_prepared_stages_do_not_imply_measurement() {
 
 #[test]
 fn semantic_warnings_preserve_success_measurements_and_comparison() {
-    let left = record("native-2", "operator-smoke@0.1.0");
+    let left = record("native-2", "rq");
     let mut right = left.clone();
     let case = "operator/1/direct/self-xor";
     let event = right
@@ -175,7 +180,7 @@ fn semantic_warnings_preserve_success_measurements_and_comparison() {
 
 #[test]
 fn measured_boundary_variation_is_reported_without_becoming_fatal() {
-    let mut r = record("native-2", "operator-smoke@0.1.0");
+    let mut r = record("native-2", "rq");
     let sample = r
         .samples
         .iter_mut()
@@ -194,7 +199,7 @@ fn measured_boundary_variation_is_reported_without_becoming_fatal() {
 
 #[test]
 fn fatal_failures_cannot_be_downgraded_and_warning_coverage_is_required() {
-    let good = record("native-2", "codec-smoke@0.1.0");
+    let good = record("native-2", "rq");
     for mutation in 0..4 {
         let mut bad = good.clone();
         match mutation {
@@ -222,7 +227,7 @@ fn fatal_failures_cannot_be_downgraded_and_warning_coverage_is_required() {
 
 #[test]
 fn different_internal_candidate_digests_are_not_comparable() {
-    let left = record("native-2", "operator-smoke@0.1.0");
+    let left = record("native-2", "rq");
     let mut earlier = left.clone();
     earlier.quadruple.as_mut().unwrap().t.digest = "earlier-draft".into();
     assert_eq!(
@@ -234,7 +239,7 @@ fn different_internal_candidate_digests_are_not_comparable() {
 
 #[test]
 fn boundary_batches_account_for_every_actual_call() {
-    let good = record("native-2", "operator-smoke@0.1.0");
+    let good = record("native-2", "rq");
     for mutation in 0..4 {
         let mut bad = good.clone();
         let sample = bad

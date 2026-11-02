@@ -1,9 +1,11 @@
-# Acceptance test content
+# Test content and applicability
 
-Current recipes are `operator-smoke@0.1.0` and `codec-smoke@0.1.0`, both with purpose `acceptance`. They are development regression fixtures for the framework. The team's formal correctness and performance test content has not yet been designed. `src/catalog.rs` expands inputs and check severity; `drivers/common.rs` and `src/measurement.rs` participate in T identity.
+Users select the entire `0.1.0` content version in config. Its 26 registered cases are framework acceptance fixtures, not the formal team test suite. All cases are planned. No individual case or category selector is exposed.
 
-Fatal checks cover required operator behavior and codec correctness. Warning checks record self-XOR and repeated-source deviations without failing a run or preventing performance comparison. Operator boundary calls have their own timing rows. Codec boundary diagnostics inspect the selected operator outside codec timing; product diagnostics identify the callback implementation as their scope.
+`src/catalog.rs` defines canonical content, expands the configured scheme and interface capabilities, and supplies explicit reasons for inapplicability. Native APIs validate 22 cases and record 66 samples per scheme. Product ABI validates 16 cases and records 12 samples; its unexposed operator surface is reported as skipped. The four codec cases for the other scheme are always visible as scheme-not-selected skips. Boundary warnings do not fail execution or suppress comparison.
 
-The repository is an unreleased internal 0.1.0 candidate. This round updates the same baseline and its content digests. The project owner controls the first team release; there is no historical compatibility layer.
+Validation and measurement coverage are separate. Failure/interruption leaves unfinished work `not_executed` or incomplete. A skipped check is not passed. Missing applicable observations fail evidence validation. Acceptance runs both schemes and requires the union of executed cases to cover the entire catalog, preventing unreachable fixtures from remaining unnoticed.
 
-Each measured case has one warmup and three recorded repetitions. These recipes verify framework mechanisms; formal performance matrices and thresholds remain a separate design task. See the [usage guide](../README.md) for timing, severity and units.
+Formal test categories are correctness, individual operations, execution chains and integrated workflows. Encoding-plan generation belongs to chain tests; plan reuse in complete encoding belongs to integrated tests. Formal scenarios, matrices and statistical methodology remain a later task.
+
+This is an unreleased internal 0.1.0 candidate. Content digests identify each candidate; the owner controls the first release. See the [usage guide](../README.md).

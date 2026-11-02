@@ -1,12 +1,6 @@
 use clap::{Args, Parser, Subcommand};
-use fountain_eval::{
-    catalog, evidence,
-    execution::{self, Options},
-    protocol::EvaluationRequest,
-    runner,
-    util::Result,
-};
-use serde_json::{Value, json};
+use fountain_eval::{catalog, config::Configuration, evidence, execution, runner, util::Result};
+use serde_json::json;
 use std::{
     io::{self, Write},
     path::PathBuf,
@@ -16,72 +10,36 @@ use std::{
 #[command(
     name = "fountain-eval",
     version,
-    about = "Reproducible Fountain component evaluation"
+    about = "Configuration-driven Fountain evaluation"
 )]
 struct Cli {
     #[command(subcommand)]
     command: Command,
 }
+#[derive(Args)]
+struct Input {
+    #[arg(long, default_value = "fountain-eval.toml")]
+    config: PathBuf,
+}
 #[derive(Subcommand)]
 enum Command {
-    /// Offline reference and local declaration inspection.
-    Inspect(Inputs),
-    /// List immutable interface and acceptance-test registrations.
+    /// Offline configuration and local declaration checks.
+    Inspect(Input),
+    /// List the full test content and interface registrations.
     List,
-    /// Resolve, freeze, build and probe without running measurements.
-    Prepare {
-        #[command(flatten)]
-        inputs: Inputs,
-        #[command(flatten)]
-        storage: Storage,
-    },
-    /// Validate and measure a component pair, or execute a prepared run.
+    /// Freeze, adapt, build and check capabilities from a configuration.
+    Prepare(Input),
+    /// Execute every applicable check; prepared execution consumes its frozen configuration.
     Run {
-        #[arg(long,required_unless_present="prepared",requires_all=["operator","test"])]
-        engine: Option<String>,
-        #[arg(long,requires_all=["engine","test"])]
-        operator: Option<String>,
-        #[arg(long,requires_all=["engine","operator"])]
-        test: Option<String>,
-        #[arg(long,conflicts_with_all=["engine","operator","test","cache_dir"])]
+        #[arg(long, conflicts_with = "prepared")]
+        config: Option<PathBuf>,
+        #[arg(long)]
         prepared: Option<PathBuf>,
-        #[command(flatten)]
-        storage: Storage,
     },
-    /// Verify and display a sealed run record without needing its build cache.
+    /// Read a sealed result including warnings and complete coverage.
     Report { run: PathBuf },
-    /// Check comparability and compare acceptance results.
+    /// Compare common measured cases and report coverage differences.
     Compare { left: PathBuf, right: PathBuf },
-}
-#[derive(Args)]
-struct Inputs {
-    #[arg(long)]
-    engine: String,
-    #[arg(long)]
-    operator: String,
-    #[arg(long)]
-    test: String,
-}
-impl Inputs {
-    fn request(&self) -> Result<EvaluationRequest> {
-        EvaluationRequest::parse(&self.engine, &self.operator, &self.test)
-            .map_err(|e| e.to_string())
-    }
-}
-#[derive(Args)]
-struct Storage {
-    #[arg(long, default_value = ".fountain-eval")]
-    cache_dir: PathBuf,
-    #[arg(long, default_value = "runs")]
-    output: PathBuf,
-}
-impl Storage {
-    fn options(&self) -> Options {
-        Options {
-            cache: self.cache_dir.clone(),
-            output: self.output.clone(),
-        }
-    }
 }
 fn emit(value: &impl serde::Serialize) -> Result<()> {
     let mut out = io::stdout().lock();
@@ -103,45 +61,36 @@ fn execute(command: Command) -> Result<u8> {
             emit(&catalog::list())?;
             Ok(0)
         }
-        Command::Inspect(inputs) => {
-            let report = runner::inspect(inputs.request()?);
-            emit(&report)?;
+        Command::Inspect(input) => {
+            let configuration = Configuration::load(&input.config)?;
+            let report = runner::inspect(configuration.request.clone());
+            emit(&json!({"configuration":configuration,"inspection":report}))?;
             Ok(if report.has_errors() { 2 } else { 0 })
         }
-        Command::Prepare { inputs, storage } => {
-            let (directory, record) =
-                execution::start(inputs.request()?, &storage.options(), true)?;
-            outcome(directory, record)
+        Command::Prepare(input) => {
+            let (path, record) = execution::start(Configuration::load(&input.config)?, true)?;
+            outcome(path, record)
         }
-        Command::Run {
-            engine,
-            operator,
-            test,
-            prepared,
-            storage,
-        } => {
-            let (directory, record) = if let Some(path) = prepared {
-                execution::from_prepared(&path, &storage.output)?
+        Command::Run { config, prepared } => {
+            let (path, record) = if let Some(path) = prepared {
+                execution::from_prepared(&path)?
             } else {
-                let request = EvaluationRequest::parse(
-                    &engine.ok_or("engine required")?,
-                    &operator.ok_or("operator required")?,
-                    &test.ok_or("test required")?,
-                )
-                .map_err(|e| e.to_string())?;
-                execution::start(request, &storage.options(), false)?
+                execution::start(
+                    Configuration::load(&config.unwrap_or_else(|| "fountain-eval.toml".into()))?,
+                    false,
+                )?
             };
-            outcome(directory, record)
+            outcome(path, record)
         }
         Command::Report { run } => {
-            let record = evidence::load(&run)?;
-            emit(&record)?;
+            emit(&evidence::load(&run)?)?;
             Ok(0)
         }
         Command::Compare { left, right } => {
-            let comparison: Value =
-                evidence::compare(&evidence::load(&left)?, &evidence::load(&right)?)?;
-            emit(&comparison)?;
+            emit(&evidence::compare(
+                &evidence::load(&left)?,
+                &evidence::load(&right)?,
+            )?)?;
             Ok(0)
         }
     }

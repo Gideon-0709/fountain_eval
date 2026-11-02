@@ -3,6 +3,8 @@
 
 pub mod build;
 pub mod catalog;
+pub mod config;
+pub mod coverage;
 pub mod evidence;
 pub mod execution;
 pub mod measurement;

@@ -404,7 +404,7 @@ fn codec_round(codec: &str, missing: usize, measure: bool, rep: usize) {
     }
 }
 fn codec_suite(measure: bool) {
-    for codec in ["rq", "r10"] {
+    for codec in [config::SCHEME] {
         for missing in [0, 8] {
             for rep in 0..if measure { 4 } else { 1 } {
                 codec_round(codec, missing, measure, rep);
@@ -416,23 +416,20 @@ fn main() {
     let args: Vec<_> = std::env::args().collect();
     let mode = args.get(1).map(String::as_str).unwrap_or("");
     emit(
-        json!({"event":"hello","protocol":1,"build":config::BUILD,"interface":config::INTERFACE,"test":config::TEST,"operator":config::OPERATOR,"family":config::FAMILY}),
+        json!({"event":"hello","protocol":1,"build":config::BUILD,"interface":config::INTERFACE,"test":config::TEST,"operator":config::OPERATOR,"family":config::FAMILY,"scheme":config::SCHEME}),
     );
     let result = std::panic::catch_unwind(|| match mode {
         "describe" => {}
-        "validate" | "measure" => match config::TEST {
-            "operator-smoke@0.1.0" => {
+        "validate" | "measure" => {
+            assert_eq!(config::TEST, "0.1.0");
+            if config::FAMILY != "product-abi" {
                 operator_suite(mode == "measure");
+            }
+            if mode == "validate" || config::FAMILY != "product-abi" {
                 boundary_suite(mode == "measure");
             }
-            "codec-smoke@0.1.0" => {
-                codec_suite(mode == "measure");
-                if mode == "validate" {
-                    boundary_suite(false);
-                }
-            }
-            _ => panic!("unknown compiled test"),
-        },
+            codec_suite(mode == "measure");
+        }
         _ => panic!("unknown driver command"),
     });
     match result {

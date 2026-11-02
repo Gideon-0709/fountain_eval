@@ -1,59 +1,82 @@
+mod support;
 use std::process::{Command, Output};
-
-fn cli(args: &[&str]) -> Output {
+use support::Temp;
+fn cli(dir: &std::path::Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_fountain-eval"))
+        .current_dir(dir)
         .args(args)
         .output()
         .unwrap()
 }
-
-fn arguments(command: &str) -> [&str; 7] {
-    [
-        command,
-        "--engine",
-        "registry:fountain_engine@2.1.0",
-        "--operator",
-        "registry:example_operator@0.1.0#slab",
-        "--test",
-        "example-unregistered@0.1.0",
-    ]
+fn config(engine: &str, operator: &str) -> String {
+    format!("engine={engine:?}\noperator={operator:?}\nscheme=\"rq\"\ntest=\"0.1.0\"\n")
 }
-
 #[test]
-fn help_and_registered_catalog_are_available() {
-    assert!(cli(&["--help"]).status.success());
-    let output = cli(&["list"]);
-    assert!(output.status.success());
+fn help_and_full_catalog_are_available() {
+    let t = Temp::new();
+    assert!(cli(&t.0, &["--help"]).status.success());
+    let output = cli(&t.0, &["list"]);
     let catalog: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(catalog["interfaces"].as_array().unwrap().len(), 3);
-    assert_eq!(catalog["tests"].as_array().unwrap().len(), 2);
+    assert_eq!(catalog["test_versions"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        catalog["test_versions"][0]["checks"]
+            .as_object()
+            .unwrap()
+            .len(),
+        26
+    );
 }
-
 #[test]
-fn inspection_is_still_offline_and_does_not_claim_execution() {
-    let inspect = cli(&arguments("inspect"));
-    assert_eq!(inspect.status.code(), Some(0));
-    let report: serde_json::Value = serde_json::from_slice(&inspect.stdout).unwrap();
-    assert_eq!(report["status"], "inspection_only");
-    assert_eq!(report["execution_available"], false);
+fn default_config_and_explicit_config_are_offline_and_equivalent() {
+    let t = Temp::new();
+    let path = t.write(
+        "fountain-eval.toml",
+        &config(
+            "registry:fountain_engine@2.1.0",
+            "registry:fountain_operators@2.0.0#slab",
+        ),
+    );
+    let a = cli(&t.0, &["inspect"]);
+    assert!(a.status.success());
+    let b = cli(
+        std::path::Path::new("/tmp"),
+        &["inspect", "--config", path.to_str().unwrap()],
+    );
+    assert_eq!(a.stdout, b.stdout);
+    let report: serde_json::Value = serde_json::from_slice(&a.stdout).unwrap();
+    assert_eq!(report["inspection"]["status"], "inspection_only");
+    assert_eq!(report["inspection"]["execution_available"], false);
+    assert!(!t.0.join("runs").exists());
+    assert!(!t.0.join(".fountain-eval").exists());
 }
-
 #[test]
-fn invalid_input_takes_precedence_over_execution_unavailability() {
-    assert_eq!(cli(&["run"]).status.code(), Some(2));
-    let mut args = arguments("run");
-    args[2] = "registry:fountain_engine@latest";
-    let malformed = cli(&args);
-    assert_eq!(malformed.status.code(), Some(2));
-    assert!(malformed.stdout.is_empty());
-    args[0] = "inspect";
-    args[2] = "path:Cargo.toml";
-    args[4] = "path:Cargo.lock";
-    let manifest_error = cli(&args);
-    assert_eq!(manifest_error.status.code(), Some(2));
-    let report: serde_json::Value = serde_json::from_slice(&manifest_error.stdout).unwrap();
+fn missing_config_invalid_sources_and_legacy_selectors_are_rejected() {
+    let t = Temp::new();
+    assert_eq!(cli(&t.0, &["run"]).status.code(), Some(2));
+    assert_eq!(
+        cli(&t.0, &["run", "--test", "operator-smoke@0.1.0"])
+            .status
+            .code(),
+        Some(2)
+    );
+    t.write(
+        "fountain-eval.toml",
+        &config(
+            "registry:fountain_engine@latest",
+            "registry:fountain_operators@2.0.0#slab",
+        ),
+    );
+    assert_eq!(cli(&t.0, &["inspect"]).status.code(), Some(2));
+    t.write(
+        "fountain-eval.toml",
+        &config("path:missing-engine", "path:missing-operator"),
+    );
+    let result = cli(&t.0, &["inspect"]);
+    assert_eq!(result.status.code(), Some(2));
+    let report: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
     assert!(
-        report["diagnostics"]
+        report["inspection"]["diagnostics"]
             .as_array()
             .unwrap()
             .iter()

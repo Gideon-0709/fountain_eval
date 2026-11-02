@@ -2,22 +2,44 @@
   "format_version": 1,
   "interfaces": [
     {
-      "digest": "eb011aba8fd3e57ccfcfbe84dafe6f34b234f18a2e4d0f250dcdc4cc182716d1",
+      "digest": "84de6c77630c23b6157df24a22136e2f4885a1bcefb6916a31a473306acdc0f5",
       "id": "native-2@0.1.0"
     },
     {
-      "digest": "750b1677c57584cb5df1d1019963ab7399bcd36dcac9b2fb0cd80e8c9fc2c266",
+      "digest": "2362072e6556363d751de0ad4ce4940ede30a4e34255c858c1203627bbba71a4",
       "id": "native-3@0.1.0"
     },
     {
-      "digest": "ddebec7d864c49936f8f7d6adc83e09506fd63f700f9f339afc86f50eb8fc69e",
+      "digest": "0bdffb538b3bb26ea8c3725e2586ffb95b12c08c44ed0bd159f600c276247ba8",
       "id": "product-abi@0.1.0"
     }
   ],
   "publication_status": "internal-draft",
-  "tests": [
+  "schemes": [
+    {
+      "modes": [
+        "systematic"
+      ],
+      "name": "rq"
+    },
+    {
+      "modes": [
+        "systematic"
+      ],
+      "name": "r10"
+    }
+  ],
+  "test_versions": [
     {
       "cases": [
+        "codec/r10/missing-0/decode",
+        "codec/r10/missing-0/encode",
+        "codec/r10/missing-8/decode",
+        "codec/r10/missing-8/encode",
+        "codec/rq/missing-0/decode",
+        "codec/rq/missing-0/encode",
+        "codec/rq/missing-8/decode",
+        "codec/rq/missing-8/encode",
         "operator/1/direct",
         "operator/1/direct/duplicate-source-xor",
         "operator/1/direct/self-xor",
@@ -38,372 +60,274 @@
         "operator/31/execute/self-xor"
       ],
       "checks": {
-        "operator/1/direct": {
-          "description": "Distinct-ID scalar reference, copy isolation, move, zero and GF arithmetic",
-          "measured": true,
-          "operations": 14,
-          "payload_bytes": 0,
-          "rule": "operator-core",
-          "severity": "fatal"
-        },
-        "operator/1/direct/duplicate-source-xor": {
-          "description": "A repeated source in AddTwo is compared with cancellation in the scalar reference",
-          "measured": true,
-          "operations": 256,
-          "payload_bytes": 0,
-          "rule": "duplicate-source-xor",
-          "severity": "warning"
-        },
-        "operator/1/direct/self-xor": {
-          "description": "Same-ID XOR is compared with the zero result of the scalar reference",
-          "measured": true,
-          "operations": 256,
-          "payload_bytes": 0,
-          "rule": "self-xor",
-          "severity": "warning"
-        },
-        "operator/1/execute": {
-          "description": "Distinct-ID scalar reference, copy isolation, move, zero and GF arithmetic",
-          "measured": true,
-          "operations": 14,
-          "payload_bytes": 0,
-          "rule": "operator-core",
-          "severity": "fatal"
-        },
-        "operator/1/execute/duplicate-source-xor": {
-          "description": "A repeated source in AddTwo is compared with cancellation in the scalar reference",
-          "measured": true,
-          "operations": 256,
-          "payload_bytes": 0,
-          "rule": "duplicate-source-xor",
-          "severity": "warning"
-        },
-        "operator/1/execute/self-xor": {
-          "description": "Same-ID XOR is compared with the zero result of the scalar reference",
-          "measured": true,
-          "operations": 256,
-          "payload_bytes": 0,
-          "rule": "self-xor",
-          "severity": "warning"
-        },
-        "operator/128/direct": {
-          "description": "Distinct-ID scalar reference, copy isolation, move, zero and GF arithmetic",
-          "measured": true,
-          "operations": 14,
-          "payload_bytes": 0,
-          "rule": "operator-core",
-          "severity": "fatal"
-        },
-        "operator/128/direct/duplicate-source-xor": {
-          "description": "A repeated source in AddTwo is compared with cancellation in the scalar reference",
-          "measured": true,
-          "operations": 256,
-          "payload_bytes": 0,
-          "rule": "duplicate-source-xor",
-          "severity": "warning"
-        },
-        "operator/128/direct/self-xor": {
-          "description": "Same-ID XOR is compared with the zero result of the scalar reference",
-          "measured": true,
-          "operations": 256,
-          "payload_bytes": 0,
-          "rule": "self-xor",
-          "severity": "warning"
-        },
-        "operator/128/execute": {
-          "description": "Distinct-ID scalar reference, copy isolation, move, zero and GF arithmetic",
-          "measured": true,
-          "operations": 14,
-          "payload_bytes": 0,
-          "rule": "operator-core",
-          "severity": "fatal"
-        },
-        "operator/128/execute/duplicate-source-xor": {
-          "description": "A repeated source in AddTwo is compared with cancellation in the scalar reference",
-          "measured": true,
-          "operations": 256,
-          "payload_bytes": 0,
-          "rule": "duplicate-source-xor",
-          "severity": "warning"
-        },
-        "operator/128/execute/self-xor": {
-          "description": "Same-ID XOR is compared with the zero result of the scalar reference",
-          "measured": true,
-          "operations": 256,
-          "payload_bytes": 0,
-          "rule": "self-xor",
-          "severity": "warning"
-        },
-        "operator/31/direct": {
-          "description": "Distinct-ID scalar reference, copy isolation, move, zero and GF arithmetic",
-          "measured": true,
-          "operations": 14,
-          "payload_bytes": 0,
-          "rule": "operator-core",
-          "severity": "fatal"
-        },
-        "operator/31/direct/duplicate-source-xor": {
-          "description": "A repeated source in AddTwo is compared with cancellation in the scalar reference",
-          "measured": true,
-          "operations": 256,
-          "payload_bytes": 0,
-          "rule": "duplicate-source-xor",
-          "severity": "warning"
-        },
-        "operator/31/direct/self-xor": {
-          "description": "Same-ID XOR is compared with the zero result of the scalar reference",
-          "measured": true,
-          "operations": 256,
-          "payload_bytes": 0,
-          "rule": "self-xor",
-          "severity": "warning"
-        },
-        "operator/31/execute": {
-          "description": "Distinct-ID scalar reference, copy isolation, move, zero and GF arithmetic",
-          "measured": true,
-          "operations": 14,
-          "payload_bytes": 0,
-          "rule": "operator-core",
-          "severity": "fatal"
-        },
-        "operator/31/execute/duplicate-source-xor": {
-          "description": "A repeated source in AddTwo is compared with cancellation in the scalar reference",
-          "measured": true,
-          "operations": 256,
-          "payload_bytes": 0,
-          "rule": "duplicate-source-xor",
-          "severity": "warning"
-        },
-        "operator/31/execute/self-xor": {
-          "description": "Same-ID XOR is compared with the zero result of the scalar reference",
-          "measured": true,
-          "operations": 256,
-          "payload_bytes": 0,
-          "rule": "self-xor",
-          "severity": "warning"
-        }
-      },
-      "definition": {
-        "boundary_calls_per_sample": 256,
-        "build": {
-          "codegen_units": 1,
-          "lto": false,
-          "opt_level": 3,
-          "profile": "release",
-          "target_cpu": "native",
-          "toolchain": "1.89.0"
-        },
-        "correctness": {
-          "fatal": "required core behavior, codec payload, lifecycle and evidence integrity",
-          "scope": "selected operator; product diagnostics inspect the callback implementation, not the binary operation surface",
-          "warning": "self-xor and duplicate-source-xor reference deviations",
-          "warning_effect": "reported with performance; no rejection or cross-component output-equivalence requirement"
-        },
-        "field_polynomial": 285,
-        "k": 64,
-        "operator_widths": [
-          1,
-          31,
-          128
-        ],
-        "purpose": "acceptance",
-        "repairs": 128,
-        "repetitions": 3,
-        "symbol_bytes": 128,
-        "timeout_seconds": 60,
-        "timing": {
-          "codec": "construction and loading through owned output",
-          "excluded": [
-            "validation",
-            "serialization",
-            "drop"
-          ],
-          "operator": "preloaded operations only; boundary samples call 256 independently initialized operators once each"
-        },
-        "warmups": 1
-      },
-      "identity": {
-        "digest": "7c391ba6aed78fdf6d8d0f3602ff6f305e177a2d2495d77d70c174b8c8ea7ba7",
-        "id": "operator-smoke@0.1.0"
-      },
-      "purpose": "acceptance",
-      "repetitions": 3,
-      "warmups": 1
-    },
-    {
-      "cases": [
-        "codec/r10/missing-0/decode",
-        "codec/r10/missing-0/encode",
-        "codec/r10/missing-8/decode",
-        "codec/r10/missing-8/encode",
-        "codec/rq/missing-0/decode",
-        "codec/rq/missing-0/encode",
-        "codec/rq/missing-8/decode",
-        "codec/rq/missing-8/encode"
-      ],
-      "checks": {
         "codec/r10/missing-0/decode": {
           "description": "Payload equality, incomplete state, operator participation and resource release",
           "measured": true,
+          "measurement_skip": null,
           "operations": 0,
           "payload_bytes": 8192,
           "rule": "codec-payload",
-          "severity": "fatal"
+          "severity": "fatal",
+          "skip": null
         },
         "codec/r10/missing-0/encode": {
           "description": "Payload equality, incomplete state, operator participation and resource release",
           "measured": true,
+          "measurement_skip": null,
           "operations": 0,
           "payload_bytes": 8192,
           "rule": "codec-payload",
-          "severity": "fatal"
+          "severity": "fatal",
+          "skip": null
         },
         "codec/r10/missing-8/decode": {
           "description": "Payload equality, incomplete state, operator participation and resource release",
           "measured": true,
+          "measurement_skip": null,
           "operations": 0,
           "payload_bytes": 8192,
           "rule": "codec-payload",
-          "severity": "fatal"
+          "severity": "fatal",
+          "skip": null
         },
         "codec/r10/missing-8/encode": {
           "description": "Payload equality, incomplete state, operator participation and resource release",
           "measured": true,
+          "measurement_skip": null,
           "operations": 0,
           "payload_bytes": 8192,
           "rule": "codec-payload",
-          "severity": "fatal"
+          "severity": "fatal",
+          "skip": null
         },
         "codec/rq/missing-0/decode": {
           "description": "Payload equality, incomplete state, operator participation and resource release",
           "measured": true,
+          "measurement_skip": null,
           "operations": 0,
           "payload_bytes": 8192,
           "rule": "codec-payload",
-          "severity": "fatal"
+          "severity": "fatal",
+          "skip": null
         },
         "codec/rq/missing-0/encode": {
           "description": "Payload equality, incomplete state, operator participation and resource release",
           "measured": true,
+          "measurement_skip": null,
           "operations": 0,
           "payload_bytes": 8192,
           "rule": "codec-payload",
-          "severity": "fatal"
+          "severity": "fatal",
+          "skip": null
         },
         "codec/rq/missing-8/decode": {
           "description": "Payload equality, incomplete state, operator participation and resource release",
           "measured": true,
+          "measurement_skip": null,
           "operations": 0,
           "payload_bytes": 8192,
           "rule": "codec-payload",
-          "severity": "fatal"
+          "severity": "fatal",
+          "skip": null
         },
         "codec/rq/missing-8/encode": {
           "description": "Payload equality, incomplete state, operator participation and resource release",
           "measured": true,
+          "measurement_skip": null,
           "operations": 0,
           "payload_bytes": 8192,
           "rule": "codec-payload",
-          "severity": "fatal"
+          "severity": "fatal",
+          "skip": null
+        },
+        "operator/1/direct": {
+          "description": "Distinct-ID scalar reference, copy isolation, move, zero and GF arithmetic",
+          "measured": true,
+          "measurement_skip": null,
+          "operations": 14,
+          "payload_bytes": 0,
+          "rule": "operator-core",
+          "severity": "fatal",
+          "skip": null
         },
         "operator/1/direct/duplicate-source-xor": {
           "description": "A repeated source in AddTwo is compared with cancellation in the scalar reference",
-          "measured": false,
-          "operations": 0,
+          "measured": true,
+          "measurement_skip": null,
+          "operations": 256,
           "payload_bytes": 0,
           "rule": "duplicate-source-xor",
-          "severity": "warning"
+          "severity": "warning",
+          "skip": null
         },
         "operator/1/direct/self-xor": {
           "description": "Same-ID XOR is compared with the zero result of the scalar reference",
-          "measured": false,
-          "operations": 0,
+          "measured": true,
+          "measurement_skip": null,
+          "operations": 256,
           "payload_bytes": 0,
           "rule": "self-xor",
-          "severity": "warning"
+          "severity": "warning",
+          "skip": null
+        },
+        "operator/1/execute": {
+          "description": "Distinct-ID scalar reference, copy isolation, move, zero and GF arithmetic",
+          "measured": true,
+          "measurement_skip": null,
+          "operations": 14,
+          "payload_bytes": 0,
+          "rule": "operator-core",
+          "severity": "fatal",
+          "skip": null
         },
         "operator/1/execute/duplicate-source-xor": {
           "description": "A repeated source in AddTwo is compared with cancellation in the scalar reference",
-          "measured": false,
-          "operations": 0,
+          "measured": true,
+          "measurement_skip": null,
+          "operations": 256,
           "payload_bytes": 0,
           "rule": "duplicate-source-xor",
-          "severity": "warning"
+          "severity": "warning",
+          "skip": null
         },
         "operator/1/execute/self-xor": {
           "description": "Same-ID XOR is compared with the zero result of the scalar reference",
-          "measured": false,
-          "operations": 0,
+          "measured": true,
+          "measurement_skip": null,
+          "operations": 256,
           "payload_bytes": 0,
           "rule": "self-xor",
-          "severity": "warning"
+          "severity": "warning",
+          "skip": null
+        },
+        "operator/128/direct": {
+          "description": "Distinct-ID scalar reference, copy isolation, move, zero and GF arithmetic",
+          "measured": true,
+          "measurement_skip": null,
+          "operations": 14,
+          "payload_bytes": 0,
+          "rule": "operator-core",
+          "severity": "fatal",
+          "skip": null
         },
         "operator/128/direct/duplicate-source-xor": {
           "description": "A repeated source in AddTwo is compared with cancellation in the scalar reference",
-          "measured": false,
-          "operations": 0,
+          "measured": true,
+          "measurement_skip": null,
+          "operations": 256,
           "payload_bytes": 0,
           "rule": "duplicate-source-xor",
-          "severity": "warning"
+          "severity": "warning",
+          "skip": null
         },
         "operator/128/direct/self-xor": {
           "description": "Same-ID XOR is compared with the zero result of the scalar reference",
-          "measured": false,
-          "operations": 0,
+          "measured": true,
+          "measurement_skip": null,
+          "operations": 256,
           "payload_bytes": 0,
           "rule": "self-xor",
-          "severity": "warning"
+          "severity": "warning",
+          "skip": null
+        },
+        "operator/128/execute": {
+          "description": "Distinct-ID scalar reference, copy isolation, move, zero and GF arithmetic",
+          "measured": true,
+          "measurement_skip": null,
+          "operations": 14,
+          "payload_bytes": 0,
+          "rule": "operator-core",
+          "severity": "fatal",
+          "skip": null
         },
         "operator/128/execute/duplicate-source-xor": {
           "description": "A repeated source in AddTwo is compared with cancellation in the scalar reference",
-          "measured": false,
-          "operations": 0,
+          "measured": true,
+          "measurement_skip": null,
+          "operations": 256,
           "payload_bytes": 0,
           "rule": "duplicate-source-xor",
-          "severity": "warning"
+          "severity": "warning",
+          "skip": null
         },
         "operator/128/execute/self-xor": {
           "description": "Same-ID XOR is compared with the zero result of the scalar reference",
-          "measured": false,
-          "operations": 0,
+          "measured": true,
+          "measurement_skip": null,
+          "operations": 256,
           "payload_bytes": 0,
           "rule": "self-xor",
-          "severity": "warning"
+          "severity": "warning",
+          "skip": null
+        },
+        "operator/31/direct": {
+          "description": "Distinct-ID scalar reference, copy isolation, move, zero and GF arithmetic",
+          "measured": true,
+          "measurement_skip": null,
+          "operations": 14,
+          "payload_bytes": 0,
+          "rule": "operator-core",
+          "severity": "fatal",
+          "skip": null
         },
         "operator/31/direct/duplicate-source-xor": {
           "description": "A repeated source in AddTwo is compared with cancellation in the scalar reference",
-          "measured": false,
-          "operations": 0,
+          "measured": true,
+          "measurement_skip": null,
+          "operations": 256,
           "payload_bytes": 0,
           "rule": "duplicate-source-xor",
-          "severity": "warning"
+          "severity": "warning",
+          "skip": null
         },
         "operator/31/direct/self-xor": {
           "description": "Same-ID XOR is compared with the zero result of the scalar reference",
-          "measured": false,
-          "operations": 0,
+          "measured": true,
+          "measurement_skip": null,
+          "operations": 256,
           "payload_bytes": 0,
           "rule": "self-xor",
-          "severity": "warning"
+          "severity": "warning",
+          "skip": null
+        },
+        "operator/31/execute": {
+          "description": "Distinct-ID scalar reference, copy isolation, move, zero and GF arithmetic",
+          "measured": true,
+          "measurement_skip": null,
+          "operations": 14,
+          "payload_bytes": 0,
+          "rule": "operator-core",
+          "severity": "fatal",
+          "skip": null
         },
         "operator/31/execute/duplicate-source-xor": {
           "description": "A repeated source in AddTwo is compared with cancellation in the scalar reference",
-          "measured": false,
-          "operations": 0,
+          "measured": true,
+          "measurement_skip": null,
+          "operations": 256,
           "payload_bytes": 0,
           "rule": "duplicate-source-xor",
-          "severity": "warning"
+          "severity": "warning",
+          "skip": null
         },
         "operator/31/execute/self-xor": {
           "description": "Same-ID XOR is compared with the zero result of the scalar reference",
-          "measured": false,
-          "operations": 0,
+          "measured": true,
+          "measurement_skip": null,
+          "operations": 256,
           "payload_bytes": 0,
           "rule": "self-xor",
-          "severity": "warning"
+          "severity": "warning",
+          "skip": null
         }
       },
       "definition": {
+        "applicability": {
+          "boundary_measurement": "complete_operator_surface",
+          "boundary_validation": "callback_operator",
+          "codec": "configured scheme",
+          "operator_core": "complete_operator_surface"
+        },
         "boundary_calls_per_sample": 256,
         "build": {
           "codegen_units": 1,
@@ -429,6 +353,7 @@
         "purpose": "acceptance",
         "repairs": 128,
         "repetitions": 3,
+        "selection": "all applicable checks; no user test filters",
         "symbol_bytes": 128,
         "timeout_seconds": 60,
         "timing": {
@@ -443,8 +368,8 @@
         "warmups": 1
       },
       "identity": {
-        "digest": "e30eb89ab4d4a26fa8caccc5381f8fe454c74b7cf57984191aafa0fccbb08b84",
-        "id": "codec-smoke@0.1.0"
+        "digest": "a816b09712c965f182b0574289f8a3eddc2c82ec7db1da780b718cfe2d9f95cd",
+        "id": "0.1.0"
       },
       "purpose": "acceptance",
       "repetitions": 3,

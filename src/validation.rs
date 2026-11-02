@@ -12,6 +12,8 @@ pub enum Severity {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Check {
+    pub skip: Option<crate::coverage::Skip>,
+    pub measurement_skip: Option<crate::coverage::Skip>,
     pub severity: Severity,
     pub rule: String,
     pub description: String,
@@ -26,6 +28,9 @@ pub fn verify(recipe: &Recipe, events: &[Value]) -> Result<()> {
     for event in events {
         let case = event["case"].as_str().ok_or("validation case missing")?;
         let check = recipe.check(case).ok_or("unregistered correctness check")?;
+        if check.skip.is_some() {
+            return Err("skipped check produced validation evidence".into());
+        }
         if !seen.insert(case.to_owned()) {
             return Err("duplicate validation case".into());
         }

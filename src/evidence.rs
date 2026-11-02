@@ -115,6 +115,8 @@ pub struct Record {
     pub status: String,
     pub stage: String,
     pub request: EvaluationRequest,
+    pub configuration: crate::config::Configuration,
+    pub coverage: Value,
     pub quadruple: Option<Quadruple>,
     pub recipe: Option<Recipe>,
     pub built: Option<Built>,
@@ -155,6 +157,20 @@ pub fn stage_states(record: &Record) -> BTreeMap<&'static str, &str> {
 pub fn save(directory: &Path, record: &Record) -> Result<()> {
     util::write_json(&directory.join("stages.json"), &stage_states(record))?;
     util::write_json(&directory.join("request.json"), &record.request)?;
+    fs::write(
+        directory.join("config.toml"),
+        &record.configuration.original,
+    )
+    .map_err(|e| e.to_string())?;
+    util::write_json(
+        &directory.join("config-resolved.json"),
+        &record.configuration,
+    )?;
+    util::write_json(
+        &directory.join("coverage.json"),
+        &crate::coverage::report(record),
+    )?;
+    util::write_json(&directory.join("test-plan.json"), &record.recipe)?;
     util::write_json(
         &directory.join("evaluator.json"),
         &json!({"package_version":env!("CARGO_PKG_VERSION"),"binary_sha256":std::env::current_exe().ok().and_then(|p|util::file_hash(&p).ok())}),
@@ -190,6 +206,7 @@ pub fn load(directory: &Path) -> Result<Record> {
     }
     let mut record: Record = util::read_json(&directory.join("result.json"))?;
     record.correctness = crate::validation::report(&record);
+    record.coverage = crate::coverage::report(&record);
     Ok(record)
 }
 pub fn compare(left: &Record, right: &Record) -> Result<Value> {
@@ -216,38 +233,45 @@ pub fn compare(left: &Record, right: &Record) -> Result<Value> {
         }
         validate_samples(record)?;
     }
-    let witnesses = |r: &Record| {
-        r.validation
-            .iter()
-            .filter(|v| {
-                r.recipe
-                    .as_ref()
-                    .and_then(|p| p.check(v["case"].as_str().unwrap_or("")))
-                    .is_some_and(|c| c.severity == crate::validation::Severity::Fatal)
-            })
-            .map(|v| {
-                (
-                    v["case"].as_str().unwrap_or("").to_owned(),
-                    v["witness"].clone(),
-                )
-            })
-            .collect::<BTreeMap<_, _>>()
-    };
-    if witnesses(left) != witnesses(right) {
-        return Err("not comparable: acceptance validation witnesses differ".into());
+    let left_recipe = left.recipe.as_ref().unwrap();
+    let right_recipe = right.recipe.as_ref().unwrap();
+    for (case, check) in &left_recipe.checks {
+        if check.skip.is_none()
+            && check.severity == crate::validation::Severity::Fatal
+            && right_recipe.check(case).is_some_and(|c| c.skip.is_none())
+        {
+            let witness = |r: &Record| {
+                r.validation
+                    .iter()
+                    .find(|v| v["case"] == *case)
+                    .map(|v| v["witness"].clone())
+            };
+            if witness(left) != witness(right) {
+                return Err("not comparable: common fatal-check witnesses differ".into());
+            }
+        }
     }
     let a_summary = crate::measurement::summarize(&left.samples)?;
     let b_summary = crate::measurement::summarize(&right.samples)?;
     let left_correctness = crate::validation::report(left);
     let right_correctness = crate::validation::report(right);
-    let rows:Vec<_>=a_summary.iter().zip(&b_summary).map(|(a,b)|json!({"case":a.case,"left_median_ns":a.median_ns,"right_median_ns":b.median_ns,"left_over_right_time":a.median_ns as f64/b.median_ns as f64,"left_operations_per_second":a.operations_per_second,"right_operations_per_second":b.operations_per_second,"left_source_payload_gbps":a.source_payload_gbps,"right_source_payload_gbps":b.source_payload_gbps,"left_warnings":left_correctness.warnings.iter().filter(|w|w["case"]==a.case).collect::<Vec<_>>(),"right_warnings":right_correctness.warnings.iter().filter(|w|w["case"]==b.case).collect::<Vec<_>>()})).collect();
+    let rows:Vec<_>=a_summary.iter().filter_map(|a|b_summary.iter().find(|b|b.case==a.case).map(|b|(a,b))).map(|(a,b)|json!({"case":a.case,"left_median_ns":a.median_ns,"right_median_ns":b.median_ns,"left_over_right_time":a.median_ns as f64/b.median_ns as f64,"left_operations_per_second":a.operations_per_second,"right_operations_per_second":b.operations_per_second,"left_source_payload_gbps":a.source_payload_gbps,"right_source_payload_gbps":b.source_payload_gbps,"left_warnings":left_correctness.warnings.iter().filter(|w|w["case"]==a.case).collect::<Vec<_>>(),"right_warnings":right_correctness.warnings.iter().filter(|w|w["case"]==b.case).collect::<Vec<_>>()})).collect();
+    if rows.is_empty() {
+        return Err("not comparable: no common measured cases".into());
+    }
     Ok(
-        json!({"status":"comparable","purpose":"acceptance","left":left.run_id,"right":right.run_id,"interface_equivalence":{"contract":a.t,"evidence":"registered timing contract and matching fatal-check witnesses; warning outcomes may differ","interfaces":[a.i,b.i]},"attribution":if a.i!=b.i&&a.c!=b.c{"component and interface path together"}else if a.i!=b.i{"interface path"}else if a.c["dependencies"]["support_packages"]!=b.c["dependencies"]["support_packages"]{"component combination including support dependency changes"}else{"selected component combination"},"correctness":{"left":left_correctness,"right":right_correctness},"warning":"Acceptance timings are not a formal performance standard or an optimization conclusion.","rows":rows}),
+        json!({"status":"comparable","comparison_scope":"common measured cases only","coverage":{"left":crate::coverage::report(left),"right":crate::coverage::report(right)},"purpose":"acceptance","left":left.run_id,"right":right.run_id,"interface_equivalence":{"contract":a.t,"evidence":"registered timing contract and matching fatal-check witnesses; warning outcomes may differ","interfaces":[a.i,b.i]},"attribution":if a.i!=b.i&&a.c!=b.c{"component and interface path together"}else if a.i!=b.i{"interface path"}else if a.c["dependencies"]["support_packages"]!=b.c["dependencies"]["support_packages"]{"component combination including support dependency changes"}else{"selected component combination"},"correctness":{"left":left_correctness,"right":right_correctness},"warning":"Acceptance timings are not a formal performance standard or an optimization conclusion.","rows":rows}),
     )
 }
 pub fn validate_samples(record: &Record) -> Result<()> {
     let recipe = record.recipe.as_ref().ok_or("missing recipe")?;
-    let canonical = catalog::recipe(&record.request.test)?;
+    let family = record
+        .quadruple
+        .as_ref()
+        .map(|q| q.i.id.split('@').next().unwrap_or(""))
+        .or_else(|| record.built.as_ref().map(|b| b.family.as_str()))
+        .ok_or("missing interface identity")?;
+    let canonical = catalog::plan(&record.request.test, &record.request.scheme, family)?;
     if serde_json::to_value(recipe).map_err(|e| e.to_string())?
         != serde_json::to_value(&canonical).map_err(|e| e.to_string())?
     {
@@ -263,7 +287,8 @@ pub fn validate_samples(record: &Record) -> Result<()> {
         let check = recipe
             .check(&sample.case)
             .ok_or("unregistered sample case")?;
-        if !check.measured
+        if check.skip.is_some()
+            || !check.measured
             || sample.payload_bytes != check.payload_bytes
             || sample.operations != check.operations
         {

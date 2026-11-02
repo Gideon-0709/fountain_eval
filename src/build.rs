@@ -301,46 +301,59 @@ fn cargo(root: &Path, logs: &Path, label: &str, args: &[&str]) -> Result<String>
     process::run(&mut command, logs, label, Duration::from_secs(1800))
 }
 
+pub fn resolve_scheme(
+    resolver: &mut Resolver,
+    engine: &Package,
+    selection: &crate::protocol::SchemeSelection,
+) -> Result<Package> {
+    catalog::validate_scheme(selection)?;
+    let family = catalog::family(engine)?;
+    if family == "product-abi" && selection.source.is_some() {
+        return Err("unsupported: product ABI uses its bundled scheme; an external scheme.source cannot be substituted".into());
+    }
+    let scheme = if let Some(reference) = &selection.source {
+        resolver.resolve(reference)?
+    } else if family == "native-2" {
+        resolver.registry("fountain_scheme", "2.1.0")?
+    } else {
+        sibling(engine, "fountain_scheme")?
+    };
+    if scheme.name != "fountain_scheme" {
+        return Err(format!(
+            "unsupported: no scheme integration for package {}",
+            scheme.name
+        ));
+    }
+    Ok(scheme)
+}
+
 pub fn prepare(
     resolver: &mut Resolver,
     engine: &Package,
     operator: &Package,
+    scheme: &Package,
     implementation: &str,
     recipe: &Recipe,
     environment: &Value,
 ) -> Result<Built> {
     let family = catalog::family(engine)?;
-    if family == "product-abi" && recipe.identity.id.starts_with("operator-smoke") {
-        return Err(
-            "unsupported: product API does not expose the complete operator operation surface"
-                .into(),
-        );
-    }
     let interface = catalog::interface(&family);
     let mut overrides = BTreeMap::new();
     if family != "product-abi" {
         overrides.insert("fountain_engine".into(), engine.clone());
     }
-    let (scheme, utility) = if family == "native-2" {
-        (
-            Some(resolver.registry("fountain_scheme", "2.1.0")?),
-            Some(resolver.registry("fountain_utility", "2.1.0")?),
-        )
-    } else if family == "native-3" {
-        (
-            Some(sibling(engine, "fountain_scheme")?),
-            Some(sibling(engine, "fountain_utility")?),
-        )
-    } else {
-        (None, None)
+    let utility = match family.as_str() {
+        "native-2" => Some(resolver.registry("fountain_utility", "2.1.0")?),
+        "native-3" => Some(sibling(engine, "fountain_utility")?),
+        _ => None,
     };
-    if let Some(p) = &scheme {
-        overrides.insert(p.name.clone(), p.clone());
+    if family != "product-abi" {
+        overrides.insert(scheme.name.clone(), scheme.clone());
     }
     if let Some(p) = &utility {
         overrides.insert(p.name.clone(), p.clone());
     }
-    let mut initial = vec![engine.clone(), operator.clone()];
+    let mut initial = vec![engine.clone(), operator.clone(), scheme.clone()];
     initial.extend(overrides.values().cloned());
     if family == "product-abi" {
         for name in ["product/fountain_raptor_q", "product/fountain_raptor_10"] {
@@ -352,6 +365,7 @@ pub fn prepare(
     let key = util::digest(&(
         engine.identity(),
         operator.identity(),
+        scheme.identity(),
         implementation,
         &interface,
         &recipe.identity,
@@ -472,7 +486,6 @@ pub fn prepare(
         }
     } else {
         add("fountain_engine", "fountain_engine", &engine_dir, vec![]);
-        let scheme = scheme.as_ref().unwrap();
         let path = composer.add(scheme)?;
         add("fountain_scheme", "fountain_scheme", &path, vec![]);
         let utility = utility.as_ref().unwrap();
@@ -544,7 +557,7 @@ pub fn prepare(
     ] {
         fs::write(directory.join("src").join(name), contents).map_err(|e| e.to_string())?;
     }
-    fs::write(directory.join("src/config.rs"),format!("pub const BUILD:&str={key:?};\npub const INTERFACE:&str={:?};\npub const TEST:&str={:?};\npub const OPERATOR:&str={implementation:?};\npub const FAMILY:&str={family:?};\n",interface.id,recipe.identity.id)).map_err(|e|e.to_string())?;
+    fs::write(directory.join("src/config.rs"),format!("pub const BUILD:&str={key:?};\npub const INTERFACE:&str={:?};\npub const TEST:&str={:?};\npub const OPERATOR:&str={implementation:?};\npub const FAMILY:&str={family:?};\npub const SCHEME:&str={:?};\n",interface.id,recipe.identity.id,environment["scheme"]["name"].as_str().ok_or("missing scheme selection")?)).map_err(|e|e.to_string())?;
     if family == "product-abi" {
         fs::write(directory.join("build.rs"),"fn main(){let d=std::env::var(\"FOUNTAIN_ENGINE_LIB_DIR\").unwrap();println!(\"cargo:rustc-link-arg=-Wl,-rpath,{}\",d);}").map_err(|e|e.to_string())?;
     }
@@ -594,6 +607,22 @@ pub fn prepare(
         && engines[0]["manifest_path"] != engine_dir.join("Cargo.toml").to_string_lossy().as_ref()
     {
         return Err("built engine is not the selected engine".into());
+    }
+    let selected_scheme_manifest = directory
+        .join("sources")
+        .join(&scheme.source.digest)
+        .join(&scheme.manifest);
+    let scheme_graph = product_graph.as_ref().unwrap_or(&graph);
+    let schemes: Vec<_> = scheme_graph["packages"]
+        .as_array()
+        .ok_or("missing scheme metadata")?
+        .iter()
+        .filter(|p| p["name"] == "fountain_scheme")
+        .collect();
+    if schemes.len() != 1
+        || schemes[0]["manifest_path"] != selected_scheme_manifest.to_string_lossy().as_ref()
+    {
+        return Err("built scheme is not the selected scheme".into());
     }
     let binary = directory.join("target/release/fountain-eval-driver");
     let mut artifacts = BTreeMap::new();
@@ -722,7 +751,7 @@ pub fn prepare(
         interface,
         family,
         implementation: implementation.into(),
-        components: json!({"engine":engine.identity(),"operator":operator.identity(),"implementation":implementation,"dependencies":closure,"input_sources":input_sources}),
+        components: json!({"engine":engine.identity(),"operator":operator.identity(),"scheme":scheme.identity(),"scheme_selection":environment["scheme"],"implementation":implementation,"dependencies":closure,"input_sources":input_sources}),
         dependency_graph: json!({"driver":graph,"product":product_graph}),
         bindings: json!(composer.bindings),
         product_library,

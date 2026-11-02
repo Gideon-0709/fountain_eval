@@ -4,7 +4,9 @@ The repository contains one package and these responsibility boundaries:
 
 | Location | Responsibility |
 |---|---|
-| `src/protocol.rs` | Three-input request, reference grammar and offline inspection records |
+| `src/protocol.rs` | Normalized component/scheme request, reference grammar and offline inspection records |
+| `src/config.rs` | Strict TOML input, config-relative paths, defaults and original/resolved input evidence |
+| `src/coverage.rs` | Complete per-case validation/measurement coverage and skip reasons |
 | `src/runner.rs` | Offline declaration inspection |
 | `src/source.rs` | Immutable local/Git/registry snapshots and path dependency closure |
 | `src/catalog.rs` | I/T registrations, supported families and embedded assets |

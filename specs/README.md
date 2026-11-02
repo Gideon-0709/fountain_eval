@@ -1,44 +1,52 @@
-# Interface and evidence contracts
+# Configuration, process and evidence contracts
 
-## Request and identity
+## User configuration
 
-The request contains `components.engine`, `components.operator`, and `test`. Both component references carry a source form and an optional operator implementation selector. I selection and E generation are automatic. The request is not itself a completed four-tuple.
+The public input is one strict TOML document. Required keys are `engine`, `operator`, `scheme`, and `test`. Scheme is a name string or a table with `name`, optional `source`, and optional `mode` (default `systematic`). `test` is an exact content version, currently `0.1.0`; it does not contain a suite name. Optional `[run]` accepts only `output` and `cache`.
 
-Resolved C records package/version, origin revision or registry checksum, source digest, implementation, captured source closure and dependency provenance. I/T identities each contain `id` and `digest`. E contains `conditions`, their canonical digest, and separate observations. Format version 1 describes the current internal result schema; the framework package version is provenance.
+References support local packages, fixed Git commits and exact registry versions. Every relative path is resolved against the config directory. Unknown keys, duplicate keys, per-case selectors and arbitrary parameter overrides are rejected. Config text, path, digest, normalized request and resolved storage paths are retained. Prepared execution consumes this stored input without rereading the original file.
 
-`specs/catalog-lock.json` records the current internal candidate. Package, I and T use the planned `0.1.0` baseline. Maintainers update candidate content digests deliberately during this unreleased round; the owner will freeze the release after acceptance. Results with different digests remain distinct even when their draft version labels match.
+Config syntax is framework-owned. T owns workloads, severity, timing and metrics. I owns bindings, source defaults and capabilities. Source and invocation forms are independent. Product ABI rejects an external scheme source; native integrations bind and verify the selected scheme package.
+
+## Four-tuple and content catalog
+
+Resolved C records engine/operator/scheme package identities, source digests, algorithm selection and dependency provenance. I/T identities contain `id` and `digest`. E contains common conditions and their digest, including configured scheme name/mode, plus separate runtime observations. Scheme implementation versions belong to C rather than E.
+
+`specs/catalog-lock.json` records the whole internal candidate. Package, I and T remain on the planned 0.1.0 baseline; no release is implied. A whole-content T identity is independent of per-run applicability and interface family. Registered content is expanded for the configured scheme and capabilities, preserving every registered case. Different draft content digests are not treated as equivalent.
+
+## Applicability and coverage
+
+Each check declares severity, rule, work counts and whether it is measured. Expanded checks have optional `skip` and `measurement_skip` objects with `code` and `reason`. Current codes are `scheme_not_selected` and `capability_unavailable`. Missing or unsupported scheme/interface selection is a configuration/integration error, not a successful empty plan.
+
+`test-plan.json` retains the full expansion. `coverage.json` and `result.json.coverage` list every case with separate validation and measurement states. Validation states include passed, failed, skipped and not_executed. Measurements include recorded, incomplete, skipped, not_applicable and not_executed. Recorded samples are accepted only for a succeeded run. Prepared and early-failed results do not claim validation or measurement completion.
+
+A successful result requires every applicable validation event and every applicable sample. The validator reconstructs the canonical plan, so an edited skip cannot hide missing evidence. Failures and interruptions leave unfinished cases unexecuted; they are never converted into applicability skips. The acceptance harness runs both schemes and checks that the union of executed cases covers the registered catalog.
 
 ## Process protocol 1
 
-Every invocation starts with exactly one hello containing `protocol`, `build`, `interface`, `test`, `operator`, and `family`. These must match the selected generated build.
+Each invocation starts with exactly one hello containing protocol, build, interface, whole test version, selected scheme, operator and family. These must match the generated build and request.
 
-- `describe`: hello followed by `done` with mode `describe`.
-- `validate`: hello, one `validation` event per registered fatal or warning check, and `done` with mode `validate`.
-- `measure`: hello, one `sample` event per case/repetition, and `done` with mode `measure`.
-- A caught driver panic records a fatal execution diagnostic and an `error` event, then exits nonzero. Completed validation prefixes remain available. An abnormal exit or missing completion is never success.
+- `describe`: hello followed by done with mode describe.
+- `validate`: one validation event per applicable check, then done.
+- `measure`: one sample per applicable case/repetition, then done.
+- A caught panic records a fatal execution diagnostic and an error, then exits nonzero. Completed prefixes remain available.
 
-A sample includes case, zero-based recorded repetition, elapsed nanoseconds, original payload bytes, operation count and output witness. New warning-case samples also include `observation` with `calls: 256` and grouped actual outputs plus occurrence counts. Every timed call is accounted for. Warmup results are not samples. Case sets, exact counts, units and oracle semantics belong to T. Stdout is NDJSON; stderr is diagnostic output. The CLI's outer output is a JSON object, not this internal protocol.
+The driver does not decide which failed checks to skip. Applicability comes from the registered config/capability expansion and actual protocol coverage must match it. Stdout is NDJSON; stderr is diagnostic output. Malformed output, unexpected events, missing completion, timeout and abnormal exit remain failures.
 
-The current invocation deadline is 60 seconds. Resolution/build subprocesses have separate bounded deadlines. The framework sends termination to a complete owned child process group and reaps its direct child. SIGINT produces an interrupted result when a run is active.
+Invocation deadlines and process-group cleanup remain enforced. SIGINT produces an interrupted record when a run is active. Resolution/build have separate bounded deadlines.
 
-## Correctness records
+## Correctness and samples
 
-For the current T each validation event includes `case`, registered `rule`, `severity` (`fatal` or `warning`), `status` (`passed` or `failed`) and `witness`. Boundary events additionally carry the operation, symbol width, dispatch, scope, expected/actual output and message. A failed warning-level check is non-blocking. Its output witness identifies observed data rather than claiming equality with the scalar reference.
+Validation includes case, rule, fatal/warning severity, passed/failed status and witness. Boundary events carry operation arguments, width, dispatch, scope, expected/actual values and explanation. A failed warning-level check is non-blocking; its witness identifies observed data rather than proving equality with the reference.
 
-The framework verifies coverage and the registered severity; a driver cannot downgrade a fatal check. It validates observation hashes independently and reports measured deviations as well as validation deviations. Fatal sample witnesses must match their correctness check; warning sample witnesses may differ and their observations remain visible.
+Samples include case, repetition, elapsed nanoseconds, payload bytes, operation count and witness. Boundary measurements also contain grouped output observations accounting for all 256 calls. Warmup results are not samples. Initialization, output inspection and serialization are outside operator timing. Codec timing includes construction and loading through owned output; final destruction is outside.
 
-`result.json.correctness` and `correctness.json` provide status, counts of executed fatal/warning checks, fatal failures and warnings. `passed_with_warnings` remains run status `succeeded` and CLI exit 0. A successful run must contain all registered observations, including passing warning-level checks.
+Fatal sample witnesses must match their validated results. Warning observations can differ and remain visible. `correctness.json` and the result record report executed check counts, fatal failures and warnings. A succeeded run can have both `passed_with_warnings` correctness and `completed_with_skips` coverage.
 
-## Artifact validity
+## Evidence and comparison
 
-A sealed run contains the original request, stage state, resolved/configured inputs, available build provenance, validation, raw samples and result record. `seal.json` maps relative artifact names to SHA-256. Paths escaping the evidence directory are rejected. Seals are integrity checks, not signatures or third-party attestations.
+Sealed results preserve config, request, available source/build/configuration provenance, complete test plan and coverage, correctness, raw samples and logs. `seal.json` maps artifact paths to SHA-256; escaping paths are rejected. Seals detect modification, not establish a third-party signature. Early failures do not fabricate a four-tuple.
 
-Result statuses are `prepared`, `succeeded`, `failed`, `unsupported`, and `interrupted`; checkpoints can be `running`. `stages.json` also explicitly represents stages that were `not_executed`. A prepared record has no measurements. A failed measurement can retain its valid prefix but has no completed aggregate performance summary.
+Comparison first validates both whole plans and all applicable evidence, then compares common measured cases. T and E must match, I must be registered and common fatal witnesses must agree. Both coverage tables are returned and the comparison scope is explicit. There are no fabricated rows for skipped cases. Warning differences do not reject comparison. Results with no common measurements are rejected.
 
-The result's optional four-tuple is created after build and capability/loader checks. A run that fails before that retains partial inputs without fabricating complete C/I/T/E. Correctness can subsequently reject an otherwise identified build.
-
-`compare` verifies complete samples and their workload counts, registered test expansion, current I/T identities, equal T/E conditions and matching fatal-check witnesses. Warning differences are reported on both sides and each affected performance row; they do not reject a comparison. It recomputes descriptive summaries from raw samples. The current cross-I relation is limited to the registered families supporting the selected acceptance T: native 2 and 3 for operator tests, all three families for codec tests. It does not imply general API or arbitrary-workload equivalence.
-
-## Product provenance
-
-The product integration records the binary-side and callback-side dependency graphs separately. Cargo.lock contents, normalized manifest bindings, shared-library hash, driver hash, absolute load location and dynamic-loader output are retained. Validation confirms callback reads/writes and two operator destructions per encoder/decoder pair. Measurement disables those counters. The library is released by normal process exit after facade objects have been dropped.
+Source references, config comments, run IDs, timestamps and temporary output/cache locations do not replace actual C/I/T/E identities. Product dependency graphs and loader evidence remain separate from callback-side provenance. Report and comparison do not require the build cache; prepared execution does.

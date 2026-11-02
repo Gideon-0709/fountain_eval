@@ -1,6 +1,6 @@
 use crate::validation::{Check, Severity};
 use crate::{
-    protocol::TestReference,
+    protocol::{SchemeSelection, TestReference},
     source::Package,
     util::{self, Result},
 };
@@ -31,28 +31,31 @@ impl Recipe {
         self.checks.get(case).cloned()
     }
     pub fn validation_cases(&self) -> Vec<String> {
-        self.checks.keys().cloned().collect()
+        self.checks
+            .iter()
+            .filter(|(_, c)| c.skip.is_none())
+            .map(|(name, _)| name.clone())
+            .collect()
     }
 }
 pub fn recipe(test: &TestReference) -> Result<Recipe> {
-    let id = format!("{}@{}", test.name, test.version);
-    let operator = match id.as_str() {
-        "operator-smoke@0.1.0" => true,
-        "codec-smoke@0.1.0" => false,
-        _ => return Err(format!("unsupported: unknown test {id}")),
-    };
+    let id = test.version.clone();
+    if id != "0.1.0" {
+        return Err(format!("unsupported: unknown test content version {id}"));
+    }
     let mut checks = BTreeMap::new();
-    if operator {
+    {
         for width in [1, 31, 128] {
             for mode in ["execute", "direct"] {
-                checks.insert(format!("operator/{width}/{mode}"), Check {severity:Severity::Fatal, rule:"operator-core".into(), description:"Distinct-ID scalar reference, copy isolation, move, zero and GF arithmetic".into(), measured:true, payload_bytes:0, operations:14});
+                checks.insert(format!("operator/{width}/{mode}"), Check {skip:None, measurement_skip:None, severity:Severity::Fatal, rule:"operator-core".into(), description:"Distinct-ID scalar reference, copy isolation, move, zero and GF arithmetic".into(), measured:true, payload_bytes:0, operations:14});
             }
         }
-    } else {
+    }
+    {
         for codec in ["rq", "r10"] {
             for missing in [0, 8] {
                 for phase in ["encode", "decode"] {
-                    checks.insert(format!("codec/{codec}/missing-{missing}/{phase}"), Check {severity:Severity::Fatal, rule:"codec-payload".into(), description:"Payload equality, incomplete state, operator participation and resource release".into(), measured:true, payload_bytes:8192, operations:0});
+                    checks.insert(format!("codec/{codec}/missing-{missing}/{phase}"), Check {skip:None, measurement_skip:None, severity:Severity::Fatal, rule:"codec-payload".into(), description:"Payload equality, incomplete state, operator participation and resource release".into(), measured:true, payload_bytes:8192, operations:0});
                 }
             }
         }
@@ -60,7 +63,7 @@ pub fn recipe(test: &TestReference) -> Result<Recipe> {
     for width in [1, 31, 128] {
         for mode in ["execute", "direct"] {
             for rule in ["self-xor", "duplicate-source-xor"] {
-                checks.insert(format!("operator/{width}/{mode}/{rule}"),Check {severity:Severity::Warning, rule:rule.into(), description:if rule=="self-xor" {"Same-ID XOR is compared with the zero result of the scalar reference"} else {"A repeated source in AddTwo is compared with cancellation in the scalar reference"}.into(), measured:operator, payload_bytes:0, operations:if operator {256} else {0}});
+                checks.insert(format!("operator/{width}/{mode}/{rule}"),Check {skip:None, measurement_skip:None, severity:Severity::Warning, rule:rule.into(), description:if rule=="self-xor" {"Same-ID XOR is compared with the zero result of the scalar reference"} else {"A repeated source in AddTwo is compared with cancellation in the scalar reference"}.into(), measured:true, payload_bytes:0, operations:256});
             }
         }
     }
@@ -69,7 +72,7 @@ pub fn recipe(test: &TestReference) -> Result<Recipe> {
         .filter(|(_, c)| c.measured)
         .map(|(name, _)| name.clone())
         .collect();
-    let definition = json!({"purpose":"acceptance","k":64,"symbol_bytes":128,"repairs":128,"operator_widths":[1,31,128],"boundary_calls_per_sample":256,"field_polynomial":285,"correctness":{"fatal":"required core behavior, codec payload, lifecycle and evidence integrity","warning":"self-xor and duplicate-source-xor reference deviations","warning_effect":"reported with performance; no rejection or cross-component output-equivalence requirement","scope":"selected operator; product diagnostics inspect the callback implementation, not the binary operation surface"},"warmups":1,"repetitions":3,"build":{"toolchain":"1.89.0","profile":"release","target_cpu":"native","opt_level":3,"codegen_units":1,"lto":false},"timing":{"operator":"preloaded operations only; boundary samples call 256 independently initialized operators once each","codec":"construction and loading through owned output","excluded":["validation","serialization","drop"]},"timeout_seconds":60});
+    let definition = json!({"purpose":"acceptance","selection":"all applicable checks; no user test filters","applicability":{"codec":"configured scheme","operator_core":"complete_operator_surface","boundary_validation":"callback_operator","boundary_measurement":"complete_operator_surface"},"k":64,"symbol_bytes":128,"repairs":128,"operator_widths":[1,31,128],"boundary_calls_per_sample":256,"field_polynomial":285,"correctness":{"fatal":"required core behavior, codec payload, lifecycle and evidence integrity","warning":"self-xor and duplicate-source-xor reference deviations","warning_effect":"reported with performance; no rejection or cross-component output-equivalence requirement","scope":"selected operator; product diagnostics inspect the callback implementation, not the binary operation surface"},"warmups":1,"repetitions":3,"build":{"toolchain":"1.89.0","profile":"release","target_cpu":"native","opt_level":3,"codegen_units":1,"lto":false},"timing":{"operator":"preloaded operations only; boundary samples call 256 independently initialized operators once each","codec":"construction and loading through owned output","excluded":["validation","serialization","drop"]},"timeout_seconds":60});
     let digest = util::digest(&(
         id.as_str(),
         &definition,
@@ -92,6 +95,7 @@ pub fn interface(family: &str) -> Identity {
         id: format!("{family}@0.1.0"),
         digest: util::digest(&(
             family,
+            capabilities(family),
             OPERATOR,
             if family == "product-abi" {
                 PRODUCT
@@ -140,11 +144,58 @@ pub fn verify_lock() -> Result<()> {
     }
     Ok(())
 }
+pub fn capabilities(family: &str) -> Value {
+    json!({"complete_operator_surface":matches!(family,"native-2"|"native-3"),"callback_operator":matches!(family,"native-2"|"native-3"|"product-abi")})
+}
+pub fn validate_scheme(scheme: &SchemeSelection) -> Result<()> {
+    if !matches!(scheme.name.as_str(), "rq" | "r10") || scheme.mode != "systematic" {
+        return Err(format!(
+            "unsupported: unregistered scheme {} / {}; current integrations provide rq and r10 systematic",
+            scheme.name, scheme.mode
+        ));
+    }
+    Ok(())
+}
+/// Expand the complete catalog. Every inapplicable case remains present with its reason.
+pub fn plan(test: &TestReference, scheme: &SchemeSelection, family: &str) -> Result<Recipe> {
+    validate_scheme(scheme)?;
+    if !supports(family, &test.version) {
+        return Err("unsupported: unknown interface capability set".into());
+    }
+    let mut recipe = recipe(test)?;
+    for (case, check) in &mut recipe.checks {
+        if case.starts_with("codec/") && case.split('/').nth(1) != Some(scheme.name.as_str()) {
+            check.skip = Some(crate::coverage::Skip {
+                code: "scheme_not_selected".into(),
+                reason: format!(
+                    "Configured scheme is {} / {}; this case requires {}",
+                    scheme.name,
+                    scheme.mode,
+                    case.split('/').nth(1).unwrap()
+                ),
+            });
+        } else if capabilities(family)["complete_operator_surface"] == false
+            && case.starts_with("operator/")
+        {
+            let reason = crate::coverage::Skip {code:"capability_unavailable".into(),reason:"Product ABI does not expose the complete operation surface; callback boundary diagnostics remain available outside codec timing".into()};
+            if check.severity == Severity::Fatal {
+                check.skip = Some(reason);
+            } else {
+                check.measured = false;
+                check.measurement_skip = Some(reason);
+            }
+        }
+    }
+    recipe.cases = recipe
+        .checks
+        .iter()
+        .filter(|(_, c)| c.skip.is_none() && c.measured)
+        .map(|(name, _)| name.clone())
+        .collect();
+    Ok(recipe)
+}
 pub fn supports(family: &str, test: &str) -> bool {
-    let known = matches!(test, "operator-smoke@0.1.0" | "codec-smoke@0.1.0");
-    known
-        && (matches!(family, "native-2" | "native-3")
-            || family == "product-abi" && test.starts_with("codec-smoke@"))
+    test == "0.1.0" && matches!(family, "native-2" | "native-3" | "product-abi")
 }
 pub fn registered_interface(identity: &Identity, test: &str) -> bool {
     let family = identity.id.split('@').next().unwrap_or("");
@@ -152,7 +203,5 @@ pub fn registered_interface(identity: &Identity, test: &str) -> bool {
 }
 pub fn list() -> Value {
     let interfaces = ["native-2", "native-3", "product-abi"].map(interface);
-    let tests =
-        ["operator-smoke@0.1.0", "codec-smoke@0.1.0"].map(|t| recipe(&t.parse().unwrap()).unwrap());
-    json!({"format_version":1,"publication_status":"internal-draft","interfaces":interfaces,"tests":tests})
+    json!({"format_version":1,"publication_status":"internal-draft","interfaces":interfaces,"test_versions":[recipe(&"0.1.0".parse().unwrap()).unwrap()],"schemes":[{"name":"rq","modes":["systematic"]},{"name":"r10","modes":["systematic"]}]})
 }

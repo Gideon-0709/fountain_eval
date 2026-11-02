@@ -1,0 +1,13 @@
+# Copy to fountain-eval.toml. All applicable acceptance cases run automatically.
+engine = "registry:fountain_engine@2.1.0"
+operator = "registry:fountain_operators@2.0.0#slab"
+scheme = "rq"
+test = "0.1.0"
+
+# Optional: replace the scheme line above with an explicit source.
+# scheme = { name = "rq", source = "registry:fountain_scheme@2.1.0", mode = "systematic" }
+
+# Paths, including component paths, are relative to this file.
+# [run]
+# output = "runs"
+# cache = ".fountain-eval"
