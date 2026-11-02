@@ -176,6 +176,16 @@ pub fn markdown(r: &Record) -> String {
         r.correctness.warnings.len()
     );
     s.push_str("Warnings preserve their measured performance. An incomplete recovery has no successful source throughput. Skipped and unexecuted cases are not passes.\n\n");
+    if !r.correctness.fatal_failures.is_empty() {
+        s.push_str("## Fatal correctness failures\n\nThese checks stopped this C before successful measurement.\n\n");
+        for failure in &r.correctness.fatal_failures {
+            let _ = writeln!(
+                s,
+                "```json\n{}\n```\n",
+                serde_json::to_string_pretty(failure).unwrap()
+            );
+        }
+    }
     s.push_str("## Measurement interpretation\n\nOrdinary samples use uninstrumented drivers. Chain/resource diagnostics use a separate build and separate processes; do not pool their times. Gbit/s is decimal: bytes × 8 / nanoseconds. Source throughput uses K × symbol width × blocks, while repair throughput uses actually generated repair bytes. Operation timings are per public call; logical bytes are not memory-bus traffic. The median is across all recorded samples; worker medians and coefficient of variation expose dispersion. No performance threshold determines pass/fail.\n\n");
     if let Some(q) = &r.quadruple {
         let _ = writeln!(
@@ -259,6 +269,17 @@ pub fn html(r: &Record) -> String {
     );
     if let Some(e) = &r.error {
         let _ = write!(s, "<pre>{}</pre>", escape(e));
+    }
+    if !r.correctness.fatal_failures.is_empty() {
+        s.push_str("<h2>Fatal correctness failures</h2><p>These checks stopped this C before successful measurement.</p>");
+        for failure in &r.correctness.fatal_failures {
+            let _ = write!(
+                s,
+                "<details open><summary>{}</summary><pre>{}</pre></details>",
+                escape(failure["case"].as_str().unwrap_or("execution integrity")),
+                escape(&serde_json::to_string_pretty(failure).unwrap())
+            );
+        }
     }
     s.push_str("<p class=\"note\">Source and repair throughput use different byte counts. CV describes within-run dispersion. Incomplete recovery has no successful throughput. Diagnostic times are separate from ordinary measurements.</p><label>Filter cases <input id=\"query\" type=\"search\" placeholder=\"e.g. K5008, plan-build, self-xor\"></label><table><thead><tr><th>Case</th><th>Median ns</th><th>Min–max ns</th><th>CV</th><th>ns/call</th><th>Source Gbit/s</th><th>Repair Gbit/s</th><th>Samples</th><th>Complete/incomplete</th></tr></thead><tbody>");
     for row in &r.summary {
