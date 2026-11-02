@@ -137,3 +137,25 @@ fn comparison_exposes_common_scope_and_refuses_different_schemes() {
     invalid.validation.push(json!({"case":"codec/r10/missing-0/encode","severity":"fatal","rule":"codec-payload","status":"passed","witness":"fake"}));
     assert!(evidence::validate_samples(&invalid).is_err());
 }
+
+#[test]
+fn r10_success_cases_respect_the_registered_domain_on_every_interface() {
+    let c = parse(basic().replace("scheme=\"rq\"", "scheme=\"r10\"")).unwrap();
+    for family in ["native-2", "native-3", "product-abi"] {
+        let plan = catalog::plan(&c.request.test, &c.request.scheme, family).unwrap();
+        assert_eq!(
+            plan.check("correctness/scheme-padding/r10/k1/b128")
+                .unwrap()
+                .skip
+                .unwrap()
+                .code,
+            "outside_api_domain"
+        );
+        assert!(
+            plan.check("correctness/scheme-padding/r10/k4/b128")
+                .unwrap()
+                .skip
+                .is_none()
+        );
+    }
+}

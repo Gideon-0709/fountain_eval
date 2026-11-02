@@ -165,7 +165,7 @@ pub fn capabilities(family: &str) -> Value {
         "callback_operator":matches!(family,"native-2"|"native-3"|"product-abi"),
         "codec":matches!(family,"native-2"|"native-3"|"product-abi"),
         "plan":matches!(family,"native-2"|"native-3"),"reuse":true,
-        "alias":family=="native-3","internal_profile":family=="native-3","source_k_domain":if family=="product-abi"{json!({"rq":[1,56403],"r10":[4,8192]})}else{json!(null)}})
+        "alias":family=="native-3","internal_profile":family=="native-3","source_k_domain":if family=="product-abi"{json!({"rq":[1,56403],"r10":[4,8192]})}else{json!({"r10":[4,8192]})}})
 }
 pub fn validate_scheme(scheme: &SchemeSelection) -> Result<()> {
     if !matches!(scheme.name.as_str(), "rq" | "r10") || scheme.mode != "systematic" {
@@ -198,11 +198,8 @@ pub fn plan(test: &TestReference, scheme: &SchemeSelection, family: &str) -> Res
                     check.spec.scheme.as_deref().unwrap()
                 ),
             });
-        } else if family == "product-abi"
-            && check.spec.scheme.as_deref() == Some("r10")
-            && check.spec.k < 4
-        {
-            check.skip=Some(crate::coverage::Skip{code:"outside_api_domain".into(),reason:"The product R10 API accepts source K in 4..=8192; invalid-input rejection is checked in C11".into()});
+        } else if check.spec.scheme.as_deref() == Some("r10") && check.spec.k < 4 {
+            check.skip=Some(crate::coverage::Skip{code:"outside_api_domain".into(),reason:"The registered R10 scheme accepts source K in 4..=8192; product invalid-input rejection is checked in C11, and native invalid-input behavior has no recoverable API contract".into()});
         } else if let Some(required) = check
             .spec
             .requires

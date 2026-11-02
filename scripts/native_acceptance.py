@@ -151,9 +151,16 @@ def main():
             (root/"src/lib.rs").write_text('use fountain_engine::{traits::DataOperator,types::Operation};pub struct MemoryDataOperator{v:Vec<u8>}impl MemoryDataOperator{pub fn new(n:usize)->Self{'+injection+'Self{v:vec![0;n]}}}impl DataOperator for MemoryDataOperator{fn get_vector(&self,_:usize)->&[u8]{&self.v}fn execute(&mut self,_:&Operation){}}')
             subprocess.run(["git","-C",str(root),"init","--quiet"],check=True)
             return "path:"+str(root)
-        for name, injection in [("wrong-output", ""), ("crash", "std::process::exit(23);"), ("protocol", 'println!("invalid event");')]:
+        for name, injection in [("wrong-output", ""), ("crash", "std::process::exit(23);"), ("protocol", 'println!("invalid event");std::process::exit(0);')]:
             body,_=run(name,ENGINE,fixture(name,injection),expected=4)
             assert body["result"]["stage"]=="validate"
+            if name=="protocol":assert "driver protocol" in body["result"]["error"]
+        unknown=work/"generated-fixtures/unknown-engine"
+        (unknown/"src").mkdir(parents=True)
+        (unknown/"Cargo.toml").write_text('[package]\nname="fountain_engine"\nversion="9.0.0"\nedition="2024"\n')
+        (unknown/"src/lib.rs").write_text("")
+        subprocess.run(["git","-C",str(unknown),"init","--quiet"],check=True)
+        run("unknown-interface",f"path:{unknown}",fallback,expected=3)
         hung=fixture("hang", "std::thread::sleep(std::time::Duration::from_secs(900));")
         body,_=run("interrupt",ENGINE,hung,expected=130,interrupt=True)
         assert body["result"]["status"]=="interrupted"
@@ -163,8 +170,11 @@ def main():
         run("unknown-scheme",ENGINE,fallback,scheme="missing",expected=3)
 
     registered=set(attempts[0]["result"]["recipe"]["checks"])
-    observed={v["case"] for body in attempts for v in body["result"]["validation"] if v["status"]=="passed" or v["severity"]=="warning"}
-    (work/"reachability.json").write_text(json.dumps({"registered":len(registered),"exercised":len(observed),"unexecuted":sorted(registered-observed),"note":"Unexecuted cases are coverage gaps, including cases behind upstream fatal checks; they are not acceptance passes"},indent=2)+"\n")
+    planned=[body["result"] for body in attempts if body["result"].get("built") and body["result"].get("recipe")]
+    applicable={case for r in planned for case,c in r["recipe"]["checks"].items() if c["skip"] is None}
+    reached={v["case"] for body in attempts for v in body["result"]["validation"]}
+    positive={v["case"] for body in attempts for v in body["result"]["validation"] if v["status"]=="passed" or v["severity"]=="warning"}
+    (work/"reachability.json").write_text(json.dumps({"registered":len(registered),"reached":len(reached),"passed_or_warning":len(positive),"applicable_not_executed":sorted(applicable-reached),"applicable_without_positive_evidence":sorted(applicable-positive),"inapplicable_for_all_selected_integrations":sorted(registered-applicable),"note":"Fatal-blocked cases are coverage gaps, not passes; outside-domain rows remain explicit applicability exclusions"},indent=2)+"\n")
     print(f"Framework acceptance finished; inspect ledger and reachability for component failures and coverage gaps: {work}",flush=True)
 
 

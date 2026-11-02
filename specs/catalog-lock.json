@@ -3,11 +3,11 @@
   "publication_status": "internal-draft",
   "interfaces": [
     {
-      "digest": "934121a0472936a2762086b3a71f2791dc073f296799f8d7a40f3ec9a8e2bdfe",
+      "digest": "c6b908b5f8a3d14de614d4fc28241fc6456e28db69f625914c003458f6992044",
       "id": "native-2@0.1.0"
     },
     {
-      "digest": "06ba16e1c52ddc4ce7881a2492703acad5ba018b5e22f2581255d1b08b5d9cae",
+      "digest": "5f72feae01f69a9887cc14d3e3eef70886e4595c993b352fd6f66d9a3c724e92",
       "id": "native-3@0.1.0"
     },
     {

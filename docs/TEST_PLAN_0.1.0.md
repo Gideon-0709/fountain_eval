@@ -446,7 +446,7 @@ The exact executable definitions are in `src/content.rs` and the expanded `test-
 
 - Main geometry: K=64, 512, 5008; B=128, 1016. Plan construction/export uses K alone and a separate B=31 correctness payload after timing.
 - Operator performance widths: 16, 31, 32, 33, 128, 1016, 4096, 16384. Correctness additionally covers 1, 15, 17, 63, 64, 65, 127, 129, 1023, 1024 and 1025.
-- Scheme-padding K values: 1, 4, 9, 10, 11, 63, 64, 65, 511, 512, 513, 5007, 5008, 5009 and 5120, at B=31 and 128. Product R10 K=1 is outside its declared successful-call domain; C11 checks rejection instead.
+- Scheme-padding K values: 1, 4, 9, 10, 11, 63, 64, 65, 511, 512, 513, 5007, 5008, 5009 and 5120, at B=31 and 128. R10 K=1 is outside the registered scheme domain on every integration; product C11 checks rejection instead.
 - Seed values: `0x1971`, `0x2003`, `0x5008`; SplitMix64 low bytes generate payloads, and deterministic Fisher–Yates ordering uses the same generator. The expanded case retains the actual seed.
 - Repair-output sizes: 1, 8 and ceil(K/10), deduplicated. Decode omissions: 0, 1, ceil(K/100), ceil(K/10), deduplicated; source-first and mixed orders. Repair budget is max(128, 2 × missing + 64). Continuous workflows contain 32 blocks with distinct payloads.
 - A normal worker has a fixed 600-second deadline; a fresh-process case has 60 seconds. The host starts three sequential ordinary workers and three separate diagnostic workers. First-use cases have 15 distinct process invocations.

@@ -95,7 +95,7 @@ test = "0.1.0"
 
 The product uses its bundled scheme; an explicit external `scheme.source` is rejected. Binary and callback dependencies, hashes and loader evidence are recorded separately. Arena can be used as a product callback operator, while its current exact engine 2.1 dependency conflicts with source engine 3.
 
-Product runs execute codec, source-replacement and lifecycle checks through the real shared library and the selected SymbolOps callbacks. Full operator cases and standalone plan/replay cases require surfaces the product ABI does not provide and are explicitly skipped. Product resource observations cover the driver/callback allocator, not allocations inside the dynamic library. R10 product input accepts K=4..8192; the K=1 success case is skipped and below-domain rejection is checked separately.
+Product runs execute codec, source-replacement and lifecycle checks through the real shared library and the selected SymbolOps callbacks. Full operator cases and standalone plan/replay cases require surfaces the product ABI does not provide and are explicitly skipped. Product resource observations cover the driver/callback allocator, not allocations inside the dynamic library. The registered R10 scheme accepts K=4..8192 on every integration; K=1 success cases are explicitly outside-domain skips. Product C11 checks below-domain rejection through its recoverable API.
 
 ## Effective settings and prepared execution
 
