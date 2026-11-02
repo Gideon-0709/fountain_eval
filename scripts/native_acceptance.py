@@ -14,7 +14,6 @@ import time
 
 ENGINE = "registry:fountain_engine@2.1.0"
 OPERATORS = "git+https://github.com/shhyang/fountain_operators.git?package=fountain_operators&rev=ce232222603876f3c033109c548cf1091e874c10"
-ARENA = "git+https://github.com/Gideon-0709/fountain-arena-operator.git?package=fountain-arena-operator&rev=d777cad6b512ee17663e129512bae10bca3397b1"
 
 
 def main():
@@ -34,7 +33,7 @@ def main():
     cli = work / "fountain-eval"
     shutil.copy2(args.cli.resolve(), cli)
     runs, cache = work / "runs", work / "cache"
-    ledger, results = [], {}
+    ledger, results, attempts = [], {}, []
 
     def command(label, arguments, expected=None, interrupt=False):
         started = time.monotonic()
@@ -65,6 +64,7 @@ def main():
         config = work / (label + ".toml")
         config.write_text(f"engine={json.dumps(engine)}\noperator={json.dumps(operator)}\nscheme={json.dumps(scheme)}\ntest={json.dumps(test)}\n[run]\ncache={json.dumps(str(cache))}\noutput={json.dumps(str(runs))}\n")
         body, code = command(label, [action, "--config", config], expected, interrupt)
+        if "result" in body: attempts.append(body)
         if body.get("result", {}).get("status") == "succeeded":
             record = body["result"]
             assert code == 0 and not record["correctness"]["fatal_failures"]
@@ -101,25 +101,28 @@ def main():
         print("Verified pinned upstream x86 build rejection; no positive native coverage", flush=True)
         return
 
-    arena = f"path:{args.arena.resolve()}" if args.arena else ARENA
+    arena = f"path:{args.arena.resolve()}" if args.arena else None
+    fallback = arena or OPERATORS+"#slab"
+    if args.reproduction and not arena:raise SystemExit("--reproduction requires an authorized --arena checkout")
     for scheme in ["rq", "r10"]:
         for op in ["slab", "simd"]:
             known_operator("public-"+op+"-"+scheme, ENGINE, OPERATORS+"#"+op, scheme)
-        run("public-arena-"+scheme, ENGINE, arena, scheme, expected=0)
+        if arena:run("public-arena-"+scheme, ENGINE, arena, scheme, expected=0)
     if args.monorepo:
         mono = args.monorepo.resolve()
         for scheme in ["rq", "r10"]:
             for op in ["slab", "simd"]:
                 known_operator("dev-"+op+"-"+scheme, f"path:{mono/'fountain_engine'}", f"path:{mono/'fountain_operators'}#{op}", scheme)
-            for op in ["slab", "simd", "arena"]:
+            for op in ["slab", "simd", *(["arena"] if arena else [])]:
                 run("product-"+op+"-"+scheme, f"path:{mono/'fountain_bin_ffi'}", arena if op=="arena" else f"path:{mono/'fountain_operators'}#{op}", scheme, expected=0)
-        body, _ = run("dev-arena-conflict", f"path:{mono/'fountain_engine'}", arena, expected=4)
-        assert "conflict" in body["result"]["error"]
+        if arena:
+            body, _ = run("dev-arena-conflict", f"path:{mono/'fountain_engine'}", arena, expected=4)
+            assert "conflict" in body["result"]["error"]
     for scheme in ["rq", "r10"]:
         matching = [v for key, v in results.items() if key.endswith("-"+scheme)]
         for index, other in enumerate(matching):
             command(f"compare-{scheme}-{index}", ["compare", matching[0]["run_dir"], other["run_dir"]], 0)
-    command("different-scheme", ["compare", results["public-arena-rq"]["run_dir"], results["public-arena-r10"]["run_dir"]], 2)
+    if arena:command("different-scheme", ["compare", results["public-arena-rq"]["run_dir"], results["public-arena-r10"]["run_dir"]], 2)
 
     if args.reproduction:
         # The frozen run is independent of later changes to a local component.
@@ -155,12 +158,12 @@ def main():
         body,_=run("interrupt",ENGINE,hung,expected=130,interrupt=True)
         assert body["result"]["status"]=="interrupted"
         # A short timeout and process-group cleanup are separately exercised by tests/processes.rs.
-        run("missing-reference","path:/fountain-eval-nonexistent",arena,expected=4)
-        run("unknown-test",ENGINE,arena,test="9.0.0",expected=3)
-        run("unknown-scheme",ENGINE,arena,scheme="missing",expected=3)
+        run("missing-reference","path:/fountain-eval-nonexistent",fallback,expected=4)
+        run("unknown-test",ENGINE,fallback,test="9.0.0",expected=3)
+        run("unknown-scheme",ENGINE,fallback,scheme="missing",expected=3)
 
-    registered=set(next(iter(results.values()))["result"]["recipe"]["checks"])
-    observed={v["case"] for body in results.values() for v in body["result"]["validation"]}
+    registered=set(attempts[0]["result"]["recipe"]["checks"])
+    observed={v["case"] for body in attempts for v in body["result"]["validation"] if v["status"]=="passed" or v["severity"]=="warning"}
     (work/"reachability.json").write_text(json.dumps({"registered":len(registered),"exercised":len(observed),"unexecuted":sorted(registered-observed),"note":"Unexecuted cases are coverage gaps, including cases behind upstream fatal checks; they are not acceptance passes"},indent=2)+"\n")
     print(f"Framework acceptance finished; inspect ledger and reachability for component failures and coverage gaps: {work}",flush=True)
 

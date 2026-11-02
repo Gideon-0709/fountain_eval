@@ -23,6 +23,6 @@ Public engine input is fountain_engine 2.1.0. Public operators use fixed Git com
 
 ## Remaining acceptance work
 
-The final matrix, reproducibility/fault ledger and final CI status will be added after the active acceptance run. Cases blocked by upstream fatal checks, especially native-3 alias paths, remain coverage gaps until a compatible component passes them. A green framework CI rejection check does not turn those component failures into passes.
+The final matrix, reproducibility/fault ledger and final CI status will be added after the active acceptance run. Arena is private: CI must not fetch it without credentials. The initial CI candidate incorrectly assumed public access; the corrected harness requires an explicit authorized local Arena path. CI covers public-component rejection and framework checks; whole-suite positive native/product evidence is local. Cases blocked by upstream fatal checks, especially native-3 alias paths, remain coverage gaps until a compatible component passes them. A green framework CI rejection check does not turn those component failures into passes.
 
 The candidate does not expose hidden product solver stages, dynamic-library internal allocations or native invalid-input contracts absent from the upstream API. These are labelled observability limits in the test guide and report, not invented zero-cost measurements.

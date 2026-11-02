@@ -15,7 +15,7 @@ cargo build --locked
 python3 scripts/native_acceptance.py --work .fountain-eval/acceptance-new --faults
 ```
 
-The public native acceptance checks Arena as a positive combination and verifies the pinned Slab/Simd fatal `mul_add(..., 0, ...)` result without treating its unexecuted cases as passes. It writes an explicit reachability gap report. The normal public native suite currently requires ARM64 because the pinned upstream AVX2 source has unresolved `portable` references on x86_64. Linux x86_64 CI uses `--expect-upstream-x86-failure` to verify that rejection; it does not claim positive native coverage.
+Without private credentials, CI verifies the pinned Slab/Simd fatal `mul_add(..., 0, ...)` result without treating its unexecuted cases as passes. It writes an explicit reachability gap report and does not claim a successful public whole-suite run. Authorized local Arena and product checkouts provide positive coverage. The public native rejection suite currently requires ARM64 because the pinned upstream AVX2 source has unresolved `portable` references on x86_64. Linux x86_64 CI uses `--expect-upstream-x86-failure` to verify that rejection; it does not claim positive native coverage.
 
 Use a fresh acceptance work directory. Keep first failures and interruptions while debugging; a corrected candidate is a new attempt, not an automatic retry of the old result. The process interruption helper is an ignored test entry point invoked by its parent test in a separate process, so SIGINT cannot contaminate the normal test harness.
 

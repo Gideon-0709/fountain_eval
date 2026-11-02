@@ -6,7 +6,7 @@ The project is an unreleased internal **0.1.0** candidate. Its formal content co
 
 ## Install and run
 
-Requirements: Linux or macOS, Git, `tar`, a native linker/C toolchain and Rust managed by rustup. The generated drivers use Rust 1.89.0, release optimization and the host CPU. Public native positive coverage currently uses ARM64: the pinned upstream operator has an AVX2 compile error on x86_64, which is reported as a build failure.
+Requirements: Linux or macOS, Git, `tar`, a native linker/C toolchain and Rust managed by rustup. The generated drivers use Rust 1.89.0, release optimization and the host CPU. Positive native construction coverage uses authorized local Arena and product checkouts on ARM64. Public Slab/Simd currently fail the formal GF check; the pinned operator also has an AVX2 compile error on x86_64. CI verifies these rejections and records the remaining coverage gaps.
 
 ```bash
 cargo install --path . --locked
