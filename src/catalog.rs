@@ -7,6 +7,10 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
+pub const CONTENT: &str = include_str!("content.rs");
+pub const REFERENCE: &str = include_str!("../drivers/reference.rs");
+pub const WORKLOADS: &str = include_str!("../drivers/workloads.rs");
+pub const TELEMETRY: &str = include_str!("../drivers/telemetry.rs");
 pub const COMMON: &str = include_str!("../drivers/common.rs");
 pub const OPERATOR: &str = include_str!("../drivers/operator.rs");
 pub const NATIVE: &str = include_str!("../drivers/native.rs");
@@ -39,53 +43,65 @@ impl Recipe {
     }
 }
 pub fn recipe(test: &TestReference) -> Result<Recipe> {
-    let id = test.version.clone();
-    if id != "0.1.0" {
-        return Err(format!("unsupported: unknown test content version {id}"));
+    if test.version != "0.1.0" {
+        return Err(format!(
+            "unsupported: unknown test content version {}",
+            test.version
+        ));
     }
-    let mut checks = BTreeMap::new();
-    {
-        for width in [1, 31, 128] {
-            for mode in ["execute", "direct"] {
-                checks.insert(format!("operator/{width}/{mode}"), Check {skip:None, measurement_skip:None, severity:Severity::Fatal, rule:"operator-core".into(), description:"Distinct-ID scalar reference, copy isolation, move, zero and GF arithmetic".into(), measured:true, payload_bytes:0, operations:14});
-            }
-        }
-    }
-    {
-        for codec in ["rq", "r10"] {
-            for missing in [0, 8] {
-                for phase in ["encode", "decode"] {
-                    checks.insert(format!("codec/{codec}/missing-{missing}/{phase}"), Check {skip:None, measurement_skip:None, severity:Severity::Fatal, rule:"codec-payload".into(), description:"Payload equality, incomplete state, operator participation and resource release".into(), measured:true, payload_bytes:8192, operations:0});
-                }
-            }
-        }
-    }
-    for width in [1, 31, 128] {
-        for mode in ["execute", "direct"] {
-            for rule in ["self-xor", "duplicate-source-xor"] {
-                checks.insert(format!("operator/{width}/{mode}/{rule}"),Check {skip:None, measurement_skip:None, severity:Severity::Warning, rule:rule.into(), description:if rule=="self-xor" {"Same-ID XOR is compared with the zero result of the scalar reference"} else {"A repeated source in AddTwo is compared with cancellation in the scalar reference"}.into(), measured:true, payload_bytes:0, operations:256});
-            }
-        }
-    }
-    let cases = checks
-        .iter()
-        .filter(|(_, c)| c.measured)
-        .map(|(name, _)| name.clone())
+    let checks: BTreeMap<_, _> = crate::content::cases()
+        .into_iter()
+        .map(|spec| {
+            let check = Check {
+                severity: if spec.warning {
+                    Severity::Warning
+                } else {
+                    Severity::Fatal
+                },
+                rule: spec.workload.clone(),
+                description: format!("{}: {}", spec.family, spec.workload),
+                measured: spec.measured,
+                payload_bytes: spec.payload_bytes(),
+                operations: spec.calls(),
+                skip: None,
+                measurement_skip: None,
+                spec,
+            };
+            (check.spec.id.clone(), check)
+        })
         .collect();
-    let definition = json!({"purpose":"acceptance","selection":"all applicable checks; no user test filters","applicability":{"codec":"configured scheme","operator_core":"complete_operator_surface","boundary_validation":"callback_operator","boundary_measurement":"complete_operator_surface"},"k":64,"symbol_bytes":128,"repairs":128,"operator_widths":[1,31,128],"boundary_calls_per_sample":256,"field_polynomial":285,"correctness":{"fatal":"required core behavior, codec payload, lifecycle and evidence integrity","warning":"self-xor and duplicate-source-xor reference deviations","warning_effect":"reported with performance; no rejection or cross-component output-equivalence requirement","scope":"selected operator; product diagnostics inspect the callback implementation, not the binary operation surface"},"warmups":1,"repetitions":3,"build":{"toolchain":"1.89.0","profile":"release","target_cpu":"native","opt_level":3,"codegen_units":1,"lto":false},"timing":{"operator":"preloaded operations only; boundary samples call 256 independently initialized operators once each","codec":"construction and loading through owned output","excluded":["validation","serialization","drop"]},"timeout_seconds":60});
+    let definition = json!({"purpose":"formal","selection":"all applicable cases","workers":crate::content::WORKERS,
+        "samples_per_worker":crate::content::SAMPLES_PER_WORKER,"warmups_per_worker":1,
+        "seeds":crate::content::SEEDS,"random_generator":"splitmix64-low-byte-v1",
+        "build":{"toolchain":"1.89.0","profile":"release","opt_level":3,"codegen_units":1,"lto":false,"target_cpu":"native"},
+        "timeout_seconds":600,"fresh_case_timeout_seconds":60,
+        "timing":{"ordinary":"public workflow through owned output; validation outside timer","diagnostic":"same workload with stage and resource observation; never pooled with ordinary","operator":"one prepared public operation on each independently initialized instance","first_use":"one fresh process per sample; process startup excluded"},
+        "source_counts":crate::content::SOURCE_COUNTS,"operator_widths":crate::content::WIDTHS,
+        "case_count":checks.len(),"repetitions":crate::content::REPETITIONS});
     let digest = util::digest(&(
-        id.as_str(),
+        &test.version,
         &definition,
         &checks,
+        CONTENT,
         COMMON,
+        REFERENCE,
+        WORKLOADS,
+        TELEMETRY,
         include_str!("measurement.rs"),
     ));
     Ok(Recipe {
-        identity: Identity { id, digest },
-        purpose: "acceptance".into(),
-        cases,
+        identity: Identity {
+            id: test.version.clone(),
+            digest,
+        },
+        purpose: "formal".into(),
+        cases: checks
+            .iter()
+            .filter(|(_, c)| c.measured)
+            .map(|(k, _)| k.clone())
+            .collect(),
         warmups: 1,
-        repetitions: 3,
+        repetitions: crate::content::REPETITIONS,
         definition,
         checks,
     })
@@ -136,7 +152,7 @@ pub fn implementation(package: &Package, selected: Option<&str>) -> Result<Strin
 pub fn verify_lock() -> Result<()> {
     let locked: Value = serde_json::from_str(include_str!("../specs/catalog-lock.json"))
         .map_err(|e| e.to_string())?;
-    if list() != locked {
+    if lock_entries() != locked {
         return Err(
             "interface/test identity conflict: catalog content differs from the candidate lock"
                 .into(),
@@ -145,7 +161,11 @@ pub fn verify_lock() -> Result<()> {
     Ok(())
 }
 pub fn capabilities(family: &str) -> Value {
-    json!({"complete_operator_surface":matches!(family,"native-2"|"native-3"),"callback_operator":matches!(family,"native-2"|"native-3"|"product-abi")})
+    json!({"operator_surface":matches!(family,"native-2"|"native-3"),
+        "callback_operator":matches!(family,"native-2"|"native-3"|"product-abi"),
+        "codec":matches!(family,"native-2"|"native-3"|"product-abi"),
+        "plan":matches!(family,"native-2"|"native-3"),"reuse":true,
+        "alias":family=="native-3","internal_profile":family=="native-3","source_k_domain":if family=="product-abi"{json!({"rq":[1,56403],"r10":[4,8192]})}else{json!(null)}})
 }
 pub fn validate_scheme(scheme: &SchemeSelection) -> Result<()> {
     if !matches!(scheme.name.as_str(), "rq" | "r10") || scheme.mode != "systematic" {
@@ -163,27 +183,38 @@ pub fn plan(test: &TestReference, scheme: &SchemeSelection, family: &str) -> Res
         return Err("unsupported: unknown interface capability set".into());
     }
     let mut recipe = recipe(test)?;
-    for (case, check) in &mut recipe.checks {
-        if case.starts_with("codec/") && case.split('/').nth(1) != Some(scheme.name.as_str()) {
+    for check in recipe.checks.values_mut() {
+        if check
+            .spec
+            .scheme
+            .as_ref()
+            .is_some_and(|s| s != &scheme.name)
+        {
             check.skip = Some(crate::coverage::Skip {
                 code: "scheme_not_selected".into(),
                 reason: format!(
-                    "Configured scheme is {} / {}; this case requires {}",
+                    "Configured scheme is {}; this case requires {}",
                     scheme.name,
-                    scheme.mode,
-                    case.split('/').nth(1).unwrap()
+                    check.spec.scheme.as_deref().unwrap()
                 ),
             });
-        } else if capabilities(family)["complete_operator_surface"] == false
-            && case.starts_with("operator/")
+        } else if family == "product-abi"
+            && check.spec.scheme.as_deref() == Some("r10")
+            && check.spec.k < 4
         {
-            let reason = crate::coverage::Skip {code:"capability_unavailable".into(),reason:"Product ABI does not expose the complete operation surface; callback boundary diagnostics remain available outside codec timing".into()};
-            if check.severity == Severity::Fatal {
-                check.skip = Some(reason);
-            } else {
-                check.measured = false;
-                check.measurement_skip = Some(reason);
-            }
+            check.skip=Some(crate::coverage::Skip{code:"outside_api_domain".into(),reason:"The product R10 API accepts source K in 4..=8192; invalid-input rejection is checked in C11".into()});
+        } else if let Some(required) = check
+            .spec
+            .requires
+            .iter()
+            .find(|name| capabilities(family)[name.as_str()] != true)
+        {
+            check.skip = Some(crate::coverage::Skip {
+                code: "capability_unavailable".into(),
+                reason: format!(
+                    "{family} does not expose {required}; fused work remains in the corresponding codec parent"
+                ),
+            });
         }
     }
     recipe.cases = recipe
@@ -204,4 +235,9 @@ pub fn registered_interface(identity: &Identity, test: &str) -> bool {
 pub fn list() -> Value {
     let interfaces = ["native-2", "native-3", "product-abi"].map(interface);
     json!({"format_version":1,"publication_status":"internal-draft","interfaces":interfaces,"test_versions":[recipe(&"0.1.0".parse().unwrap()).unwrap()],"schemes":[{"name":"rq","modes":["systematic"]},{"name":"r10","modes":["systematic"]}]})
+}
+
+/// Compact candidate seal; the T digest covers every expanded case and semantic source.
+pub fn lock_entries() -> Value {
+    json!({"format_version":1,"publication_status":"internal-draft","interfaces":(["native-2","native-3","product-abi"].map(interface)),"tests":[recipe(&"0.1.0".parse().unwrap()).unwrap().identity]})
 }

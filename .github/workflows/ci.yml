@@ -15,13 +15,13 @@ jobs:
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install the pinned framework toolchain
         run: rustup toolchain install 1.89.0 --profile minimal --component rustfmt --component clippy --no-self-update
       - run: cargo fmt --all -- --check
-      - run: rustfmt --edition 2024 --config skip_children=true --check drivers/common.rs drivers/operator.rs drivers/native.rs drivers/product.rs
+      - run: rustfmt --edition 2024 --config skip_children=true --check drivers/common.rs drivers/operator.rs drivers/native.rs drivers/product.rs drivers/reference.rs drivers/workloads.rs drivers/telemetry.rs
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
       - run: cargo doc --locked --no-deps

@@ -37,9 +37,30 @@ enum Command {
         prepared: Option<PathBuf>,
     },
     /// Read a sealed result including warnings and complete coverage.
-    Report { run: PathBuf },
+    Report {
+        run: PathBuf,
+        #[arg(long, value_enum, default_value = "json")]
+        format: Format,
+    },
     /// Compare common measured cases and report coverage differences.
-    Compare { left: PathBuf, right: PathBuf },
+    Compare {
+        left: PathBuf,
+        right: PathBuf,
+        #[arg(long, value_enum, default_value = "json")]
+        format: Format,
+    },
+}
+#[derive(Clone, clap::ValueEnum)]
+enum Format {
+    Json,
+    Markdown,
+    Html,
+}
+fn emit_text(text: &str) -> Result<()> {
+    io::stdout()
+        .lock()
+        .write_all(text.as_bytes())
+        .map_err(|e| e.to_string())
 }
 fn emit(value: &impl serde::Serialize) -> Result<()> {
     let mut out = io::stdout().lock();
@@ -82,15 +103,26 @@ fn execute(command: Command) -> Result<u8> {
             };
             outcome(path, record)
         }
-        Command::Report { run } => {
-            emit(&evidence::load(&run)?)?;
+        Command::Report { run, format } => {
+            let r = evidence::load(&run)?;
+            match format {
+                Format::Json => emit(&r)?,
+                Format::Markdown => emit_text(&fountain_eval::report::markdown(&r))?,
+                Format::Html => emit_text(&fountain_eval::report::html(&r))?,
+            };
             Ok(0)
         }
-        Command::Compare { left, right } => {
-            emit(&evidence::compare(
-                &evidence::load(&left)?,
-                &evidence::load(&right)?,
-            )?)?;
+        Command::Compare {
+            left,
+            right,
+            format,
+        } => {
+            let r = evidence::compare(&evidence::load(&left)?, &evidence::load(&right)?)?;
+            match format {
+                Format::Json => emit(&r)?,
+                Format::Markdown => emit_text(&fountain_eval::report::comparison(&r))?,
+                Format::Html => emit_text(&fountain_eval::report::comparison_html(&r))?,
+            };
             Ok(0)
         }
     }

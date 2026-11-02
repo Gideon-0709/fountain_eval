@@ -4,6 +4,7 @@
 pub mod build;
 pub mod catalog;
 pub mod config;
+pub mod content;
 pub mod coverage;
 pub mod evidence;
 pub mod execution;
@@ -14,3 +15,5 @@ pub mod runner;
 pub mod source;
 pub mod util;
 pub mod validation;
+
+pub mod report;

@@ -57,20 +57,17 @@ pub fn record(family: &str, scheme: &str) -> Record {
         .iter()
         .flat_map(|case| {
             let check = recipe.check(case).unwrap();
-            (0..3).map(move |rep| Sample {
+            (0..fountain_eval::content::REPETITIONS).map(move |rep| Sample {
                 case: case.clone(),
                 repetition: rep,
-                elapsed_ns: (rep as u64 + 1) * 1000,
+                worker:if check.spec.fresh_process{rep}else{rep/5},
+                outcome:"completed".into(),
+                details:json!({}),
+                elapsed_ns: ((rep % 5) as u64 + 1) * 1000,
                 payload_bytes: check.payload_bytes,
-                operations: check.operations,
-                witness: if case.ends_with("/self-xor") || case.ends_with("/duplicate-source-xor") {
-                    util::digest(&json!({"calls":256,"outcomes":[{"count":256,"actual":[0]}]}))
-                } else {
-                    "synthetic-fixture-witness".into()
-                },
-                observation: (case.ends_with("/self-xor")
-                    || case.ends_with("/duplicate-source-xor"))
-                .then(|| json!({"calls":256,"outcomes":[{"count":256,"actual":[0]}]})),
+                operations: if check.spec.workload.ends_with("-replay"){10}else{check.operations},
+                witness:if check.spec.warning{util::digest(&json!({"calls":check.operations,"outcomes":[{"count":check.operations,"actual":[0]}]}))}else{"synthetic-fixture-witness".into()},
+                observation:check.spec.warning.then(||json!({"calls":check.operations,"outcomes":[{"count":check.operations,"actual":[0]}]})),
             })
         })
         .collect();
@@ -98,11 +95,12 @@ pub fn record(family: &str, scheme: &str) -> Record {
             .map(|c| {
                 let check=recipe.check(c).unwrap();
                 if check.severity == fountain_eval::validation::Severity::Warning {json!({"event":"validation","case":c,"severity":"warning","rule":check.rule,"status":"passed","expected":[0],"actual":[0],"witness":util::digest(&json!([0]))})}
-                else {json!({"event":"validation","case":c,"severity":"fatal","rule":check.rule,"status":"passed","witness":"synthetic-fixture-witness"})}
+                else {json!({"event":"validation","case":c,"severity":"fatal","rule":check.rule,"status":"passed","witness":"synthetic-fixture-witness","details":{"calls":10}})}
             })
             .collect(),
         summary: measurement::summarize(&samples).unwrap(),
         samples,
+        diagnostics:recipe.checks.iter().filter(|(_,c)|c.skip.is_none()&&c.measured&&!c.spec.fresh_process&&c.spec.category!="operation").flat_map(|(case,_)|(0..fountain_eval::content::WORKERS).map(move|worker|json!({"case":case,"worker":worker,"elapsed_ns":1,"resources":{"scope":"synthetic fixture"},"observation":{"stages":{"exclusive_ns":{"work":3},"unattributed_ns":1,"total_ns":4}}}))).collect(),
         recipe: Some(recipe),
         built: None,
         error: None,
@@ -114,6 +112,7 @@ pub fn built(directory: &Path) -> Built {
         key: "fixture-build".into(),
         directory: directory.into(),
         binary: directory.join("driver"),
+        diagnostic_binary: directory.join("driver"),
         artifacts: BTreeMap::new(),
         interface: catalog::interface("native-2"),
         family: "native-2".into(),

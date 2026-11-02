@@ -1,13 +1,16 @@
 //! Safe product facade binding; callbacks delegate to the selected real operator.
+use crate::Stages;
 use crate::{Probe, hit, operator};
 use fountain_engine::traits::DataOperator;
 use fountain_raptor_10 as r10;
 use fountain_raptor_q as rq;
+use serde_json::{Value, json};
 use std::sync::Arc;
 struct Symbols {
     op: operator::Selected,
     width: usize,
     probe: Option<Arc<Probe>>,
+    fail_writes: bool,
 }
 impl Symbols {
     fn new(width: usize, probe: Option<Arc<Probe>>) -> Self {
@@ -15,6 +18,7 @@ impl Symbols {
             op: operator::raw(width),
             width,
             probe,
+            fail_writes: false,
         }
     }
 }
@@ -29,7 +33,7 @@ macro_rules! callbacks {
     ($api:ident) => {
         impl $api::SymbolOps for Symbols {
             fn write(&mut self, id: usize, bytes: &[u8]) -> Result<(), $api::Error> {
-                if bytes.len() != self.width {
+                if self.fail_writes || bytes.len() != self.width {
                     return Err($api::Error::InvalidArg);
                 }
                 if let Some(p) = &self.probe {
@@ -77,6 +81,26 @@ pub enum Decoder {
     R10(r10::Decoder),
 }
 impl Encoder {
+    pub fn new_staged(
+        codec: &str,
+        k: usize,
+        width: usize,
+        source: &[u8],
+        probe: Option<Arc<Probe>>,
+        stages: &mut Stages,
+    ) -> Self {
+        let value = Self::new(codec, k, width, source, probe);
+        stages.mark("product-construction-loading-and-plan-application");
+        value
+    }
+    pub fn outputs(&mut self, ids: &[usize], stages: &mut Stages) -> Vec<Vec<u8>> {
+        let result = ids.iter().map(|&id| self.encode(id)).collect();
+        stages.mark("product-generation-and-output");
+        result
+    }
+    pub fn diagnostics(&self) -> Value {
+        json!({"combined_stages":[{"stage":"plan-generation,source-loading,plan-application","included_in":"product-construction-loading-and-plan-application"},{"stage":"symbol-generation,output-materialization","included_in":"product-generation-and-output"}],"reason":"Product public calls do not expose these internal boundaries"})
+    }
     pub fn new(
         codec: &str,
         k: usize,
@@ -118,6 +142,9 @@ impl Encoder {
     }
 }
 impl Decoder {
+    pub fn diagnostics(&self) -> Value {
+        json!({"status":"unavailable","reason":"No product solver profiling API","included_in":"ingestion-and-solve"})
+    }
     pub fn new(codec: &str, k: usize, width: usize, probe: Option<Arc<Probe>>) -> Self {
         match codec {
             "rq" => Self::Rq(
@@ -159,4 +186,103 @@ impl Decoder {
             Self::R10(d) => d.get_result().expect("result"),
         }
     }
+}
+pub struct Plan {
+    codec: String,
+    k: usize,
+    encoder: Option<Encoder>,
+}
+impl Plan {
+    pub fn new(codec: &str, k: usize) -> Self {
+        Self {
+            codec: codec.into(),
+            k,
+            encoder: None,
+        }
+    }
+    pub fn load(
+        &mut self,
+        width: usize,
+        source: &[u8],
+        probe: Option<Arc<Probe>>,
+        stages: &mut Stages,
+    ) {
+        if let Some(e) = &mut self.encoder {
+            match e {
+                Encoder::Rq(e) => e.set_source(source).expect("set_source"),
+                Encoder::R10(e) => e.set_source(source).expect("set_source"),
+            }
+        } else {
+            self.encoder = Some(Encoder::new(&self.codec, self.k, width, source, probe));
+        }
+        stages.mark("product-source-replacement-and-plan-application");
+    }
+    pub fn encode(&mut self, id: usize) -> Vec<u8> {
+        self.encoder.as_mut().unwrap().encode(id)
+    }
+    pub fn repair_base(&self) -> usize {
+        self.encoder.as_ref().unwrap().repair_base()
+    }
+    pub fn diagnostics(&self) -> Value {
+        json!({"path":"product-owned plan reused through set_source","operations":"unavailable","plan_size":"unavailable","combined_stages":["loading and plan application are one public call"]})
+    }
+    pub fn export(&self) -> Vec<()> {
+        panic!("product plan export is not an available capability")
+    }
+}
+pub struct Replay;
+impl Replay {
+    pub fn capture(_: &str, _: usize, _: usize, _: &[u8], _: &[(usize, Vec<u8>)], _: bool) -> Self {
+        panic!("product replay is not an available capability")
+    }
+    pub fn execute(&self) -> (u64, Value, Value) {
+        unreachable!()
+    }
+}
+
+pub fn error_contract(codec: &str, k: usize, width: usize, source: &[u8]) -> Value {
+    macro_rules! check {
+        ($api:ident) => {{
+            let oti = $api::ObjectTransmissionInformation::new(k, width);
+            let probe = Arc::new(Probe::default());
+            let mut failing = Symbols::new(width, Some(probe.clone()));
+            failing.fail_writes = true;
+            assert!(
+                $api::Encoder::with_ops(&oti, failing, source).is_err(),
+                "callback error was swallowed"
+            );
+            assert_eq!(
+                probe.snapshot()["drops"],
+                1,
+                "failed product constructor did not release callbacks"
+            );
+            let mut encoder =
+                $api::Encoder::with_ops(&oti, Symbols::new(width, None), source).unwrap();
+            assert!(
+                encoder.set_source(&source[..source.len() - 1]).is_err(),
+                "invalid source length accepted"
+            );
+            let mut decoder = $api::Decoder::with_ops(&oti, Symbols::new(width, None)).unwrap();
+            assert!(
+                decoder.add_symbol(0, &source[..width - 1]).is_err(),
+                "invalid symbol width accepted"
+            );
+        }};
+    }
+    if codec == "r10" {
+        assert!(
+            r10::Decoder::with_ops(
+                &r10::ObjectTransmissionInformation::new(1, width),
+                Symbols::new(width, None)
+            )
+            .is_err(),
+            "R10 below-domain source count accepted"
+        );
+    }
+    match codec {
+        "rq" => check!(rq),
+        "r10" => check!(r10),
+        _ => unreachable!(),
+    };
+    json!({"status":"passed","checked":["callback failure propagation","failed constructor releases callback","invalid set_source length","invalid decoder symbol width"]})
 }

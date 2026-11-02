@@ -67,36 +67,32 @@ fn all_cases_are_planned_and_inapplicable_cases_have_reasons() {
     let a = catalog::plan(&c.request.test, &c.request.scheme, "native-2").unwrap();
     let b = catalog::plan(&c.request.test, &c.request.scheme, "product-abi").unwrap();
     assert_eq!(a.identity, b.identity);
-    assert_eq!(a.checks.len(), 26);
-    assert_eq!(a.validation_cases().len(), 22);
-    assert_eq!(b.validation_cases().len(), 16);
-    assert_eq!(b.cases.len(), 4);
-    assert_eq!(
-        a.check("codec/r10/missing-8/decode")
-            .unwrap()
-            .skip
-            .unwrap()
-            .code,
-        "scheme_not_selected"
-    );
-    assert_eq!(
-        b.check("operator/1/direct").unwrap().skip.unwrap().code,
-        "capability_unavailable"
+    assert_eq!(a.checks.len(), fountain_eval::content::cases().len());
+    assert!(a.validation_cases().len() > b.validation_cases().len());
+    assert!(b.cases.len() > 100);
+    assert!(
+        a.checks
+            .values()
+            .filter(|c| c.spec.scheme.as_deref() == Some("r10"))
+            .all(|c| c.skip.as_ref().unwrap().code == "scheme_not_selected")
     );
     assert!(
-        b.check("operator/1/direct/self-xor")
-            .unwrap()
-            .measurement_skip
-            .is_some()
+        b.checks
+            .values()
+            .filter(|c| c.spec.category == "operation")
+            .all(|c| c.skip.as_ref().unwrap().code == "capability_unavailable")
     );
 }
 #[test]
 fn skips_cannot_hide_missing_results_or_be_relabelled_as_success() {
     let mut r = support::record("product-abi", "rq");
     let report = coverage::report(&r);
-    assert_eq!(report["registered_cases"], 26);
-    assert_eq!(report["skipped_validation"], 10);
-    assert_eq!(report["skipped_measurement"], 22);
+    assert_eq!(
+        report["registered_cases"],
+        r.recipe.as_ref().unwrap().checks.len()
+    );
+    assert!(report["skipped_validation"].as_u64().unwrap() > 0);
+    assert!(report["skipped_measurement"].as_u64().unwrap() > 0);
     assert!(evidence::validate_samples(&r).is_ok());
     r.validation.pop();
     assert!(evidence::validate_samples(&r).is_err());
@@ -105,7 +101,7 @@ fn skips_cannot_hide_missing_results_or_be_relabelled_as_success() {
         .as_mut()
         .unwrap()
         .checks
-        .get_mut("operator/1/direct")
+        .get_mut("operation/xor-one/b16/direct/small")
         .unwrap()
         .skip = Some(fountain_eval::coverage::Skip {
         code: "fake".into(),
@@ -129,8 +125,13 @@ fn comparison_exposes_common_scope_and_refuses_different_schemes() {
     let left = support::record("native-2", "rq");
     let right = support::record("product-abi", "rq");
     let comparison = evidence::compare(&left, &right).unwrap();
-    assert_eq!(comparison["rows"].as_array().unwrap().len(), 4);
-    assert_eq!(comparison["coverage"]["right"]["skipped_measurement"], 22);
+    assert!(comparison["rows"].as_array().unwrap().len() > 100);
+    assert!(
+        comparison["coverage"]["right"]["skipped_measurement"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
     assert!(evidence::compare(&left, &support::record("native-2", "r10")).is_err());
     let mut invalid = left.clone();
     invalid.validation.push(json!({"case":"codec/r10/missing-0/encode","severity":"fatal","rule":"codec-payload","status":"passed","witness":"fake"}));

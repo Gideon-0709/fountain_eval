@@ -68,6 +68,7 @@ pub fn start(configuration: Configuration, prepare_only: bool) -> Result<(PathBu
         built: None,
         validation: Vec::new(),
         samples: Vec::new(),
+        diagnostics: Vec::new(),
         summary: Vec::new(),
         error: None,
         correctness: Default::default(),
@@ -218,6 +219,7 @@ fn finish(directory: &Path, record: &mut Record, result: Result<()>) -> Result<(
     record.coverage = crate::coverage::report(record);
     util::write_json(&directory.join("validation.json"), &record.validation)?;
     evidence::save(directory, record)?;
+    crate::report::write(directory, record)?;
     evidence::seal(directory)
 }
 fn execute(directory: &Path, record: &mut Record) -> Result<()> {
@@ -232,27 +234,96 @@ fn execute(directory: &Path, record: &mut Record) -> Result<()> {
     util::write_json(&directory.join("validation.json"), &record.validation)?;
     record.stage = "measure".into();
     evidence::save(directory, record)?;
-    let outcome = invoke(directory, record, "measure");
-    // Preserve every valid sample prefix even if the driver later fails.
-    let raw = fs::read_to_string(directory.join("logs/measure.stdout")).unwrap_or_default();
-    for line in raw.lines() {
-        if let Ok(value) = serde_json::from_str::<Value>(line)
-            && value["event"] == "sample"
-            && let Ok(sample) = serde_json::from_value(value)
-        {
-            record.samples.push(sample);
+    let fresh: Vec<_> = record
+        .recipe
+        .as_ref()
+        .unwrap()
+        .checks
+        .values()
+        .filter(|c| c.skip.is_none() && c.measured && c.spec.fresh_process)
+        .map(|c| c.spec.id.clone())
+        .collect();
+    for worker in 0..crate::content::WORKERS {
+        run_measurement(
+            directory,
+            record,
+            "measure",
+            &format!("measure-{worker}"),
+            worker,
+            None,
+        )?;
+    }
+    for (index, case) in fresh.iter().enumerate() {
+        for worker in 0..crate::content::REPETITIONS {
+            run_measurement(
+                directory,
+                record,
+                "first-use",
+                &format!("first-use-{index}-{worker}"),
+                worker,
+                Some(case),
+            )?;
         }
     }
     util::write_json(&directory.join("samples.json"), &record.samples)?;
-    if outcome.is_err() {
-        collect_validation(directory, record, "measure");
+    record.stage = "diagnose".into();
+    evidence::save(directory, record)?;
+    for worker in 0..crate::content::WORKERS {
+        run_measurement(
+            directory,
+            record,
+            "diagnose",
+            &format!("diagnose-{worker}"),
+            worker,
+            None,
+        )?;
     }
-    outcome?;
     evidence::validate_samples(record)?;
     record.summary = crate::measurement::summarize(&record.samples)?;
     record.stage = "complete".into();
     record.status = "succeeded".into();
     Ok(())
+}
+fn run_measurement(
+    directory: &Path,
+    record: &mut Record,
+    mode: &str,
+    label: &str,
+    worker: usize,
+    case: Option<&str>,
+) -> Result<()> {
+    let outcome = invoke_worker(directory, record, mode, label, worker, case);
+    let raw =
+        fs::read_to_string(directory.join(format!("logs/{label}.stdout"))).unwrap_or_default();
+    for line in raw.lines() {
+        if let Ok(value) = serde_json::from_str::<Value>(line) {
+            if value["event"] == "sample" {
+                if let Ok(sample) = serde_json::from_value(value) {
+                    record.samples.push(sample);
+                }
+            } else if value["event"] == "diagnostic" {
+                record.diagnostics.push(value);
+            } else if value["event"] == "validation" {
+                if let Some(old) = record
+                    .validation
+                    .iter_mut()
+                    .find(|v| v["case"] == value["case"])
+                {
+                    *old = value;
+                } else {
+                    record.validation.push(value);
+                }
+            }
+        }
+    }
+    // Fresh-process events are already durable in their unique raw log. Persist the
+    // full aggregate once per series, and immediately on a failed/interrupted child.
+    if mode != "first-use" || outcome.is_err() {
+        util::write_json(&directory.join("samples.json"), &record.samples)?;
+        util::write_json(&directory.join("diagnostics.json"), &record.diagnostics)?;
+        evidence::save(directory, record)?;
+    }
+    outcome.map(|_| ())
 }
 fn collect_validation(directory: &Path, record: &mut Record, mode: &str) {
     let raw = fs::read_to_string(directory.join(format!("logs/{mode}.stdout"))).unwrap_or_default();
@@ -274,13 +345,33 @@ fn collect_validation(directory: &Path, record: &mut Record, mode: &str) {
     }
 }
 fn invoke(directory: &Path, record: &Record, mode: &str) -> Result<Vec<Value>> {
+    invoke_worker(directory, record, mode, mode, 0, None)
+}
+fn invoke_worker(
+    directory: &Path,
+    record: &Record,
+    mode: &str,
+    label: &str,
+    worker: usize,
+    case: Option<&str>,
+) -> Result<Vec<Value>> {
     let built = record.built.as_ref().ok_or("build missing")?;
     built.verify()?;
     if mode == "describe" {
         built.export_evidence(directory)?;
     }
-    let mut command = Command::new(&built.binary);
-    command.arg(mode).current_dir(&built.directory);
+    let mut command = Command::new(if mode == "diagnose" {
+        &built.diagnostic_binary
+    } else {
+        &built.binary
+    });
+    command
+        .arg(mode)
+        .arg(worker.to_string())
+        .current_dir(&built.directory);
+    if let Some(case) = case {
+        command.arg(case);
+    }
     process::controlled(&mut command);
     for key in [
         "LD_PRELOAD",
@@ -302,14 +393,25 @@ fn invoke(directory: &Path, record: &Record, mode: &str) -> Result<Vec<Value>> {
     let raw = process::run(
         &mut command,
         &directory.join("logs"),
-        mode,
-        Duration::from_secs(60),
+        label,
+        Duration::from_secs(if mode == "first-use" { 60 } else { 600 }),
     )?;
     let events: Vec<Value> = raw
         .lines()
         .map(|s| serde_json::from_str(s).map_err(|e| format!("driver protocol: {e}")))
         .collect::<Result<_>>()?;
     check_events(&events, built, record, mode)?;
+    if events[0]["worker"] != worker || events[0]["diagnostic"] != (mode == "diagnose") {
+        return Err("driver worker or instrumentation identity mismatch".into());
+    }
+    for event in events
+        .iter()
+        .filter(|e| matches!(e["event"].as_str(), Some("sample" | "diagnostic")))
+    {
+        if event["worker"] != worker || case.is_some_and(|c| event["case"] != c) {
+            return Err("event assigned to the wrong worker/case".into());
+        }
+    }
     if let Some(library) = &built.product_library
         && mode == "describe"
     {
@@ -344,6 +446,8 @@ pub fn check_events(events: &[Value], built: &Built, record: &Record, mode: &str
     }
     let allowed = if mode == "validate" {
         "validation"
+    } else if mode == "diagnose" {
+        "diagnostic"
     } else {
         "sample"
     };

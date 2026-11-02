@@ -20,6 +20,7 @@ pub struct Built {
     pub key: String,
     pub directory: PathBuf,
     pub binary: PathBuf,
+    pub diagnostic_binary: PathBuf,
     pub artifacts: BTreeMap<PathBuf, String>,
     pub interface: Identity,
     pub family: String,
@@ -60,14 +61,16 @@ impl Built {
         {
             return Err("build cache metadata checksum mismatch".into());
         }
-        if !self.binary.starts_with(&self.directory)
-            || !self.artifacts.contains_key(
-                self.binary
-                    .strip_prefix(&self.directory)
-                    .map_err(|e| e.to_string())?,
-            )
-        {
-            return Err("unindexed driver binary".into());
+        for binary in [&self.binary, &self.diagnostic_binary] {
+            if !binary.starts_with(&self.directory)
+                || !self.artifacts.contains_key(
+                    binary
+                        .strip_prefix(&self.directory)
+                        .map_err(|e| e.to_string())?,
+                )
+            {
+                return Err("unindexed driver binary".into());
+            }
         }
         for (p, expected) in &self.artifacts {
             if p.is_absolute()
@@ -493,6 +496,10 @@ pub fn prepare(
         add("fountain_utility", "fountain_utility", &path, vec![]);
     }
     dependencies.insert("serde_json".into(), toml::Value::String("=1.0.154".into()));
+    dependencies.insert(
+        "serde".into(),
+        toml::Value::try_from(json!({"version":"=1.0.228","features":["derive"]})).unwrap(),
+    );
     dependencies.insert("sha2".into(), toml::Value::String("=0.10.9".into()));
     let mut manifest=toml::Value::try_from(json!({"package":{"name":"fountain-eval-driver","version":"0.0.0","edition":"2024","rust-version":"1.89","publish":false},"workspace":{"resolver":"3"}})).unwrap();
     util::toml_set(
@@ -535,6 +542,14 @@ pub fn prepare(
             util::toml_set(&mut manifest, "patch", patch);
         }
     }
+    let callback_engine = manifest["dependencies"]["fountain_engine"]["path"]
+        .as_str()
+        .ok_or("missing callback engine")?;
+    let engine3 =
+        util::read_toml(&Path::new(callback_engine).join("Cargo.toml"))?["package"]["version"]
+            .as_str()
+            .is_some_and(|v| v.starts_with("3."));
+    util::toml_set(&mut manifest,"features",toml::Value::try_from(json!({"default":if engine3{vec!["engine3"]}else{vec![]},"engine3":[],"diagnostics":if family=="native-3"{vec!["fountain_engine/profiling"]}else{vec![]}})).unwrap());
     util::write_toml(&directory.join("Cargo.toml"), &manifest)?;
     let selected = match implementation {
         "arena" => "pub type Selected = tested_operator::MemoryDataOperator;",
@@ -542,6 +557,9 @@ pub fn prepare(
         "simd" => "pub type Selected = tested_operator::SimdDataOperator;",
         _ => return Err("unknown implementation".into()),
     };
+    let selected = format!(
+        "{selected}\n#[cfg(feature=\"engine3\")] fn alias_selected(op:&mut Selected,src:usize,dst:usize)->bool {{fountain_engine::traits::DataOperator::alias_to(op,src,dst)}}\n#[cfg(not(feature=\"engine3\"))] fn alias_selected(_op:&mut Selected,_src:usize,_dst:usize)->bool {{false}}\n"
+    );
     for (name, contents) in [
         ("main.rs", catalog::COMMON),
         ("operator.rs", catalog::OPERATOR),
@@ -553,11 +571,25 @@ pub fn prepare(
                 catalog::NATIVE
             },
         ),
-        ("selected.rs", selected),
+        ("selected.rs", selected.as_str()),
+        ("content.rs", catalog::CONTENT),
+        ("reference.rs", catalog::REFERENCE),
+        ("workloads.rs", catalog::WORKLOADS),
+        ("telemetry.rs", catalog::TELEMETRY),
     ] {
         fs::write(directory.join("src").join(name), contents).map_err(|e| e.to_string())?;
     }
     fs::write(directory.join("src/config.rs"),format!("pub const BUILD:&str={key:?};\npub const INTERFACE:&str={:?};\npub const TEST:&str={:?};\npub const OPERATOR:&str={implementation:?};\npub const FAMILY:&str={family:?};\npub const SCHEME:&str={:?};\n",interface.id,recipe.identity.id,environment["scheme"]["name"].as_str().ok_or("missing scheme selection")?)).map_err(|e|e.to_string())?;
+    let plan_text = serde_json::to_string(recipe).map_err(|e| e.to_string())?;
+    use std::io::Write;
+    writeln!(
+        fs::OpenOptions::new()
+            .append(true)
+            .open(directory.join("src/config.rs"))
+            .map_err(|e| e.to_string())?,
+        "pub const PLAN:&str={plan_text:?};"
+    )
+    .map_err(|e| e.to_string())?;
     if family == "product-abi" {
         fs::write(directory.join("build.rs"),"fn main(){let d=std::env::var(\"FOUNTAIN_ENGINE_LIB_DIR\").unwrap();println!(\"cargo:rustc-link-arg=-Wl,-rpath,{}\",d);}").map_err(|e|e.to_string())?;
     }
@@ -584,6 +616,38 @@ pub fn prepare(
         "driver-build",
         Duration::from_secs(1800),
     )?;
+    let binary = directory.join("driver");
+    fs::copy(
+        directory.join("target/release/fountain-eval-driver"),
+        &binary,
+    )
+    .map_err(|e| e.to_string())?;
+    let mut command = Command::new("cargo");
+    command
+        .args([
+            "build",
+            "--release",
+            "--locked",
+            "--features",
+            "diagnostics",
+        ])
+        .current_dir(&directory);
+    process::controlled(&mut command);
+    if family == "product-abi" {
+        command.env("FOUNTAIN_ENGINE_LIB_DIR", directory.join("lib"));
+    }
+    process::run(
+        &mut command,
+        &logs,
+        "diagnostic-build",
+        Duration::from_secs(1800),
+    )?;
+    let diagnostic_binary = directory.join("diagnostic-driver");
+    fs::copy(
+        directory.join("target/release/fountain-eval-driver"),
+        &diagnostic_binary,
+    )
+    .map_err(|e| e.to_string())?;
     let graph: Value = serde_json::from_str(&cargo(
         &directory,
         &logs,
@@ -624,7 +688,6 @@ pub fn prepare(
     {
         return Err("built scheme is not the selected scheme".into());
     }
-    let binary = directory.join("target/release/fountain-eval-driver");
     let mut artifacts = BTreeMap::new();
     for rel in [
         "Cargo.toml",
@@ -634,7 +697,12 @@ pub fn prepare(
         "src/api.rs",
         "src/selected.rs",
         "src/config.rs",
-        "target/release/fountain-eval-driver",
+        "driver",
+        "diagnostic-driver",
+        "src/content.rs",
+        "src/reference.rs",
+        "src/workloads.rs",
+        "src/telemetry.rs",
     ] {
         artifacts.insert(PathBuf::from(rel), util::file_hash(&directory.join(rel))?);
     }
@@ -747,6 +815,7 @@ pub fn prepare(
         key,
         directory: directory.clone(),
         binary,
+        diagnostic_binary,
         artifacts,
         interface,
         family,

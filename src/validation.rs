@@ -12,6 +12,7 @@ pub enum Severity {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Check {
+    pub spec: crate::content::Case,
     pub skip: Option<crate::coverage::Skip>,
     pub measurement_skip: Option<crate::coverage::Skip>,
     pub severity: Severity,
@@ -122,7 +123,7 @@ pub fn report(record: &Record) -> Report {
     }
     out.warnings = warnings.into_values().collect();
     if let Some(error) = &record.error
-        && matches!(record.stage.as_str(), "validate" | "measure")
+        && matches!(record.stage.as_str(), "validate" | "measure" | "diagnose")
         && out.fatal_failures.is_empty()
     {
         out.fatal_failures.push(json!({"severity":"fatal","rule":"execution-integrity","phase":record.stage,"message":error}));

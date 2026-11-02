@@ -5,15 +5,23 @@ use support::{Temp, record};
 #[test]
 fn metrics_are_decimal_gigabits_and_operations_per_second() {
     let codec = record("native-2", "rq");
-    assert_eq!(codec.summary[0].source_payload_gbps, Some(32.768));
-    assert_eq!(codec.summary[0].median_ns, 2000);
+    assert_eq!(
+        codec
+            .summary
+            .iter()
+            .find(|s| s.case.contains("encode-chain/rq/k64/b128"))
+            .unwrap()
+            .source_payload_gbps,
+        Some(64.0 * 128.0 * 8.0 / 3000.0)
+    );
+    assert_eq!(codec.summary[0].median_ns, 3000);
     let op = record("native-2", "rq");
     let row = op
         .summary
         .iter()
-        .find(|s| s.case == "operator/1/direct")
+        .find(|s| s.case == "operation/xor-one/b16/direct/small")
         .unwrap();
-    assert_eq!(row.operations_per_second, Some(7_000_000.0));
+    assert_eq!(row.operations_per_second, Some(64.0 * 1e9 / 3000.0));
     assert_eq!(row.source_payload_gbps, None);
     let mut bad = codec.samples;
     bad[0].elapsed_ns = 0;
@@ -146,7 +154,7 @@ fn failed_and_prepared_stages_do_not_imply_measurement() {
 fn semantic_warnings_preserve_success_measurements_and_comparison() {
     let left = record("native-2", "rq");
     let mut right = left.clone();
-    let case = "operator/1/direct/self-xor";
+    let case = "operation/self-xor/b16/direct/small";
     let event = right
         .validation
         .iter_mut()
@@ -156,7 +164,7 @@ fn semantic_warnings_preserve_success_measurements_and_comparison() {
     event["witness"] = json!(util::digest(&event["actual"]));
     event["status"] = json!("failed");
     for sample in right.samples.iter_mut().filter(|s| s.case == case) {
-        sample.observation = Some(json!({"calls":256,"outcomes":[{"count":256,"actual":[17]}]}));
+        sample.observation = Some(json!({"calls":64,"outcomes":[{"count":64,"actual":[17]}]}));
         sample.witness = util::digest(sample.observation.as_ref().unwrap());
         sample.elapsed_ns /= 2;
     }
@@ -175,7 +183,10 @@ fn semantic_warnings_preserve_success_measurements_and_comparison() {
         .unwrap();
     assert_eq!(row["left_over_right_time"], 2.0);
     assert_eq!(row["right_warnings"].as_array().unwrap().len(), 1);
-    assert_eq!(row["right_operations_per_second"], 256_000_000.0);
+    assert_eq!(
+        row["right_operations_per_second"].as_f64().unwrap(),
+        64.0 * 1e9 / 1500.0
+    );
 }
 
 #[test]
@@ -184,11 +195,10 @@ fn measured_boundary_variation_is_reported_without_becoming_fatal() {
     let sample = r
         .samples
         .iter_mut()
-        .find(|s| s.case.ends_with("/self-xor"))
+        .find(|s| s.case == "operation/self-xor/b16/direct/small")
         .unwrap();
-    sample.observation = Some(
-        json!({"calls":256,"outcomes":[{"count":1,"actual":[99]},{"count":255,"actual":[0]}]}),
-    );
+    sample.observation =
+        Some(json!({"calls":64,"outcomes":[{"count":1,"actual":[99]},{"count":63,"actual":[0]}]}));
     sample.witness = util::digest(sample.observation.as_ref().unwrap());
     evidence::validate_samples(&r).unwrap();
     let report = fountain_eval::validation::report(&r);
@@ -249,12 +259,11 @@ fn boundary_batches_account_for_every_actual_call() {
             .unwrap();
         let observed = sample.observation.as_mut().unwrap();
         match mutation {
-            0 => observed["calls"] = json!(255),
-            1 => observed["outcomes"][0]["count"] = json!(255),
+            0 => observed["calls"] = json!(63),
+            1 => observed["outcomes"][0]["count"] = json!(63),
             2 => observed["outcomes"] = json!([]),
             _ => {
-                observed["outcomes"] =
-                    json!([{"count":128,"actual":[0]},{"count":128,"actual":[0]}])
+                observed["outcomes"] = json!([{"count":32,"actual":[0]},{"count":32,"actual":[0]}])
             }
         }
         sample.witness = util::digest(observed);
@@ -263,4 +272,54 @@ fn boundary_batches_account_for_every_actual_call() {
             "mutation {mutation}"
         );
     }
+}
+
+#[test]
+fn diagnostics_must_be_complete_separate_and_additive() {
+    let good = record("native-2", "rq");
+    evidence::validate_diagnostics(&good).unwrap();
+    for mutation in 0..5 {
+        let mut bad = good.clone();
+        match mutation {
+            0 => {
+                bad.diagnostics.pop();
+            }
+            1 => bad.diagnostics.push(bad.diagnostics[0].clone()),
+            2 => bad.diagnostics[0]["observation"]["stages"]["total_ns"] = json!(9),
+            3 => bad.diagnostics[0]["worker"] = json!(99),
+            _ => bad.diagnostics[0]["resources"] = json!({}),
+        }
+        assert!(evidence::validate_diagnostics(&bad).is_err());
+    }
+}
+
+#[test]
+fn incomplete_recovery_has_no_successful_throughput() {
+    let mut r = record("native-2", "rq");
+    let case = r
+        .samples
+        .iter()
+        .find(|s| s.case.starts_with("workflow/decode/"))
+        .unwrap()
+        .case
+        .clone();
+    for sample in r.samples.iter_mut().filter(|s| s.case == case) {
+        sample.outcome = "incomplete_recovery".into();
+    }
+    evidence::validate_samples(&r).unwrap();
+    let summaries = measurement::summarize(&r.samples).unwrap();
+    let row = summaries.iter().find(|s| s.case == case).unwrap();
+    assert_eq!(row.incomplete, 15);
+    assert_eq!(row.source_payload_gbps, None);
+}
+
+#[test]
+fn sample_worker_identity_and_report_escaping_are_checked() {
+    let mut r = record("native-2", "rq");
+    r.samples[0].worker = 99;
+    assert!(evidence::validate_samples(&r).is_err());
+    r.run_id = "<script>alert(1)</script>".into();
+    let html = fountain_eval::report::html(&r);
+    assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+    assert!(!html.contains("<script>alert(1)</script>"));
 }

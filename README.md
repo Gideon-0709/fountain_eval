@@ -2,11 +2,11 @@
 
 `fountain-eval` freezes Fountain components, generates isolated native builds, executes every applicable check, records measurements and compares results. It is one Cargo package with a library and CLI. Component source remains in its own repository.
 
-The project is an unreleased internal **0.1.0** candidate. The current test content consists of **framework acceptance fixtures**, not the team's formal correctness or performance standard. Formal tests will cover correctness, individual operations, execution chains and integrated workflows. Encoding-plan generation belongs to chain testing; complete encoding with plan reuse belongs to integrated testing. Those formal workloads are not implemented by this configuration change.
+The project is an unreleased internal **0.1.0** candidate. Its formal content covers correctness, individual operations, execution chains and integrated workflows. Encoding-plan construction/export and recorded execution belong to chain testing; plan reuse across blocks belongs to integrated testing. See the [test guide](docs/TEST_PLAN_0.1.0.md) for contracts and interpretation and the [construction record](docs/VALIDATION_FORMAL.md) for actual coverage and outstanding limitations. No release or performance ranking is implied.
 
 ## Install and run
 
-Requirements: Linux or macOS, Git, `tar`, a native linker/C toolchain and Rust managed by rustup. The generated acceptance drivers use Rust 1.89.0, release optimization and the host CPU. Public native positive coverage currently uses ARM64: the pinned upstream operator has an AVX2 compile error on x86_64, which is reported as a build failure.
+Requirements: Linux or macOS, Git, `tar`, a native linker/C toolchain and Rust managed by rustup. The generated drivers use Rust 1.89.0, release optimization and the host CPU. Public native positive coverage currently uses ARM64: the pinned upstream operator has an AVX2 compile error on x86_64, which is reported as a build failure.
 
 ```bash
 cargo install --path . --locked
@@ -95,7 +95,7 @@ test = "0.1.0"
 
 The product uses its bundled scheme; an explicit external `scheme.source` is rejected. Binary and callback dependencies, hashes and loader evidence are recorded separately. Arena can be used as a product callback operator, while its current exact engine 2.1 dependency conflicts with source engine 3.
 
-Product runs execute applicable codec checks and callback boundary diagnostics. Pure operator core cases and boundary timings require an operation surface the product ABI does not provide: these are explicit capability skips. A skip is not a passing test. Callback diagnostics identify their scope as `callback-operator`.
+Product runs execute codec, source-replacement and lifecycle checks through the real shared library and the selected SymbolOps callbacks. Full operator cases and standalone plan/replay cases require surfaces the product ABI does not provide and are explicitly skipped. Product resource observations cover the driver/callback allocator, not allocations inside the dynamic library. R10 product input accepts K=4..8192; the K=1 success case is skipped and below-domain rejection is checked separately.
 
 ## Effective settings and prepared execution
 
@@ -120,17 +120,20 @@ fountain-eval run --prepared "$PREPARED" > run.json
 
 Its output directory comes from the frozen configuration. Current runtime conditions are observed again; the prepared native binary requires its original CPU and OS family. `--prepared` cannot be combined with `--config`.
 
-## What the current acceptance content runs
+## What the formal content runs
 
-`fountain-eval list` lists the full catalog. Internal content version `0.1.0` contains 26 cases:
+`fountain-eval list` expands the complete 2,182-case candidate. The selected scheme and verified interface determine applicability; users cannot suppress cases.
 
-| Registered cases | Validation | Measurement |
+| Category | Coverage | Measurement |
 |---|---|---|
-| 6 operator core cases: widths 1/31/128, execute/direct | Fatal scalar-reference checks for the 14-operation trace | Preloaded operation execution |
-| 12 boundary cases: self-XOR and repeated-source XOR at each width/path | Warning-level reference observations | 256 independent preloaded calls per sample on native APIs |
-| 8 codec cases: RQ/R10, 0/8 missing sources, encode/decode | Fatal payload, incomplete-state, participation and release checks | Construction and input loading through owned output |
+| Correctness (C01–C11) | Scalar GF/byte oracle, mixed prefixes, storage/dispatch, boundary observations, scheme padding, plan reuse, small independent linear solve, receive ordering, participation and release | Validation outside ordinary timers |
+| Individual operations (O01–O09) | Public storage, XOR, GF, copy/move and supported alias calls; direct/execute paths; small/large sets | One prepared call per independent instance |
+| Chains (L01–L12) | Symbolic plan construction/export, actual encode/decode stage partitions, recorded real-session replay, operation mix and allocation diagnostics | Ordinary totals and separate instrumented observations |
+| Workflows (W01–W08) | First use, source/repair output, source replacement, all-source and missing-source decode, round trip, 32-block continuity and lifecycle | Directly measured output-ready/lifecycle durations |
 
-The selected scheme enables four codec cases; the four cases for the other scheme are recorded as `scheme_not_selected`. Native runs validate 22 cases and record 66 samples. Product runs validate 16 cases and record 12 samples, with 10 validation skips and 22 measurement skips. Every measured case has one warmup and three recorded repetitions. Validation, serialization and final destruction are outside timers. These brief timings do not establish a performance ranking.
+The main matrix uses K=64/512/5008 and symbol widths 128/1016. Ordinary cases run in three sequential worker processes with one excluded warmup and five samples each (15 recorded samples). First-use cases use 15 fresh processes. Diagnostic builds have separate binaries and samples. Timers exclude checking and serialization; output-ready and full-lifecycle scopes are explicitly distinguished. No performance threshold determines correctness.
+
+The pinned public Slab/Simd implementations have a `mul_add(src, 0, dst)` branch that clears `dst`. The independent mathematical reference expects `dst` unchanged. A run that detects this ordinary GF error fails before measurement; it is not converted into a self-XOR warning or silently skipped. Later cases remain unexecuted. This is a component result, not a reason to weaken the formal contract.
 
 A warning retains expected/actual data, operation, width, dispatch and measured observations. Warnings do not fail correctness, suppress performance or veto comparison. A faster implementation returning immediately is still timed and its deviation is reported. Developers decide the tradeoff. `correctness.status: passed_with_warnings` can accompany `status: succeeded` and exit 0.
 
@@ -141,15 +144,19 @@ Crashes, timeouts, build conflicts, malformed evidence and missing applicable re
 ```bash
 RUN=$(python3 -c 'import json; print(json.load(open("run.json"))["run_dir"])')
 fountain-eval report "$RUN"
+# Open the already generated report.html, or render a human-readable view:
+fountain-eval report "$RUN" --format markdown
+fountain-eval compare /path/to/baseline-run /path/to/candidate-run --format html > comparison.html
 fountain-eval compare /path/to/baseline-run /path/to/candidate-run > comparison.json
 ```
 
-`report` returns the complete JSON record. Read these fields first:
+`report` defaults to the complete JSON record; `--format markdown` and `--format html` render the same sealed evidence. Each run also saves `report.html`, `report.md`, `samples.csv` and `diagnostics.json`. Read these fields first:
 
 - `status`, `stage`, `error`: execution outcome and failure boundary.
 - `correctness`: fatal failures, warning observations and executed check counts.
 - `coverage`: every registered case's validation/measurement status and skip reason.
-- `summary`: measured nanoseconds, operations/s and source-payload Gbit/s.
+- `summary`: median/min/max, dispersion and worker medians, ns/call, plans/s, source and actual repair Gbit/s. Incomplete recovery has no successful throughput.
+- `diagnostics`: separate instrumented stage partitions, instruction counts and allocation scope; never pooled with ordinary samples.
 - `quadruple`: fixed C/I/T/E identities; absent for early failures.
 
 A successful run can have `coverage.status: completed_with_skips`. Review the exact skipped cases; this does not assert that the whole catalog was executed. Failed runs retain `not_executed` cases and any raw sample prefix without a successful aggregate.
@@ -186,4 +193,4 @@ Start failures with `error`, `stages.json` and the referenced log. Incomplete/co
 
 ## Maintainer references
 
-See the [0.1.0 formal test plan and report guide (review draft)](docs/TEST_PLAN_0.1.0.md), [DESIGN](docs/DESIGN.md), [CONTRIBUTING](CONTRIBUTING.md), [artifact contracts](specs/README.md), [implementation map](docs/modules.md) and [configuration acceptance](docs/VALIDATION_CONFIG.md). Earlier [initial acceptance](docs/VALIDATION.md) and [warning-policy acceptance](docs/VALIDATION_WARNINGS.md) describe historical construction candidates.
+See the [0.1.0 formal test plan and report guide](docs/TEST_PLAN_0.1.0.md), [DESIGN](docs/DESIGN.md), [CONTRIBUTING](CONTRIBUTING.md), [artifact contracts](specs/README.md), [implementation map](docs/modules.md) and [configuration acceptance](docs/VALIDATION_CONFIG.md). Earlier [initial acceptance](docs/VALIDATION.md) and [warning-policy acceptance](docs/VALIDATION_WARNINGS.md) describe historical construction candidates.

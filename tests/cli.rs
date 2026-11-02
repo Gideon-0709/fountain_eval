@@ -24,7 +24,7 @@ fn help_and_full_catalog_are_available() {
             .as_object()
             .unwrap()
             .len(),
-        26
+        fountain_eval::content::cases().len()
     );
 }
 #[test]

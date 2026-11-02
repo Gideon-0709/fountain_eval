@@ -122,16 +122,20 @@ pub struct Record {
     pub built: Option<Built>,
     pub validation: Vec<Value>,
     pub samples: Vec<Sample>,
+    #[serde(default)]
+    pub diagnostics: Vec<Value>,
     pub summary: Vec<Summary>,
     pub error: Option<String>,
     #[serde(default)]
     pub correctness: crate::validation::Report,
 }
 pub fn stage_states(record: &Record) -> BTreeMap<&'static str, &str> {
-    let phases = ["resolve", "build", "probe", "validate", "measure"];
+    let phases = [
+        "resolve", "build", "probe", "validate", "measure", "diagnose",
+    ];
     let completed = match record.stage.as_str() {
         "prepared" => 3,
-        "complete" => 5,
+        "complete" => 6,
         other => phases.iter().position(|v| *v == other).unwrap_or(0),
     };
     phases
@@ -255,12 +259,12 @@ pub fn compare(left: &Record, right: &Record) -> Result<Value> {
     let b_summary = crate::measurement::summarize(&right.samples)?;
     let left_correctness = crate::validation::report(left);
     let right_correctness = crate::validation::report(right);
-    let rows:Vec<_>=a_summary.iter().filter_map(|a|b_summary.iter().find(|b|b.case==a.case).map(|b|(a,b))).map(|(a,b)|json!({"case":a.case,"left_median_ns":a.median_ns,"right_median_ns":b.median_ns,"left_over_right_time":a.median_ns as f64/b.median_ns as f64,"left_operations_per_second":a.operations_per_second,"right_operations_per_second":b.operations_per_second,"left_source_payload_gbps":a.source_payload_gbps,"right_source_payload_gbps":b.source_payload_gbps,"left_warnings":left_correctness.warnings.iter().filter(|w|w["case"]==a.case).collect::<Vec<_>>(),"right_warnings":right_correctness.warnings.iter().filter(|w|w["case"]==b.case).collect::<Vec<_>>()})).collect();
+    let rows:Vec<_>=a_summary.iter().filter_map(|a|b_summary.iter().find(|b|b.case==a.case).map(|b|(a,b))).map(|(a,b)|json!({"case":a.case,"left_median_ns":a.median_ns,"right_median_ns":b.median_ns,"left_over_right_time":a.median_ns as f64/b.median_ns as f64,"left_cv":a.coefficient_of_variation,"right_cv":b.coefficient_of_variation,"left_worker_medians_ns":a.worker_medians_ns,"right_worker_medians_ns":b.worker_medians_ns,"left_completed":a.completed,"right_completed":b.completed,"left_operations_per_second":a.operations_per_second,"right_operations_per_second":b.operations_per_second,"left_source_payload_gbps":a.source_payload_gbps,"right_source_payload_gbps":b.source_payload_gbps,"left_warnings":left_correctness.warnings.iter().filter(|w|w["case"]==a.case).collect::<Vec<_>>(),"right_warnings":right_correctness.warnings.iter().filter(|w|w["case"]==b.case).collect::<Vec<_>>()})).collect();
     if rows.is_empty() {
         return Err("not comparable: no common measured cases".into());
     }
     Ok(
-        json!({"status":"comparable","comparison_scope":"common measured cases only","coverage":{"left":crate::coverage::report(left),"right":crate::coverage::report(right)},"purpose":"acceptance","left":left.run_id,"right":right.run_id,"interface_equivalence":{"contract":a.t,"evidence":"registered timing contract and matching fatal-check witnesses; warning outcomes may differ","interfaces":[a.i,b.i]},"attribution":if a.i!=b.i&&a.c!=b.c{"component and interface path together"}else if a.i!=b.i{"interface path"}else if a.c["dependencies"]["support_packages"]!=b.c["dependencies"]["support_packages"]{"component combination including support dependency changes"}else{"selected component combination"},"correctness":{"left":left_correctness,"right":right_correctness},"warning":"Acceptance timings are not a formal performance standard or an optimization conclusion.","rows":rows}),
+        json!({"status":"comparable","comparison_scope":"common measured cases only","coverage":{"left":crate::coverage::report(left),"right":crate::coverage::report(right)},"purpose":"formal","left":left.run_id,"right":right.run_id,"interface_equivalence":{"contract":a.t,"evidence":"registered timing contract and matching fatal-check witnesses; warning outcomes may differ","interfaces":[a.i,b.i]},"attribution":if a.i!=b.i&&a.c!=b.c{"component and interface path together"}else if a.i!=b.i{"interface path"}else if a.c["dependencies"]["support_packages"]!=b.c["dependencies"]["support_packages"]{"component combination including support dependency changes"}else{"selected component combination"},"correctness":{"left":left_correctness,"right":right_correctness},"warning":"Interpret timings with dispersion, semantic warnings, work counters and diagnostic overhead; no performance pass threshold.","rows":rows}),
     )
 }
 pub fn validate_samples(record: &Record) -> Result<()> {
@@ -290,9 +294,38 @@ pub fn validate_samples(record: &Record) -> Result<()> {
         if check.skip.is_some()
             || !check.measured
             || sample.payload_bytes != check.payload_bytes
-            || sample.operations != check.operations
+            || sample.operations
+                != if check.spec.workload.ends_with("-replay") {
+                    record
+                        .validation
+                        .iter()
+                        .find(|v| v["case"] == sample.case)
+                        .and_then(|v| v["details"]["calls"].as_u64())
+                        .ok_or("recorded replay call count missing")?
+                } else {
+                    check.operations
+                }
         {
             return Err("sample work counter does not match the test recipe".into());
+        }
+        let expected_worker = if check.spec.fresh_process {
+            sample.repetition
+        } else {
+            sample.repetition / crate::content::SAMPLES_PER_WORKER
+        };
+        if sample.worker != expected_worker
+            || !matches!(sample.outcome.as_str(), "completed" | "incomplete_recovery")
+            || sample.elapsed_ns == 0
+        {
+            return Err("sample worker, outcome or clock violates the recipe".into());
+        }
+        if sample.outcome == "incomplete_recovery"
+            && !matches!(
+                check.spec.workload.as_str(),
+                "decode" | "round-trip" | "decode-chain"
+            )
+        {
+            return Err("incomplete outcome is only defined for bounded recovery workloads".into());
         }
         if !recipe.cases.contains(&sample.case)
             || sample.repetition >= recipe.repetitions
@@ -340,6 +373,67 @@ pub fn validate_samples(record: &Record) -> Result<()> {
             }
         }
     }
+    validate_diagnostics(record)?;
     crate::measurement::summarize(&record.samples)?;
+    Ok(())
+}
+
+/// Instrumented observations are complete, independently identified and internally additive.
+pub fn validate_diagnostics(record: &Record) -> Result<()> {
+    let recipe = record.recipe.as_ref().ok_or("missing recipe")?;
+    let expected: std::collections::BTreeSet<_> = recipe
+        .checks
+        .iter()
+        .filter(|(_, c)| {
+            c.skip.is_none()
+                && c.measured
+                && !c.spec.fresh_process
+                && c.spec.category != "operation"
+        })
+        .flat_map(|(id, _)| (0..crate::content::WORKERS).map(move |w| (id.as_str(), w)))
+        .collect();
+    let mut seen = std::collections::BTreeSet::new();
+    for event in &record.diagnostics {
+        let case = event["case"].as_str().ok_or("diagnostic case missing")?;
+        let worker = event["worker"]
+            .as_u64()
+            .ok_or("diagnostic worker missing")? as usize;
+        if !expected.contains(&(case, worker))
+            || !seen.insert((case, worker))
+            || event["elapsed_ns"].as_u64().is_none_or(|n| n == 0)
+        {
+            return Err("unexpected, duplicate or invalid diagnostic observation".into());
+        }
+        let stages = &event["observation"]["stages"];
+        if !stages.is_null() {
+            let total = stages["total_ns"]
+                .as_u64()
+                .ok_or("diagnostic total missing")?;
+            let residual = stages["unattributed_ns"]
+                .as_u64()
+                .ok_or("diagnostic residual missing")?;
+            let mut sum = residual;
+            for value in stages["exclusive_ns"]
+                .as_object()
+                .ok_or("diagnostic exclusive stages missing")?
+                .values()
+            {
+                sum = sum
+                    .checked_add(value.as_u64().ok_or("noninteger stage duration")?)
+                    .ok_or("stage duration overflow")?;
+            }
+            if sum != total {
+                return Err(
+                    "exclusive stages and residual do not equal the parent duration".into(),
+                );
+            }
+        }
+        if event["resources"]["scope"].as_str().is_none() {
+            return Err("diagnostic resource scope missing".into());
+        }
+    }
+    if seen != expected {
+        return Err("incomplete diagnostic evidence".into());
+    }
     Ok(())
 }

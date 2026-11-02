@@ -2,9 +2,9 @@
 
 ## 1. Document status and reading order
 
-**Status: review draft for the unreleased 0.1.0 test content.** This document specifies the proposed formal tests, their relationships, measurement boundaries and interpretation. It does not claim that these tests have been implemented or passed. It introduces no release or additional version number.
+**Status: implemented internal 0.1.0 candidate, under construction acceptance.** This guide defines the formal test contracts and report interpretation. The [construction record](VALIDATION_FORMAL.md) distinguishes actual passes, component failures and remaining coverage gaps. No release or additional version is introduced.
 
-The current CLI implements the configuration, resolution, build, execution, evidence and comparison framework. Its registered 26-case content is an acceptance fixture described in the [README](../README.md) and [configuration acceptance record](VALIDATION_CONFIG.md). Those short smoke measurements are not the formal measurements specified here. Existing output is JSON; the HTML and CSV deliverables below are planned.
+The old 26-case smoke content has been replaced by the four-category catalog. The CLI now generates ordinary and diagnostic drivers and saves JSON, CSV, Markdown and self-contained HTML views. A registered case does not imply that every component can execute it or that every registered combination has passed.
 
 Read Sections 2–4 to understand the objects and coverage rules; Sections 5–8 define each test family; Sections 9–11 define parameters, timing and metrics; Sections 12–14 explain reports and comparisons. Section 15 states the implementation acceptance boundary. The [architecture](DESIGN.md) owns the C/I/T/E model, and the [artifact contracts](../specs/README.md) describe the currently implemented input and evidence formats.
 
@@ -19,7 +19,7 @@ scheme = "rq"
 test = "0.1.0"
 ```
 
-The current command is `fountain-eval run`, optionally with `--config /path/to/experiment.toml`. Until the formal content is implemented, this command runs the existing acceptance content. No new command or user-written Cargo manifest is proposed by this plan.
+The current command is `fountain-eval run`, optionally with `--config /path/to/experiment.toml`. This command expands and runs the complete applicable formal content. No user-written Cargo manifest or per-case selector is required.
 
 The engine owns coding and solving behavior. The operator owns symbol storage and execution of byte operations. The scheme supplies coding parameters, symbol relationships and precode configuration. Their actual source and dependencies are fixed before execution.
 
@@ -63,7 +63,7 @@ flowchart TD
 
 Encoding-plan generation belongs to an execution chain because it combines parameter processing, symbolic solving and instruction construction. A plan-generation timing can appear as its own row without becoming an individual-operation category. Reusing that plan across complete blocks belongs to integrated testing. There is no fifth test category for plans.
 
-The labels C01, O01, L01 and W01 below are document references for review, not already registered CLI case identifiers or additional versions. Each implementation case will carry its concrete parameters and requirements in the expanded plan.
+The labels C01, O01, L01 and W01 below are family references. Each expanded case carries its family, category, concrete parameters and requirements; a chain can cover several families through exclusive stages and separately labelled internal observations.
 
 ## 4. Coverage, severity and execution outcomes
 
@@ -306,9 +306,9 @@ If a future component overlaps phases or uses worker threads, report wall-clock 
 
 ### 10.3 Samples and repeat structure
 
-For an ordinary performance case, propose three independent worker processes, each with one excluded warmup and five recorded samples: three warmups and 15 samples in total per case/seed. A measured sample may contain a batch of elementary calls. First-use cases instead require fresh-process first observations without warmup; subsequent work is not reused as another first-use sample.
+For an ordinary performance case, use three independent worker processes, each with one excluded warmup and five recorded samples: three warmups and 15 samples in total per case/seed. A measured sample may contain a batch of elementary calls. First-use cases instead require fresh-process first observations without warmup; subsequent work is not reused as another first-use sample.
 
-Use a T-owned batch-calibration policy for very short operations and retain the actual batch count. Calibration is outside measurement and does not retry failures. Define state preparation consistently and preserve all observed outputs or sufficient checked evidence. A result below usable clock resolution must be reported as unresolved at that resolution rather than an exact zero-time operation.
+The candidate uses deterministic fixed batches: up to 64 independent instances for the small set and 512 for the large set, capped at 64 MiB of initial symbol bytes. Sixteen symbols are initialized per instance. These sizes are part of T and the actual call count is retained. There is no adaptive retry or hidden change in batch size. Define state preparation consistently and preserve all observed outputs or sufficient checked evidence. A result below usable clock resolution must be reported as unresolved at that resolution rather than an exact zero-time operation.
 
 Keep worker/process grouping, repetition index and workload seed. Three seeds measure different inputs; repeats of one seed measure execution variability for that input. Fifteen samples are not 15 independent machines, nor a basis for precise tail-percentile or production-stability claims.
 
@@ -346,9 +346,9 @@ Warnings do not change denominators. A boundary call that returns immediately st
 
 ### 12.1 Deliverables
 
-The formal implementation is intended to produce a self-contained HTML report, a concise human-readable summary, structured JSON/CSV and the sealed raw evidence needed to reproduce calculations. HTML is a view of the evidence, not a separate source of truth. It must work locally without uploading component information or results.
+The formal implementation produces a self-contained HTML report, a concise human-readable summary, structured JSON/CSV and the sealed raw evidence needed to reproduce calculations. HTML is a view of the evidence, not a separate source of truth. It must work locally without uploading component information or results.
 
-This document defines report meanings, not an already implemented new file/schema contract. Current `result.json`, configuration, correctness, coverage, logs and sample artifacts remain documented in [specs](../specs/README.md). Additional formal-report schemas must be implemented and verified before this plan is considered delivered.
+The [artifact contracts](../specs/README.md) define `result.json`, configuration, correctness, coverage, raw samples, separate diagnostics and rendered views. Additional formal-report schemas must be implemented and verified before this plan is considered delivered.
 
 ### 12.2 Read reports in this order
 
@@ -438,3 +438,29 @@ Acceptance must demonstrate:
 Framework acceptance remains separate from formal component performance conclusions. Public CI and authorized local acceptance maintain their own evidence scopes. Temporary implementation-validation artifacts are summarized and then cleaned according to project policy; ordinary user results are never automatically uploaded, archived or deleted.
 
 The project owner reviews this plan and controls the eventual internal 0.1.0 release. Approval of the document does not assert that its implementation, measurements or acceptance have already been completed.
+
+
+## 16. Frozen construction choices and observability limits
+
+The exact executable definitions are in `src/content.rs` and the expanded `test-plan.json`, identified by T's content digest. This unreleased candidate contains 2,182 cases across both schemes before applicability:
+
+- Main geometry: K=64, 512, 5008; B=128, 1016. Plan construction/export uses K alone and a separate B=31 correctness payload after timing.
+- Operator performance widths: 16, 31, 32, 33, 128, 1016, 4096, 16384. Correctness additionally covers 1, 15, 17, 63, 64, 65, 127, 129, 1023, 1024 and 1025.
+- Scheme-padding K values: 1, 4, 9, 10, 11, 63, 64, 65, 511, 512, 513, 5007, 5008, 5009 and 5120, at B=31 and 128. Product R10 K=1 is outside its declared successful-call domain; C11 checks rejection instead.
+- Seed values: `0x1971`, `0x2003`, `0x5008`; SplitMix64 low bytes generate payloads, and deterministic Fisher–Yates ordering uses the same generator. The expanded case retains the actual seed.
+- Repair-output sizes: 1, 8 and ceil(K/10), deduplicated. Decode omissions: 0, 1, ceil(K/100), ceil(K/10), deduplicated; source-first and mixed orders. Repair budget is max(128, 2 × missing + 64). Continuous workflows contain 32 blocks with distinct payloads.
+- A normal worker has a fixed 600-second deadline; a fresh-process case has 60 seconds. The host starts three sequential ordinary workers and three separate diagnostic workers. First-use cases have 15 distinct process invocations.
+
+The scalar reference uses GF(256) polynomial 0x11d. The one-byte C02 case exhausts all 256 input bytes and 256 scalar values. `dst ^= scalar × src` with distinct IDs is ordinary arithmetic, including scalar zero. It is fatal if it changes `dst` for zero; it is not an ambiguous alias boundary. In contrast, C06 records self-XOR, repeated sources, target-in-sources, repeated broadcast destinations, self-copy/move, empty lists and overlapping transfer observations as warnings. A caught boundary panic records rejection and its call latency, not a completed byte operation. Boundary containment adds unwind-check overhead; compare the same boundary case across components, not its raw timing against an uncontained different operation.
+
+A shared-storage first-write case prepares its alias outside the timer, then times the single public mutation. Alias capability is confirmed by the selected implementation's return value. Ordinary snapshots check the independent reference after each instance; removal is exercised through valid ID reuse rather than undefined lookup of a removed ID.
+
+The small linear reference derives generator coefficients using basis payloads through the selected scheme, then applies independent scalar arithmetic and Gauss–Jordan elimination. It tests linear coding and recovery. It is not an independent RFC wire-format conformance implementation.
+
+Native execute-only encoder construction fuses symbolic solving and payload application. Its chain reports that combined stage and a separate standalone symbolic-plan measurement. Product creation, source replacement and output calls have analogous combined boundaries. Neither binding edits component source to expose hidden stages. Source-engine 3's existing profiling feature supplies inclusive internal solver counters only in the diagnostic build; those counters are not additional exclusive stages.
+
+Resource counters cover the generated driver's Rust allocator. Diagnostic helper allocations are included and labelled; output buffers may remain owned by the workload. For product runs, dynamic-library internal allocations remain unobserved. Process RSS and exact physical copy traffic are not measured by this candidate and must not be inferred from allocator growth or logical operation counts. Native APIs lacking a recoverable invalid-input contract report that observation limit; product C11 checks invalid symbol/source lengths, callback error propagation and failure-path release through the safe facade.
+
+The summary reports per-worker medians, total median/min/max, population standard deviation and coefficient of variation. Plan rate is plans/s; replay call counts come from the actual captured sequence, including ordered imports and field calls. Replay records its sequence digest and histogram, so different instruction streams are visible. These counts are component work evidence, not new E inequality fields.
+
+The HTML view offers case filtering, ordinary timing rows, warnings and expandable chain/resource observations. Markdown includes complete coverage and diagnostic details; CSV preserves the raw ordinary samples. Comparison supports JSON, Markdown and HTML. Cases with exhausted recovery budgets retain their samples and outcome; their successful source throughput is absent.

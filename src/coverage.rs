@@ -27,7 +27,10 @@ pub fn report(record: &Record) -> Value {
         } else {
             json!({"status":if samples==recipe.repetitions {"recorded"} else if samples>0 {"incomplete"} else {"not_executed"},"samples":samples,"expected_samples":recipe.repetitions,"accepted":record.status=="succeeded" && samples==recipe.repetitions})
         };
-        json!({"case":case,"rule":check.rule,"validation":validation,"measurement":measurement})
+        let diagnostics=if let Some(skip)=&check.skip{json!({"status":"skipped","reason":skip})}
+            else if !check.measured||check.spec.category=="operation"||check.spec.fresh_process{json!({"status":"not_applicable","reason":"Separate stage/resource diagnostics apply to non-fresh chain and workflow cases"})}
+            else{let count=record.diagnostics.iter().filter(|v|v["case"]==*case).count();json!({"status":if count==crate::content::WORKERS{"recorded"}else if count>0{"incomplete"}else{"not_executed"},"observations":count,"expected":crate::content::WORKERS})};
+        json!({"case":case,"category":check.spec.category,"family":check.spec.family,"rule":check.rule,"validation":validation,"measurement":measurement,"diagnostics":diagnostics})
     }).collect();
     let skipped_validation = rows
         .iter()
