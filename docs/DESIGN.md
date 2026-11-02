@@ -65,7 +65,7 @@ The content version selects the full catalog, not an individual suite or categor
 
 Formal test content has four categories: correctness checks, individual operations, execution chains and integrated workflows. Encoding-plan generation is an engine stage within chain testing, not an atomic operation or fifth category. Plan reuse inside complete encoding is integrated testing. These classifications guide later formal test design; the current cases remain framework acceptance fixtures.
 
-The [0.1.0 test plan and report guide](docs/TEST_PLAN_0.1.0.md) is the review draft for concrete formal cases, their relationships, measurement boundaries and report interpretation. It does not change the currently implemented acceptance content or claim formal-test completion.
+The [0.1.0 test plan and report guide](TEST_PLAN_0.1.0.md) is the review draft for concrete formal cases, their relationships, measurement boundaries and report interpretation. It does not change the currently implemented acceptance content or claim formal-test completion.
 
 ## Source freezing and build composition
 

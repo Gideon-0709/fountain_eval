@@ -32,7 +32,7 @@ The repository is an unreleased internal 0.1.0 candidate. Update this baseline a
 
 ## Documentation and retention
 
-Write docs and diagnostics in English. README examples must execute the implemented workflow; DESIGN explains the version boundaries and comparability model. Do not describe smoke measurements as formal performance conclusions.
+Write docs and diagnostics in English. README examples must execute the implemented workflow; [DESIGN](docs/DESIGN.md) explains the version boundaries and comparability model. Do not describe smoke measurements as formal performance conclusions.
 
 Do not commit caches, component checkouts, credentials, personal bindings or raw acceptance outputs. After writing an implementation acceptance summary, remove only the explicitly identified temporary validation directories. The CLI never cleans normal user results automatically.
 

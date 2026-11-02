@@ -4,4 +4,4 @@
 
 Runtime generation supplies a selected operator alias and immutable build/test identity and selected-scheme constants. The generated crate has its own Cargo.lock and release profile. The product family additionally builds the real shared library and calls the selected operator through SymbolOps. Product operation-surface gaps become explicit applicability skips; the driver must still emit every applicable observation. The CLI does not expose per-case selection.
 
-See the [process contract](../specs/README.md) and [design](../DESIGN.md) for capability, timing and equivalence boundaries. Native declarations and implementation code remain in their original repositories.
+See the [process contract](../specs/README.md) and [design](../docs/DESIGN.md) for capability, timing and equivalence boundaries. Native declarations and implementation code remain in their original repositories.

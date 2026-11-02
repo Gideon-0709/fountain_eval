@@ -6,7 +6,7 @@
 
 The current CLI implements the configuration, resolution, build, execution, evidence and comparison framework. Its registered 26-case content is an acceptance fixture described in the [README](../README.md) and [configuration acceptance record](VALIDATION_CONFIG.md). Those short smoke measurements are not the formal measurements specified here. Existing output is JSON; the HTML and CSV deliverables below are planned.
 
-Read Sections 2–4 to understand the objects and coverage rules; Sections 5–8 define each test family; Sections 9–11 define parameters, timing and metrics; Sections 12–14 explain reports and comparisons. Section 15 states the implementation acceptance boundary. The [architecture](../DESIGN.md) owns the C/I/T/E model, and the [artifact contracts](../specs/README.md) describe the currently implemented input and evidence formats.
+Read Sections 2–4 to understand the objects and coverage rules; Sections 5–8 define each test family; Sections 9–11 define parameters, timing and metrics; Sections 12–14 explain reports and comparisons. Section 15 states the implementation acceptance boundary. The [architecture](DESIGN.md) owns the C/I/T/E model, and the [artifact contracts](../specs/README.md) describe the currently implemented input and evidence formats.
 
 ## 2. What one evaluation measures
 
