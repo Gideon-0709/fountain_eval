@@ -296,7 +296,7 @@ Warnings do not change denominators. A boundary call that returns immediately st
 
 ### Deliverables
 
-The framework automatically produces per-C HTML and Markdown reports, structured JSON/CSV and sealed raw evidence. The batch overview links to each C and reports its full execution wall time separately from benchmark time. HTML is a view of the evidence, not a separate source of truth. It must work locally without uploading component information or results.
+The framework automatically produces one Markdown report for the entire configured batch. It embeds every C, groups results by test category, and separates execution wall time from benchmark time. Sealed JSON evidence retains the full observations and exact per-case coverage. The report is derived from that evidence and is readable locally without uploading component information or results.
 
 The [artifact contracts](../specs/README.md) define `result.json`, configuration, correctness, coverage, raw samples, separate diagnostics and rendered views. The views derive from the same sealed evidence; framework checks verify missing observations, inconsistent work counts and diagnostic accounting.
 
@@ -316,7 +316,7 @@ The [artifact contracts](../specs/README.md) define `result.json`, configuration
 
 A summary such as "succeeded with warnings and skips" must link to the affected cases. Present expected/actual values at a useful level, with full byte evidence or an exact first-difference location available for inspection. Do not bury warning details only in an appendix while placing an unqualified ranking at the top.
 
-The HTML view provides case filtering, ordinary timing rows, warnings and expandable chain/resource observations. Markdown includes full coverage and diagnostics; CSV preserves individual samples. Unavailable or fused stages are described as such, not displayed as zero-cost work.
+The Markdown report organizes correctness, individual operations, chains and integrated workflows into separate sections, with short repeated-header tables. Fatal findings explain the violated contract and observed difference; warnings remain visible beside their timing context. Stage/resource observations accompany each workload. Coverage is summarized by category, phase, test family and skip reason; exact case IDs and individual samples remain in sealed JSON evidence. Unavailable or fused stages are described as such, not displayed as zero-cost work. Stage means are computed over the same diagnostic observations and remain additive to their mean lifecycle total; ordinary timing medians are separate.
 
 ### How to interpret common patterns
 

@@ -122,6 +122,7 @@ fn execute(
     fs::create_dir_all(&configuration.run.output).map_err(|e| e.to_string())?;
     fs::create_dir(&directory).map_err(|e| e.to_string())?;
     let directory = directory.canonicalize().map_err(|e| e.to_string())?;
+    let report_directory = crate::report::reserve(&configuration.report_root(), &id)?;
     let clock = Instant::now();
     let entries = configuration
         .selections
@@ -219,8 +220,11 @@ fn execute(
     record.status = status(&record.entries, prepare_only, record.interrupted);
     record.elapsed_ns = clock.elapsed().as_nanos() as u64;
     checkpoint(&directory, &record)?;
-    crate::report::write_batch(&directory, &record)?;
     evidence::seal(&directory)?;
+    crate::report::publish(
+        &report_directory,
+        &crate::report::batch_markdown(&directory, &record)?,
+    )?;
     Ok((directory, record))
 }
 fn checkpoint(directory: &Path, record: &Record) -> Result<()> {

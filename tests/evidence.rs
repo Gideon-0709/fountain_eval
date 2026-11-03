@@ -319,22 +319,20 @@ fn sample_worker_identity_and_report_escaping_are_checked() {
     r.samples[0].worker = 99;
     assert!(evidence::validate_samples(&r).is_err());
     r.run_id = "<script>alert(1)</script>".into();
-    let html = fountain_eval::report::html(&r);
-    assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
-    assert!(!html.contains("<script>alert(1)</script>"));
+    let markdown = fountain_eval::report::markdown(&r);
+    assert!(markdown.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+    assert!(!markdown.contains("<script>alert(1)</script>"));
 }
 
 #[test]
-fn fatal_failure_details_are_visible_in_both_human_reports() {
+fn fatal_failure_details_are_visible_in_markdown() {
     let mut r = support::record("native-2", "rq");
     r.status = "failed".into();
     r.samples.clear();
     r.summary.clear();
     r.correctness.fatal_failures.push(serde_json::json!({"case":"correctness/arithmetic", "severity":"fatal", "status":"failed", "message":"MulAdd scalar: 0 <invalid>"}));
-    let html = fountain_eval::report::html(&r);
-    assert!(html.contains("Fatal correctness failures"));
-    assert!(html.contains("MulAdd scalar: 0 &lt;invalid&gt;"));
     let markdown = fountain_eval::report::markdown(&r);
     assert!(markdown.contains("Fatal correctness failures"));
-    assert!(markdown.contains("MulAdd scalar: 0 <invalid>"));
+    assert!(markdown.contains("MulAdd scalar: 0 &lt;invalid&gt;"));
+    assert!(!markdown.contains("```json"));
 }

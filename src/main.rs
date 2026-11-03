@@ -39,22 +39,12 @@ enum Command {
     /// Read a sealed result including warnings and complete coverage.
     Report {
         run: PathBuf,
-        #[arg(long, value_enum, default_value = "json")]
-        format: Format,
+        /// Export to OUTPUT/<run-id>/report.md instead of stdout.
+        #[arg(long)]
+        output: Option<PathBuf>,
     },
     /// Compare common measured cases and report coverage differences.
-    Compare {
-        left: PathBuf,
-        right: PathBuf,
-        #[arg(long, value_enum, default_value = "json")]
-        format: Format,
-    },
-}
-#[derive(Clone, clap::ValueEnum)]
-enum Format {
-    Json,
-    Markdown,
-    Html,
+    Compare { left: PathBuf, right: PathBuf },
 }
 fn emit_text(text: &str) -> Result<()> {
     io::stdout()
@@ -69,7 +59,12 @@ fn emit(value: &impl serde::Serialize) -> Result<()> {
 }
 fn outcome(directory: PathBuf, record: batch::Record) -> Result<u8> {
     let code = batch::exit_code(&record);
-    emit(&json!({"run_dir":directory,"batch":record}))?;
+    let report = record
+        .configuration
+        .report_root()
+        .join(&record.run_id)
+        .join("report.md");
+    emit(&json!({"run_dir":directory,"report":report,"batch":record}))?;
     Ok(code)
 }
 fn execute(command: Command) -> Result<u8> {
@@ -106,38 +101,32 @@ fn execute(command: Command) -> Result<u8> {
             };
             outcome(path, record)
         }
-        Command::Report { run, format } => {
-            if run.join("batch.json").exists() {
+        Command::Report { run, output } => {
+            let run = run.canonicalize().map_err(|e| e.to_string())?;
+            let (id, text) = if run.join("batch.json").exists() {
                 let r = batch::load(&run)?;
-                match format {
-                    Format::Json => emit(&r)?,
-                    Format::Markdown => emit_text(&fountain_eval::report::batch_markdown(&r))?,
-                    Format::Html => emit_text(&fountain_eval::report::batch_html(&r))?,
-                }
+                let text = fountain_eval::report::batch_markdown(&run, &r)?;
+                (r.run_id, text)
             } else {
                 let r = evidence::load(&run)?;
-                match format {
-                    Format::Json => emit(&r)?,
-                    Format::Markdown => emit_text(&fountain_eval::report::markdown(&r))?,
-                    Format::Html => emit_text(&fountain_eval::report::html(&r))?,
-                };
+                let text = fountain_eval::report::markdown(&r);
+                (r.run_id, text)
+            };
+            if let Some(root) = output {
+                let directory = fountain_eval::report::reserve(&root, &id)?;
+                let report = fountain_eval::report::publish(&directory, &text)?;
+                emit_text(&format!("{}\n", report.display()))?;
+            } else {
+                emit_text(&text)?;
             }
             Ok(0)
         }
-        Command::Compare {
-            left,
-            right,
-            format,
-        } => {
+        Command::Compare { left, right } => {
             if left.join("batch.json").exists() || right.join("batch.json").exists() {
-                return Err("compare requires two per-C result directories; choose the detailed result paths listed in each batch report".into());
+                return Err("compare requires two per-C evidence directories; choose the evidence paths listed in the report".into());
             }
             let r = evidence::compare(&evidence::load(&left)?, &evidence::load(&right)?)?;
-            match format {
-                Format::Json => emit(&r)?,
-                Format::Markdown => emit_text(&fountain_eval::report::comparison(&r))?,
-                Format::Html => emit_text(&fountain_eval::report::comparison_html(&r))?,
-            };
+            emit_text(&fountain_eval::report::comparison(&r))?;
             Ok(0)
         }
     }

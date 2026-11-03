@@ -128,11 +128,12 @@ Optional storage settings belong in the same file:
 
 ```toml
 [run]
-output = "runs"
+report = "reports" # human-readable reports
+output = "runs"    # sealed raw evidence
 cache = ".fountain-eval"
 ```
 
-The defaults are the same paths relative to the config. Every invocation creates a unique result directory. The original config and its resolved request/settings are saved as evidence. Their location and comments do not affect experiment equality.
+The defaults are the paths above, relative to the config. Set `run.report` to the folder where you want to read reports. Every invocation reserves a unique `<report>/<run-id>/` directory and writes exactly one `report.md` containing every C. Raw evidence stays under `<output>/<run-id>/`; cache files stay under `cache`. These directories serve different purposes. Report paths do not affect E or comparability. An existing report is never overwritten. The original config and its resolved request/settings are saved as evidence. Their location and comments do not affect experiment equality.
 
 Prepared execution consumes the stored config and verified source/build inputs, without rereading the original config:
 
@@ -164,50 +165,44 @@ Crashes, timeouts, build conflicts, malformed evidence and missing applicable re
 
 ## Reading results and comparing
 
+A normal run automatically writes **one Markdown report for the entire batch**:
+
+```text
+reports/
+  <run-id>/
+    report.md
+```
+
+The JSON command response contains `report` (the Markdown path) and `run_dir` (the sealed evidence path). No HTML/CSV reports or per-C report folders are generated. Raw machine-readable evidence is retained independently for verification and later comparisons.
+
 ```bash
+python3 -c 'import json; print(json.load(open("run.json"))["report"])'
 RUN=$(python3 -c 'import json; print(json.load(open("run.json"))["run_dir"])')
+# Verify and render the complete report to stdout:
 fountain-eval report "$RUN"
-# Open the already generated report.html, or render a human-readable view:
-fountain-eval report "$RUN" --format markdown
-fountain-eval compare /path/to/batch/C0/run-id /path/to/batch/C1/run-id --format html > comparison.html
-fountain-eval compare /path/to/batch/C0/run-id /path/to/batch/C1/run-id > comparison.json
+# Re-render historical evidence into a new report folder without rerunning measurements:
+fountain-eval report "$RUN" --output ./review-reports
+# The two arguments below are evidence directories, not Markdown files:
+fountain-eval compare /path/to/batch/C0/run-id /path/to/batch/C1/run-id > comparison.md
 ```
 
-`report` defaults to the complete JSON record; `--format markdown` and `--format html` render the same sealed evidence. The batch root saves `batch.json`, `report.html`, `report.md` and `runs.csv`. Its overview links each C to `C<index>/<run-id>/report.html`. Each child saves `result.json`, `report.md`, `samples.csv`, `diagnostics.json` and its own seal. Batch elapsed seconds include preparation and report generation; failed rows show time to failure, not full-suite completion. Host phase times distinguish construction from validation/measurement and are separate from benchmark nanoseconds. Read these fields in each child first:
+`report` and `compare` produce Markdown only. `report --output DIR` creates `DIR/<run-id>/report.md` and refuses an existing destination. Report generation verifies the original evidence and does not modify or reseal it. Historical sealed results may still contain older report formats; those files remain part of their original checksum record, and the new renderer does not use them.
 
-- `status`, `stage`, `error`: execution outcome and failure boundary.
-- `correctness`: fatal failures, warning observations and executed check counts.
-- `coverage`: every registered case's validation/measurement status and skip reason.
-- `summary`: median/min/max, dispersion and worker medians, ns/call, plans/s, source and actual repair Gbit/s. Incomplete recovery has no successful throughput.
-- `diagnostics`: separate instrumented stage partitions, instruction counts and allocation scope; never pooled with ordinary samples.
-- `quadruple`: fixed C/I/T/E identities; absent for early failures.
+The report follows this reading order:
 
-A successful run can have `coverage.status: completed_with_skips`. Review the exact skipped cases; this does not assert that the whole catalog was executed. Failed runs retain `not_executed` cases and any raw sample prefix without a successful aggregate.
+1. **Components and outcomes:** selected engine/operator, scope, outcome, elapsed wall time and the reason a C stopped.
+2. **Correctness:** fatal failures explain the check, input, expected/observed behavior and impact; warnings show operation/dispatch, observed differences and repeated measurement deviations.
+3. **Individual operations:** grouped by public operation, with separate short tables for latency/dispersion and work-normalized rates.
+4. **Execution chains:** plan generation/export, recorded replay, stage partitions, operation mix and allocation observations.
+5. **Integrated workflows:** full encode/decode, first use, reuse, continuity and lifecycle timings, with stage/resource details alongside the related workload.
+6. **Coverage:** separate validation, measurement and diagnostic counts, plus skipped/unexecuted families and reasons. The linked `coverage.json` retains every exact case ID.
+7. **Reproducibility:** component requests and source identities, I/T/E, host/build conditions, operational phase times and evidence locations.
 
-```bash
-python3 - <<'PYREPORT'
-import json
-from pathlib import Path
-batch_dir = Path(json.load(open("run.json"))["run_dir"])
-batch = json.load(open(batch_dir / "batch.json"))
-for entry in batch["entries"]:
-    seconds = None if entry["elapsed_ns"] is None else entry["elapsed_ns"] / 1e9
-    print("C", entry["component_id"], entry["status"], "elapsed s:", seconds)
-    if entry["directory"] is None:
-        print(entry["error"])
-        continue
-    child = batch_dir / entry["directory"]
-    r = json.load(open(child / "result.json"))
-    print("details:", child / "report.html")
-    for warning in r["correctness"]["warnings"]:
-        print("warning", warning["case"], warning["expected"], warning["actual"])
-    for case in r["coverage"]["cases"]:
-        if case["validation"]["status"] == "skipped":
-            print("skipped", case["case"], case["validation"]["reason"])
-PYREPORT
-```
+All C details are embedded in the same file. Tables repeat headings every 12 rows and have at most six columns. Ordinary medians, ranges, CV and worker medians are distinct from instrumented observations. Diagnostic stage **means** use the same observation set: exclusive stage means plus the unattributed mean reproduce the mean diagnostic lifecycle, subject to rounding. They cannot be added to ordinary medians. Allocator scope and fused/unavailable internal stages are explicitly described.
 
-`compare` takes per-C directories, not batch roots. Comparison verifies every applicable observation against the registered plan before comparing common measured cases. It requires matching T/content and common E conditions, valid I integrations and matching common fatal witnesses. It returns both coverage tables and explicitly labels its scope; product/native comparisons contain codec timing rows, not fabricated operator rows. Warning differences remain visible. A change to C and I together is attributed to both.
+A successful C can have warnings and skipped cases. Review its coverage before comparing it with a C that exercised a larger API surface. A fatal failure blocks a complete performance aggregate; raw sample prefixes remain evidence. Source Gbit/s is decimal and uses source payload bytes; repair Gbit/s uses actual repair output bytes. Incomplete recovery does not report successful throughput.
+
+`compare` accepts two per-C evidence directories and validates T/E/I compatibility and common fatal witnesses before comparing common measured cases. It separates operations, chains and workflows, shows absolute/relative time changes and dispersion, and includes coverage differences and semantic warnings. A change to C and I together is attributed to both. No baseline or global ranking is silently selected.
 
 ## Evidence, failures and retention
 
@@ -221,7 +216,7 @@ Each result includes `config.toml`, `config-resolved.json`, `request.json`, `tes
 | 4 | At least one failed or unexecuted C; inspect every batch entry |
 | 130 | Interrupted run |
 
-Start failures with `error`, `stages.json` and the referenced log. Incomplete/corrupt build entries fail without rebuilding or retrying silently. Use a new cache directory or explicitly remove a failed entry after inspection. The CLI never uploads, archives, overwrites or deletes normal results. Default results/caches are ignored by Git; custom storage outside those directories is the user's responsibility.
+Start failures with `error`, `stages.json` and the referenced log. Incomplete/corrupt build entries fail without rebuilding or retrying silently. Use a new cache directory or explicitly remove a failed entry after inspection. The CLI never uploads, archives, overwrites or deletes normal results. Default reports/results/caches are ignored by Git; custom storage outside those directories is the user's responsibility.
 
 ## Maintainer references
 

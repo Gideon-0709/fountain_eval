@@ -38,6 +38,9 @@ fn systematic() -> String {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunSettings {
+    /// Human-readable output, separate from immutable execution evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<PathBuf>,
     #[serde(default = "output_default")]
     pub output: PathBuf,
     #[serde(default = "cache_default")]
@@ -52,6 +55,7 @@ fn cache_default() -> PathBuf {
 impl Default for RunSettings {
     fn default() -> Self {
         Self {
+            report: None,
             output: output_default(),
             cache: cache_default(),
         }
@@ -82,6 +86,14 @@ pub struct RunConfiguration {
     pub run: RunSettings,
 }
 impl Configuration {
+    pub fn report_root(&self) -> PathBuf {
+        self.run.report.clone().unwrap_or_else(|| {
+            self.path
+                .parent()
+                .expect("absolute configuration path")
+                .join("reports")
+        })
+    }
     pub fn selection(&self, selected: &Selection) -> RunConfiguration {
         RunConfiguration {
             path: self.path.clone(),
@@ -186,6 +198,12 @@ impl Configuration {
             selections.push(Selection { id, request });
         }
         let run = RunSettings {
+            report: input
+                .run
+                .report
+                .as_deref()
+                .map(|p| resolve(base, p))
+                .transpose()?,
             output: resolve(base, &input.run.output)?,
             cache: resolve(base, &input.run.cache)?,
         };

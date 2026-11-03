@@ -20,24 +20,31 @@ fn independent_failures_continue_and_automatic_reports_retain_each_c() {
         assert_eq!(e.status, "failed");
         assert!(e.elapsed_ns.unwrap() > 0);
         let child = path.join(e.directory.as_ref().unwrap());
-        assert!(child.join("report.html").is_file());
+        assert!(!child.join("report.md").exists());
+        assert!(!child.join("report.html").exists());
         let record = evidence::load(&child).unwrap();
         assert!(record.quadruple.is_none());
         assert!(record.samples.is_empty());
     }
-    let report = std::fs::read_to_string(path.join("report.html")).unwrap();
-    assert!(report.contains("C0") && report.contains("C2") && report.contains("Detailed results"));
-    assert!(path.join("runs.csv").is_file());
+    let report_directory = r.configuration.report_root().join(&r.run_id);
+    let report = std::fs::read_to_string(report_directory.join("report.md")).unwrap();
+    assert!(
+        report.contains("C0")
+            && report.contains("C2")
+            && report.contains("Components and outcomes")
+    );
+    assert_eq!(std::fs::read_dir(&report_directory).unwrap().count(), 1);
+    assert!(!path.join("report.md").exists());
     assert_eq!(batch::load(&path).unwrap().entries.len(), 2);
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_fountain-eval"))
-        .args(["report", path.to_str().unwrap(), "--format", "markdown"])
+        .args(["report", path.to_str().unwrap()])
         .output()
         .unwrap();
     assert!(output.status.success());
     // Integrity checks do not depend on surviving build caches.
     std::fs::remove_dir_all(t.0.join(".fountain-eval")).unwrap();
     assert!(batch::load(&path).is_ok());
-    std::fs::write(path.join("runs.csv"), "corrupt").unwrap();
+    std::fs::write(path.join("batch.json"), "corrupt").unwrap();
     assert!(batch::load(&path).is_err());
 }
 #[test]

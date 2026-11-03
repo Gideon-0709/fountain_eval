@@ -264,3 +264,24 @@ fn single_components_keep_full_catalog_with_no_implicit_production_partner() {
         }));
     }
 }
+
+#[test]
+fn report_destination_is_relative_to_config_and_independent_of_evidence() {
+    let c = parse(basic() + "[run]\nreport=\"../../readable reports\"\n").unwrap();
+    assert_eq!(
+        c.report_root(),
+        std::path::Path::new("/project/configs/../../readable reports")
+    );
+    assert_eq!(c.run.output, std::path::Path::new("/project/configs/runs"));
+    assert_eq!(
+        parse(basic()).unwrap().report_root(),
+        std::path::Path::new("/project/configs/reports")
+    );
+    assert!(parse(basic() + "[run]\nreport=\"\"\n").is_err());
+    // Older sealed records omitted this optional setting; their normalized identity is unchanged.
+    let old = parse(basic()).unwrap();
+    let encoded = serde_json::to_value(&old).unwrap();
+    assert!(encoded["run"].get("report").is_none());
+    let decoded: Configuration = serde_json::from_value(encoded).unwrap();
+    assert_eq!(decoded.report_root(), old.report_root());
+}

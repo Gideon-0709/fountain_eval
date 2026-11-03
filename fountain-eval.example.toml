@@ -12,5 +12,6 @@ test = "0.1.0"
 
 # Paths, including component paths, are relative to this file.
 # [run]
-# output = "runs"
+# report = "reports" # Contains <run-id>/report.md only.
+# output = "runs"    # Raw sealed execution evidence.
 # cache = ".fountain-eval"

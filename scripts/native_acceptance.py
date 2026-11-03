@@ -49,7 +49,7 @@ def main():
                     time.sleep(.05)
             code = process.wait(timeout=7200)
         text = (work / (label + ".stdout")).read_text()
-        body = json.loads(text) if text.strip() else {}
+        body = json.loads(text) if text.strip() and arguments[0] not in ["report", "compare"] else {}
         if "batch" in body:
             batch_dir = Path(body["run_dir"])
             entries = body["batch"]["entries"]
@@ -57,8 +57,11 @@ def main():
             entry = entries[0]
             assert entry["directory"], entry
             child = batch_dir / entry["directory"]
+            report = Path(body["report"])
+            assert report.stat().st_size > 0 and report.name == "report.md"
+            assert list(report.parent.iterdir()) == [report]
             body = {"batch_dir":str(batch_dir), "batch":body["batch"], "run_dir":str(child), "result":json.loads((child/"result.json").read_text())}
-            for name in ["batch.json", "report.html", "report.md", "runs.csv", "seal.json"]:
+            for name in ["batch.json", "seal.json"]:
                 assert (batch_dir/name).is_file(), name
             subprocess.run([str(cli),"report",str(batch_dir)],stdout=subprocess.DEVNULL,check=True)
         row = dict(label=label, exit=code, seconds=round(time.monotonic()-started, 3))
@@ -81,10 +84,11 @@ def main():
             assert code == 0 and not record["correctness"]["fatal_failures"]
             assert len(record["samples"]) == len(record["recipe"]["cases"]) * record["recipe"]["repetitions"]
             assert all(c["validation"]["status"] != "not_executed" for c in record["coverage"]["cases"])
-            for name in ["report.html", "report.md", "samples.csv", "diagnostics.json", "seal.json"]:
+            for name in ["samples.json", "diagnostics.json", "seal.json"]:
                 assert (Path(body["run_dir"]) / name).is_file(), name
-            report, _ = command(label+"-report", ["report", body["run_dir"]], 0)
-            assert report["coverage"] == record["coverage"]
+            command(label+"-report", ["report", body["run_dir"]], 0)
+            markdown = (work / (label + "-report.stdout")).read_text()
+            assert "## 2. Correctness" in markdown and "## 6. Coverage" in markdown
             results[label] = body
         elif body.get("result", {}).get("status") != "prepared":
             assert not body.get("result", {}).get("summary"), "Failure published a complete performance summary"

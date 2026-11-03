@@ -305,7 +305,6 @@ fn finish(directory: &Path, record: &mut Record, result: Result<()>) -> Result<(
     record.coverage = crate::coverage::report(record);
     util::write_json(&directory.join("validation.json"), &record.validation)?;
     evidence::save(directory, record)?;
-    crate::report::write(directory, record)?;
     evidence::seal(directory)
 }
 fn execute(directory: &Path, record: &mut Record, clock: &mut PhaseClock) -> Result<()> {
