@@ -116,7 +116,7 @@ fn fresh_processes_and_diagnostics_have_separate_completion_counts() {
         .unwrap()
         .checks
         .values()
-        .find(|c| c.skip.is_none() && c.spec.fresh_process)
+        .rfind(|c| c.skip.is_none() && c.spec.fresh_process)
         .unwrap()
         .spec
         .id
@@ -127,7 +127,17 @@ fn fresh_processes_and_diagnostics_have_separate_completion_counts() {
         let e = sample(&case, worker, worker);
         let result = p.observe(&e.to_string());
         if worker == 14 {
-            assert!(result.unwrap().contains("15/15 samples"));
+            let text = result.unwrap();
+            let total = r
+                .recipe
+                .as_ref()
+                .unwrap()
+                .checks
+                .values()
+                .filter(|c| c.skip.is_none() && c.measured && c.spec.fresh_process)
+                .count();
+            assert!(text.contains("15/15 samples"));
+            assert!(text.contains(&format!("[FIRST USE {total}/{total}][RECORDED]")));
         } else {
             assert!(result.is_none());
         }

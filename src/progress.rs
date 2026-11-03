@@ -452,10 +452,26 @@ impl<'a> DriverProgress<'a> {
             } else {
                 "MEASURE"
             };
+            let (position, total) = if self.mode == "first-use" {
+                let fresh: Vec<_> = self
+                    .record
+                    .recipe
+                    .as_ref()
+                    .unwrap()
+                    .checks
+                    .values()
+                    .filter(|c| c.skip.is_none() && c.measured && c.spec.fresh_process)
+                    .map(|c| c.spec.id.as_str())
+                    .collect();
+                (
+                    fresh.iter().position(|id| *id == case).unwrap() + 1,
+                    fresh.len(),
+                )
+            } else {
+                (self.completed.len(), self.eligible.len())
+            };
             let mut text = format!(
-                "[C{id}][{phase} {}/{}][{status}] {name} | {count}/{expected} samples",
-                self.completed.len(),
-                self.eligible.len()
+                "[C{id}][{phase} {position}/{total}][{status}] {name} | {count}/{expected} samples"
             );
             if count == expected {
                 let mut times = state.times.clone();
