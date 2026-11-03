@@ -1,6 +1,6 @@
 # Contributing
 
-Develop and publish one `fountain-eval` package. Native Fountain dependencies belong to generated independent drivers, not the root package. Standard users provide one config with indexed engine/operator selections, scheme and a complete test content version. Individual test selection and silent skips are prohibited.
+Develop and publish one `fountain-eval` package, providing the `feval` CLI and the `fountain_eval` library. Native Fountain dependencies belong to generated independent drivers, not the root package. Standard users provide one config with indexed engine/operator selections, scheme and a complete test content version. Individual test selection and silent skips are prohibited.
 
 ## Quality checks
 

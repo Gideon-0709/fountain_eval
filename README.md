@@ -1,6 +1,6 @@
 # fountain_eval
 
-`fountain-eval` freezes Fountain components, generates isolated native builds, executes every applicable check, records measurements and compares results. It is one Cargo package with a library and CLI. Component source remains in its own repository.
+`feval` freezes Fountain components, generates isolated native builds, executes every applicable check, records measurements and compares results. The `fountain-eval` Cargo package provides the `fountain_eval` library and the `feval` CLI. Component source remains in its own repository.
 
 The project is an unreleased internal **0.1.0** candidate. Its formal content covers correctness, individual operations, execution chains and integrated workflows. Encoding-plan construction/export and recorded execution belong to chain testing; plan reuse across blocks belongs to integrated testing. See the [test guide](docs/TEST_PLAN_0.1.0.md) for contracts and interpretation and the automatically generated reports for executed coverage and limitations. No release or performance ranking is implied.
 
@@ -11,8 +11,8 @@ Requirements: Linux or macOS, Git, `tar`, a native linker/C toolchain and Rust m
 ```bash
 cargo install --path . --locked
 cp fountain-eval.example.toml fountain-eval.toml
-fountain-eval inspect
-fountain-eval run
+feval inspect
+feval run
 ```
 
 An installed CLI works without the eval checkout. Create a `fountain-eval.toml` containing indexed component references plus a shared scheme and test version:
@@ -29,9 +29,9 @@ test = "0.1.0"
 Commands default to `fountain-eval.toml` in the current directory. An explicit location works from any directory:
 
 ```bash
-fountain-eval inspect --config /path/to/experiment.toml
-fountain-eval prepare --config /path/to/experiment.toml --json > prepared.json
-fountain-eval run --config /path/to/experiment.toml
+feval inspect --config /path/to/experiment.toml
+feval prepare --config /path/to/experiment.toml --json > prepared.json
+feval run --config /path/to/experiment.toml
 ```
 
 All relative paths are relative to the config file. There are no parent-directory searches, includes, environment interpolation, hidden global configuration or CLI overrides for component/test settings. Unknown fields, misspellings, duplicate keys and malformed references are errors. `--engine`, `--operator` and per-test `--test` flags have been removed.
@@ -49,10 +49,10 @@ Live rows describe observations received so far. The whole C succeeds only after
 For automation, add `--json` to keep the structured final response on stdout while progress remains on stderr:
 
 ```bash
-fountain-eval run --json > run.json
-fountain-eval prepare --json > prepared.json
+feval run --json > run.json
+feval prepare --json > prepared.json
 # Optionally retain terminal progress in a separate log:
-fountain-eval run --json > run.json 2> progress.log
+feval run --json > run.json 2> progress.log
 ```
 
 The parent reads the driver's existing event log as it grows. Driver code, measured regions, warmups, samples and I/T identities are unchanged by progress display. Host phase durations include orchestration work; they are separate from benchmark timings.
@@ -160,14 +160,14 @@ Prepared execution consumes the stored config and verified source/build inputs, 
 
 ```bash
 PREPARED=$(python3 -c 'import json; print(json.load(open("prepared.json"))["run_dir"])')
-fountain-eval run --prepared "$PREPARED"
+feval run --prepared "$PREPARED"
 ```
 
 Its output directory comes from the frozen configuration. Current runtime conditions are observed again; the prepared native binary requires its original CPU and OS family. `--prepared` cannot be combined with `--config`.
 
 ## What the formal content runs
 
-`fountain-eval list` expands the complete 2,182-case candidate. The selected scheme and verified interface determine applicability; users cannot suppress cases.
+`feval list` expands the complete 2,182-case candidate. The selected scheme and verified interface determine applicability; users cannot suppress cases.
 
 | Category | Coverage | Measurement |
 |---|---|---|
@@ -202,11 +202,11 @@ For a run saved with `--json > run.json`:
 python3 -c 'import json; print(json.load(open("run.json"))["report"])'
 RUN=$(python3 -c 'import json; print(json.load(open("run.json"))["run_dir"])')
 # Verify and render the complete report to stdout:
-fountain-eval report "$RUN"
+feval report "$RUN"
 # Re-render historical evidence into a new report folder without rerunning measurements:
-fountain-eval report "$RUN" --output ./review-reports
+feval report "$RUN" --output ./review-reports
 # The two arguments below are evidence directories, not Markdown files:
-fountain-eval compare /path/to/batch/C0/run-id /path/to/batch/C1/run-id > comparison.md
+feval compare /path/to/batch/C0/run-id /path/to/batch/C1/run-id > comparison.md
 ```
 
 `report` and `compare` produce Markdown only. `report --output DIR` creates `DIR/<run-id>/report.md` and refuses an existing destination. Report generation verifies the original evidence and does not modify or reseal it. Historical sealed results may still contain older report formats; those files remain part of their original checksum record, and the new renderer does not use them.

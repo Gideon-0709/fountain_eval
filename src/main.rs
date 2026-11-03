@@ -8,7 +8,7 @@ use std::{
 };
 #[derive(Parser)]
 #[command(
-    name = "fountain-eval",
+    name = "feval",
     version,
     about = "Configuration-driven Fountain evaluation"
 )]

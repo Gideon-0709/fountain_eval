@@ -35,7 +35,7 @@ A failed early stage has no complete tuple. After a successful build/probe, the 
 
 ## Stable responsibilities and dependencies
 
-The framework is one Cargo package. `src/main.rs` is the CLI; library modules own requests, resolution, build views, execution, metrics and evidence. Native Fountain crates are not linked into the framework package. Embedded source templates produce an independent generated driver executable with its own lockfile and release build. The product library has a separate native build and lockfile as well.
+The framework is one Cargo package. `src/main.rs` builds the `feval` CLI; library modules own requests, resolution, build views, execution, metrics and evidence. Native Fountain crates are not linked into the framework package. Embedded source templates produce an independent generated driver executable with its own lockfile and release build. The product library has a separate native build and lockfile as well.
 
 ```mermaid
 flowchart TD

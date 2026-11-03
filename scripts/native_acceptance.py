@@ -18,7 +18,7 @@ OPERATORS = "git+https://github.com/shhyang/fountain_operators.git?package=fount
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cli", type=Path, default=Path("target/debug/fountain-eval"))
+    parser.add_argument("--cli", type=Path, default=Path("target/debug/feval"))
     parser.add_argument("--work", type=Path, required=True)
     parser.add_argument("--monorepo", type=Path)
     parser.add_argument("--arena", type=Path)
@@ -30,7 +30,7 @@ def main():
     if work.exists():
         raise SystemExit("Use a new work directory; previous evidence is not overwritten")
     work.mkdir(parents=True)
-    cli = work / "fountain-eval"
+    cli = work / "feval"
     shutil.copy2(args.cli.resolve(), cli)
     runs, cache = work / "runs", work / "cache"
     ledger, results, attempts = [], {}, []

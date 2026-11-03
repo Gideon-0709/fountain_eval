@@ -36,7 +36,7 @@ fn independent_failures_continue_and_automatic_reports_retain_each_c() {
     assert_eq!(std::fs::read_dir(&report_directory).unwrap().count(), 1);
     assert!(!path.join("report.md").exists());
     assert_eq!(batch::load(&path).unwrap().entries.len(), 2);
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_fountain-eval"))
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_feval"))
         .args(["report", path.to_str().unwrap()])
         .output()
         .unwrap();
@@ -104,7 +104,7 @@ fn interrupt_stops_the_batch_and_leaves_later_c_unexecuted() {
         .open(t.0.join(".fountain-eval/execution.lock"))
         .unwrap();
     fs2::FileExt::lock_exclusive(&lock).unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_fountain-eval"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_feval"))
         .args(["run", "--config", config.to_str().unwrap()])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

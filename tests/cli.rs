@@ -2,7 +2,7 @@ mod support;
 use std::process::{Command, Output};
 use support::Temp;
 fn cli(dir: &std::path::Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_fountain-eval"))
+    Command::new(env!("CARGO_BIN_EXE_feval"))
         .current_dir(dir)
         .args(args)
         .output()
