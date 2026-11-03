@@ -163,14 +163,20 @@ fn execute(
         )?;
     }
     checkpoint(&directory, &record)?;
+    crate::progress::batch_started(&record);
     for index in 0..record.entries.len() {
         if process::interrupted() {
             for entry in &mut record.entries[index..] {
                 entry.error = Some("Not executed because the batch was interrupted".into());
+                crate::progress::line(format!(
+                    "[C{}] NOT EXECUTED | batch interrupted",
+                    entry.component_id
+                ));
             }
             break;
         }
         let selection = &record.configuration.selections[index];
+        crate::progress::component_started(index, record.entries.len(), &record.entries[index]);
         let output = directory.join(format!("C{}", selection.id));
         let started = Instant::now();
         let result = if let Some((root, old)) = &prepared {
@@ -179,6 +185,11 @@ fn execute(
                 record.entries[index].error = Some(format!(
                     "Preparation ended as {}; this C was not retried",
                     previous.status
+                ));
+                crate::progress::line(format!(
+                    "[C{}] NOT EXECUTED | {}",
+                    selection.id,
+                    record.entries[index].error.as_deref().unwrap()
                 ));
                 checkpoint(&directory, &record)?;
                 continue;
@@ -202,6 +213,16 @@ fn execute(
                 record.entries[index].complete(&directory, &path, &child, elapsed)?
             }
             Err(error) => {
+                crate::progress::line(format!(
+                    "[C{}] {} | {}",
+                    selection.id,
+                    if process::interrupted() {
+                        "INTERRUPTED"
+                    } else {
+                        "FAILED"
+                    },
+                    error
+                ));
                 let entry = &mut record.entries[index];
                 entry.status = if process::interrupted() {
                     "interrupted"
@@ -220,6 +241,7 @@ fn execute(
     record.status = status(&record.entries, prepare_only, record.interrupted);
     record.elapsed_ns = clock.elapsed().as_nanos() as u64;
     checkpoint(&directory, &record)?;
+    crate::progress::line("[REPORT] Sealing evidence and generating the Markdown report");
     evidence::seal(&directory)?;
     crate::report::publish(
         &report_directory,

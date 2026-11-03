@@ -12,7 +12,7 @@ Requirements: Linux or macOS, Git, `tar`, a native linker/C toolchain and Rust m
 cargo install --path . --locked
 cp fountain-eval.example.toml fountain-eval.toml
 fountain-eval inspect
-fountain-eval run > run.json
+fountain-eval run
 ```
 
 An installed CLI works without the eval checkout. Create a `fountain-eval.toml` containing indexed component references plus a shared scheme and test version:
@@ -30,11 +30,32 @@ Commands default to `fountain-eval.toml` in the current directory. An explicit l
 
 ```bash
 fountain-eval inspect --config /path/to/experiment.toml
-fountain-eval prepare --config /path/to/experiment.toml > prepared.json
-fountain-eval run --config /path/to/experiment.toml > run.json
+fountain-eval prepare --config /path/to/experiment.toml --json > prepared.json
+fountain-eval run --config /path/to/experiment.toml
 ```
 
 All relative paths are relative to the config file. There are no parent-directory searches, includes, environment interpolation, hidden global configuration or CLI overrides for component/test settings. Unknown fields, misspellings, duplicate keys and malformed references are errors. `--engine`, `--operator` and per-test `--test` flags have been removed.
+
+## Terminal progress
+
+`run` and `prepare` print live, plain-text progress to stderr. Each C starts with its position in the batch and its selected components. Resolution, builds, capability checks, correctness, measurements and diagnostics have separate phase messages. The expanded plan reports applicable counts and grouped skip reasons. While a subprocess or execution lock is still active, a heartbeat appears every 15 seconds.
+
+Each completed correctness check prints `PASS`, `WARN` or `FATAL`, its category, workload and exact case ID. A warning keeps measurement enabled. A fatal failure stops that C and the final status identifies its unexecuted checks; the next independent C still runs. Interruptions, protocol errors and unsupported selections are explicit.
+
+Ordinary measurements print one row per case per worker: `COLLECTED` at 5/15 and 10/15 samples, then `RECORDED` at 15/15 with median elapsed time and applicable call/byte rates. Worker headings explain the case counter; it restarts for each worker. First-use cases announce their 15 fresh processes and print their result after all samples arrive. Diagnostic observations have separate 1/3, 2/3 and 3/3 counts. Incomplete recovery does not display successful throughput.
+
+Live rows describe observations received so far. The whole C succeeds only after protocol, coverage, correctness and evidence validation. The final summary prints each C's outcome and the `Report` and `Evidence` paths. Detailed failure evidence, warning observations and performance dispersion are in the Markdown report.
+
+For automation, add `--json` to keep the structured final response on stdout while progress remains on stderr:
+
+```bash
+fountain-eval run --json > run.json
+fountain-eval prepare --json > prepared.json
+# Optionally retain terminal progress in a separate log:
+fountain-eval run --json > run.json 2> progress.log
+```
+
+The parent reads the driver's existing event log as it grows. Driver code, measured regions, warmups, samples and I/T identities are unchanged by progress display. Host phase durations include orchestration work; they are separate from benchmark timings.
 
 ## Multiple component selections in one config
 
@@ -139,7 +160,7 @@ Prepared execution consumes the stored config and verified source/build inputs, 
 
 ```bash
 PREPARED=$(python3 -c 'import json; print(json.load(open("prepared.json"))["run_dir"])')
-fountain-eval run --prepared "$PREPARED" > run.json
+fountain-eval run --prepared "$PREPARED"
 ```
 
 Its output directory comes from the frozen configuration. Current runtime conditions are observed again; the prepared native binary requires its original CPU and OS family. `--prepared` cannot be combined with `--config`.
@@ -173,7 +194,9 @@ reports/
     report.md
 ```
 
-The JSON command response contains `report` (the Markdown path) and `run_dir` (the sealed evidence path). No HTML/CSV reports or per-C report folders are generated. Raw machine-readable evidence is retained independently for verification and later comparisons.
+The terminal summary prints both paths. With `--json`, the command response contains `report` (the Markdown path) and `run_dir` (the sealed evidence path). No HTML/CSV reports or per-C report folders are generated. Raw machine-readable evidence is retained independently for verification and later comparisons.
+
+For a run saved with `--json > run.json`:
 
 ```bash
 python3 -c 'import json; print(json.load(open("run.json"))["report"])'

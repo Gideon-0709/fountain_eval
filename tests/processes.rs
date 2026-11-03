@@ -44,7 +44,7 @@ fn timeout_and_crash_kill_child_groups_and_preserve_output() {
             Command::new("sh").args(["-c", "kill -TERM $$"]),
             &t.0,
             "crash",
-            Duration::from_secs(5)
+            Duration::from_secs(5),
         )
         .unwrap_err()
         .contains("exited")
@@ -58,13 +58,16 @@ fn interruption_helper() {
         return;
     };
     process::install_handler().unwrap();
-    let result = process::run(
+    let mut observed = 0;
+    let result = process::run_observed(
         Command::new("sh").args(["-c", "sleep 30 & echo $!; wait"]),
         std::path::Path::new(&path),
         "interrupt",
         Duration::from_secs(30),
+        Some(&mut |_| observed += 1),
     );
     assert_eq!(result.unwrap_err(), "interrupted");
+    assert_eq!(observed, 1);
 }
 #[test]
 fn interruption_isolated_process() {
@@ -98,5 +101,82 @@ fn interruption_isolated_process() {
         gone(descendant.trim()),
         "interrupted descendant remained alive"
     );
+    assert!(start.elapsed() < Duration::from_secs(5));
+}
+
+#[test]
+fn observer_receives_complete_lines_before_exit_and_keeps_raw_logs() {
+    let t = Temp::new();
+    let mut command = Command::new("sh");
+    command.current_dir(&t.0).args(["-c", "printf 'rea'; sleep 0.04; printf 'dy\\n'; while [ ! -f continue ]; do sleep 0.01; done; printf 'done\\n'; printf 'diagnostic\\n' >&2"]);
+    let mut lines = Vec::new();
+    let mut observe = |line: &str| {
+        lines.push(line.to_owned());
+        if line == "ready" {
+            fs::write(t.0.join("continue"), "observed before child exit").unwrap();
+        }
+    };
+    let raw = process::run_observed(
+        &mut command,
+        &t.0,
+        "stream",
+        Duration::from_secs(5),
+        Some(&mut observe),
+    )
+    .unwrap();
+    assert_eq!(lines, vec!["ready", "done"]);
+    assert_eq!(raw, "ready\ndone\n");
+    assert_eq!(fs::read_to_string(t.0.join("stream.stdout")).unwrap(), raw);
+    assert_eq!(
+        fs::read_to_string(t.0.join("stream.stderr")).unwrap(),
+        "diagnostic\n"
+    );
+}
+
+#[test]
+fn observer_drains_failure_and_large_completed_output() {
+    let t = Temp::new();
+    let mut lines = Vec::new();
+    let error = process::run_observed(
+        Command::new("sh").args(["-c", "printf 'fatal\\n'; exit 7"]),
+        &t.0,
+        "failed",
+        Duration::from_secs(5),
+        Some(&mut |s| lines.push(s.to_owned())),
+    )
+    .unwrap_err();
+    assert!(error.contains("exited"));
+    assert_eq!(lines, vec!["fatal"]);
+    let raw = t.write("large.txt", &("x".repeat(2000) + "\n").repeat(1000));
+    let mut count = 0;
+    process::run_observed(
+        Command::new("cat").arg(raw),
+        &t.0,
+        "large",
+        Duration::from_secs(5),
+        Some(&mut |s| {
+            assert_eq!(s.len(), 2000);
+            count += 1;
+        }),
+    )
+    .unwrap();
+    assert_eq!(count, 1000);
+}
+
+#[test]
+fn continuous_observed_output_does_not_starve_timeout() {
+    let t = Temp::new();
+    let start = Instant::now();
+    let mut observed = 0;
+    let error = process::run_observed(
+        Command::new("sh").args(["-c", "while :; do printf 'active\\n'; done"]),
+        &t.0,
+        "noisy",
+        Duration::from_millis(100),
+        Some(&mut |_| observed += 1),
+    )
+    .unwrap_err();
+    assert!(error.contains("timeout"));
+    assert!(observed > 0);
     assert!(start.elapsed() < Duration::from_secs(5));
 }

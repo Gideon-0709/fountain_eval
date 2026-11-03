@@ -11,6 +11,7 @@ pub mod evidence;
 pub mod execution;
 pub mod measurement;
 pub mod process;
+pub mod progress;
 pub mod protocol;
 pub mod runner;
 pub mod source;

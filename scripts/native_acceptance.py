@@ -36,6 +36,8 @@ def main():
     ledger, results, attempts = [], {}, []
 
     def command(label, arguments, expected=None, interrupt=False):
+        if arguments[0] in ["run", "prepare"]:
+            arguments = [*arguments, "--json"]
         started = time.monotonic()
         before = set(runs.glob("*"))
         with (work / (label + ".stdout")).open("w") as out, (work / (label + ".stderr")).open("w") as err:
@@ -66,6 +68,19 @@ def main():
             subprocess.run([str(cli),"report",str(batch_dir)],stdout=subprocess.DEVNULL,check=True)
         row = dict(label=label, exit=code, seconds=round(time.monotonic()-started, 3))
         if "result" in body:
+            progress = (work / (label + ".stderr")).read_text()
+            record = body["result"]
+            assert "[C0 1/1] START" in progress and "[REPORT]" in progress, label
+            assert f"[C0] {record['status'].upper()}" in progress, label
+            if record["status"] == "succeeded":
+                assert "[PROTOCOL]" not in progress, label
+                assert sum("[VALIDATE " in line for line in progress.splitlines()) == len(record["validation"]), label
+                ordinary = [line for line in progress.splitlines() if "[MEASURE " in line or "[FIRST USE " in line]
+                assert sum("[RECORDED]" in line for line in ordinary) == len(record["recipe"]["cases"]), label
+                diagnostic = [line for line in progress.splitlines() if "[DIAGNOSE " in line]
+                assert len(diagnostic) == len(record["diagnostics"]), label
+            if record["correctness"]["fatal_failures"]:
+                assert "[FATAL]" in progress, label
             row.update(run=body["run_dir"], status=body["result"]["status"], stage=body["result"]["stage"], error=body["result"].get("error"))
         ledger.append(row)
         (work / "ledger.json").write_text(json.dumps(ledger, indent=2)+"\n")

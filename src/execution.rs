@@ -35,6 +35,14 @@ impl PhaseClock {
         }
     }
     fn enter(&mut self, record: &mut Record, name: &str) {
+        if self.name != "setup" {
+            crate::progress::line(format!(
+                "[C{}] {} completed in {:.2} s",
+                record.configuration.component_id,
+                self.name,
+                self.phase.elapsed().as_secs_f64()
+            ));
+        }
         *record
             .timing
             .phases_ns
@@ -43,6 +51,7 @@ impl PhaseClock {
         self.phase = Instant::now();
         self.name = name.into();
         record.stage = name.into();
+        crate::progress::phase(record.configuration.component_id, name);
     }
     fn finish(&self, record: &mut Record) {
         *record
@@ -62,12 +71,21 @@ fn lock(cache: &Path) -> Result<std::fs::File> {
         .write(true)
         .open(cache.join("execution.lock"))
         .map_err(|e| e.to_string())?;
+    let start = Instant::now();
+    let mut heartbeat = Instant::now();
     loop {
         match fs2::FileExt::try_lock_exclusive(&f) {
             Ok(()) => return Ok(f),
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 if process::interrupted() {
                     return Err("interrupted waiting for cache lock".into());
+                }
+                if heartbeat.elapsed() >= Duration::from_secs(15) {
+                    crate::progress::line(format!(
+                        "[WAITING] Another run holds the execution lock; {:.0} s elapsed",
+                        start.elapsed().as_secs_f64()
+                    ));
+                    heartbeat = Instant::now();
                 }
                 std::thread::sleep(Duration::from_millis(25));
             }
@@ -117,6 +135,10 @@ pub fn start(configuration: RunConfiguration, prepare_only: bool) -> Result<(Pat
     };
     evidence::save(&directory, &record)?;
     let result = util::catch(|| {
+        crate::progress::line(format!(
+            "[C{}] Waiting for the execution lock",
+            record.configuration.component_id
+        ));
         let _lock = lock(&cache)?;
         clock.enter(&mut record, "resolve");
         evidence::save(&directory, &record)?;
@@ -152,6 +174,7 @@ pub fn start(configuration: RunConfiguration, prepare_only: bool) -> Result<(Pat
         let family = catalog::family(&engine)?;
         let recipe = catalog::plan(&record.request.test, &record.request.scheme, &family, scope)?;
         record.recipe = Some(recipe.clone());
+        crate::progress::plan(&record);
         if recipe.validation_cases().is_empty() {
             return Err("unsupported: no test cases are applicable to this single component; see the complete coverage plan".into());
         }
@@ -282,6 +305,7 @@ pub fn from_prepared(prepared: &Path, output: &Path) -> Result<(PathBuf, Record)
             &json!({"run_id":old.run_id,"seal":util::file_hash(&prepared.join("seal.json"))?}),
         )?;
         util::write_json(&directory.join("build.json"), built)?;
+        crate::progress::plan(&record);
         invoke(&directory, &record, "describe")?;
         execute(&directory, &mut record, &mut clock)
     });
@@ -305,7 +329,9 @@ fn finish(directory: &Path, record: &mut Record, result: Result<()>) -> Result<(
     record.coverage = crate::coverage::report(record);
     util::write_json(&directory.join("validation.json"), &record.validation)?;
     evidence::save(directory, record)?;
-    evidence::seal(directory)
+    evidence::seal(directory)?;
+    crate::progress::component_finished(record);
+    Ok(())
 }
 fn execute(directory: &Path, record: &mut Record, clock: &mut PhaseClock) -> Result<()> {
     clock.enter(record, "validate");
@@ -339,6 +365,14 @@ fn execute(directory: &Path, record: &mut Record, clock: &mut PhaseClock) -> Res
         )?;
     }
     for (index, case) in fresh.iter().enumerate() {
+        crate::progress::line(format!(
+            "[C{}][FIRST USE {}/{}] {} | {} independent fresh processes",
+            record.configuration.component_id,
+            index + 1,
+            fresh.len(),
+            case,
+            crate::content::REPETITIONS
+        ));
         for worker in 0..crate::content::REPETITIONS {
             run_measurement(
                 directory,
@@ -475,11 +509,27 @@ fn invoke_worker(
             command.env("LD_DEBUG", "libs");
         }
     }
-    let raw = process::run(
+    let mut progress = crate::progress::enabled()
+        .then(|| crate::progress::DriverProgress::new(record, mode, worker, case));
+    if let Some(p) = &progress
+        && let Some(message) = p.start()
+    {
+        crate::progress::line(message);
+    }
+    let observe = progress.is_some();
+    let mut observer = |raw: &str| {
+        if let Some(p) = &mut progress
+            && let Some(message) = p.observe(raw)
+        {
+            crate::progress::line(message);
+        }
+    };
+    let raw = process::run_observed(
         &mut command,
         &directory.join("logs"),
         label,
         Duration::from_secs(if mode == "first-use" { 60 } else { 600 }),
+        if observe { Some(&mut observer) } else { None },
     )?;
     let events: Vec<Value> = raw
         .lines()
@@ -515,17 +565,7 @@ fn invoke_worker(
 pub fn check_events(events: &[Value], built: &Built, record: &Record, mode: &str) -> Result<()> {
     let first = events.first().ok_or("empty driver output")?;
     let last = events.last().ok_or("empty driver output")?;
-    if first["event"] != "hello"
-        || first["protocol"] != 1
-        || first["build"] != built.key
-        || first["interface"] != built.interface.id
-        || first["test"] != record.recipe.as_ref().ok_or("recipe missing")?.identity.id
-        || first["operator"] != built.implementation
-        || first["family"] != built.family
-        || first["scheme"] != record.request.scheme.name
-    {
-        return Err("driver identity or protocol mismatch".into());
-    }
+    check_hello(first, built, record)?;
     if last["event"] != "done" || last["mode"] != mode {
         return Err("driver completion missing".into());
     }
@@ -540,6 +580,20 @@ pub fn check_events(events: &[Value], built: &Built, record: &Record, mode: &str
         if mode == "describe" || event["event"] != allowed {
             return Err("unexpected driver event".into());
         }
+    }
+    Ok(())
+}
+pub(crate) fn check_hello(first: &Value, built: &Built, record: &Record) -> Result<()> {
+    if first["event"] != "hello"
+        || first["protocol"] != 1
+        || first["build"] != built.key
+        || first["interface"] != built.interface.id
+        || first["test"] != record.recipe.as_ref().ok_or("recipe missing")?.identity.id
+        || first["operator"] != built.implementation
+        || first["family"] != built.family
+        || first["scheme"] != record.request.scheme.name
+    {
+        return Err("driver identity or protocol mismatch".into());
     }
     Ok(())
 }

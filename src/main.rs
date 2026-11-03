@@ -28,13 +28,22 @@ enum Command {
     /// List the full test content and interface registrations.
     List,
     /// Freeze, adapt, build and check capabilities from a configuration.
-    Prepare(Input),
+    Prepare {
+        #[command(flatten)]
+        input: Input,
+        /// Emit the machine-readable result on stdout; progress remains on stderr.
+        #[arg(long)]
+        json: bool,
+    },
     /// Execute every applicable check; prepared execution consumes its frozen configuration.
     Run {
         #[arg(long, conflicts_with = "prepared")]
         config: Option<PathBuf>,
         #[arg(long)]
         prepared: Option<PathBuf>,
+        /// Emit the machine-readable result on stdout; progress remains on stderr.
+        #[arg(long)]
+        json: bool,
     },
     /// Read a sealed result including warnings and complete coverage.
     Report {
@@ -57,14 +66,18 @@ fn emit(value: &impl serde::Serialize) -> Result<()> {
     serde_json::to_writer_pretty(&mut out, value).map_err(|e| e.to_string())?;
     writeln!(out).map_err(|e| e.to_string())
 }
-fn outcome(directory: PathBuf, record: batch::Record) -> Result<u8> {
+fn outcome(directory: PathBuf, record: batch::Record, machine: bool) -> Result<u8> {
     let code = batch::exit_code(&record);
     let report = record
         .configuration
         .report_root()
         .join(&record.run_id)
         .join("report.md");
-    emit(&json!({"run_dir":directory,"report":report,"batch":record}))?;
+    if machine {
+        emit(&json!({"run_dir":directory,"report":report,"batch":record}))?;
+    } else {
+        emit_text(&fountain_eval::progress::summary(&record, &directory))?;
+    }
     Ok(code)
 }
 fn execute(command: Command) -> Result<u8> {
@@ -86,11 +99,17 @@ fn execute(command: Command) -> Result<u8> {
             )?;
             Ok(if failed { 2 } else { 0 })
         }
-        Command::Prepare(input) => {
+        Command::Prepare { input, json } => {
+            fountain_eval::progress::set_enabled(true);
             let (path, record) = batch::run(Configuration::load(&input.config)?, true)?;
-            outcome(path, record)
+            outcome(path, record, json)
         }
-        Command::Run { config, prepared } => {
+        Command::Run {
+            config,
+            prepared,
+            json,
+        } => {
+            fountain_eval::progress::set_enabled(true);
             let (path, record) = if let Some(path) = prepared {
                 batch::from_prepared(&path)?
             } else {
@@ -99,7 +118,7 @@ fn execute(command: Command) -> Result<u8> {
                     false,
                 )?
             };
-            outcome(path, record)
+            outcome(path, record, json)
         }
         Command::Report { run, output } => {
             let run = run.canonicalize().map_err(|e| e.to_string())?;

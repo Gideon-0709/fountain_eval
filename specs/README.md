@@ -22,6 +22,12 @@ Each check declares severity, rule, work counts and whether it is measured. Expa
 
 A successful result requires every applicable validation event and every applicable sample. The validator reconstructs the canonical plan, so an edited skip cannot hide missing evidence. Failures and interruptions leave unfinished cases unexecuted; they are never converted into applicability skips. The acceptance harness runs both schemes and writes reachability accounting; cases blocked by upstream fatal checks remain documented coverage gaps.
 
+## CLI output
+
+`run` and `prepare` emit plain-text live progress on stderr and a final human-readable summary on stdout. `--json` replaces only the final stdout response with `{run_dir, report, batch}`. `inspect` and `list` retain JSON stdout. `report` and `compare` retain Markdown output. Progress never appears in driver NDJSON or evidence sample fields.
+
+Validation rows distinguish passed checks, non-blocking warnings and fatal failures. Measurement rows show per-worker collection; `RECORDED` means the expected observations have arrived, not that the whole C has passed final evidence checks. Diagnostic counts are separate from ordinary samples. Unsupported and unexecuted cases remain explicit in phase/final summaries and full report coverage. A 15-second heartbeat reports active subprocesses or lock waits, not a completion estimate. The final paths are printed only after report publication.
+
 ## Process protocol 1
 
 Each invocation starts with exactly one hello containing protocol, build, interface, whole test version, selected scheme, operator, family, worker and instrumentation mode. These must match the generated build and request.
@@ -47,7 +53,7 @@ Fatal sample witnesses must match their validated results. Warning observations 
 
 ## Batch evidence and wall time
 
-Every `prepare` or `run` writes a unique batch root. `batch.json` contains `configuration.selections`, ordered `entries`, action, status, interruption flag, start timestamp and elapsed nanoseconds. Every entry records its index/request, outcome, optional relative child directory, optional elapsed nanoseconds, host phase times, check/warning/sample/diagnostic/skip counts and error. Unexecuted entries have no duration or fabricated child result. The separate report root contains `<run-id>/report.md` only, embedding all child results. No HTML or CSV views are generated. CLI execution returns both `run_dir` and `report`; `report`/`compare` render Markdown, while raw structured results remain in evidence JSON.
+Every `prepare` or `run` writes a unique batch root. `batch.json` contains `configuration.selections`, ordered `entries`, action, status, interruption flag, start timestamp and elapsed nanoseconds. Every entry records its index/request, outcome, optional relative child directory, optional elapsed nanoseconds, host phase times, check/warning/sample/diagnostic/skip counts and error. Unexecuted entries have no duration or fabricated child result. The separate report root contains `<run-id>/report.md` only, embedding all child results. No HTML or CSV views are generated. CLI `--json` returns both `run_dir` and `report`; `report`/`compare` render Markdown, while raw structured results remain in evidence JSON.
 
 Per-C evidence lives in `C<index>/<run-id>/`. `result.json.configuration` retains the full original config, digest, derived request and component index. `timing` records elapsed nanoseconds through the last execution phase, excluding final child evidence/seal generation. Its host `phases_ns` includes setup, resolution, build, probe, validation, measurement and diagnostics when reached. Batch entry elapsed time additionally includes child evidence/seal work. Batch total includes sequential children and checkpoints, excluding its final seal/report publication. These operational durations are not benchmark samples or E equality fields.
 

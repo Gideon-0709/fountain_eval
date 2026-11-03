@@ -89,3 +89,33 @@ fn missing_config_invalid_sources_and_legacy_selectors_are_rejected() {
             .any(|d| d["code"] == "local_manifest_error")
     );
 }
+
+#[test]
+fn human_progress_is_default_and_json_stdout_remains_machine_readable() {
+    let t = Temp::new();
+    t.write(
+        "fountain-eval.toml",
+        "engine0=\"path:missing0\"\nengine1=\"path:missing1\"\nscheme=\"rq\"\ntest=\"0.1.0\"\n",
+    );
+    let human = cli(&t.0, &["run"]);
+    assert_eq!(human.status.code(), Some(4));
+    let stdout = String::from_utf8(human.stdout).unwrap();
+    let stderr = String::from_utf8(human.stderr).unwrap();
+    assert!(stdout.contains("Evaluation completed_with_failures"));
+    assert!(stdout.contains("Report:") && stdout.contains("Evidence:"));
+    assert!(stderr.contains("[C0 1/2] START") && stderr.contains("[C1 2/2] START"));
+    assert!(stderr.contains("[C0] FAILED") && stderr.contains("[REPORT]"));
+    let machine = cli(&t.0, &["run", "--json"]);
+    assert_eq!(machine.status.code(), Some(4));
+    let value: serde_json::Value = serde_json::from_slice(&machine.stdout).unwrap();
+    assert_eq!(value["batch"]["entries"].as_array().unwrap().len(), 2);
+    assert!(
+        String::from_utf8(machine.stderr)
+            .unwrap()
+            .contains("[C1 2/2] START")
+    );
+    let prepared = cli(&t.0, &["prepare", "--json"]);
+    assert_eq!(prepared.status.code(), Some(4));
+    let value: serde_json::Value = serde_json::from_slice(&prepared.stdout).unwrap();
+    assert_eq!(value["batch"]["action"], "prepare");
+}

@@ -1,6 +1,7 @@
 use crate::util::Result;
 use std::{
     fs::{self, File},
+    io::Read,
     path::Path,
     process::{Command, Stdio},
     sync::{
@@ -52,6 +53,16 @@ pub fn run(
     label: &str,
     timeout: Duration,
 ) -> Result<String> {
+    run_observed(command, directory, label, timeout, None)
+}
+/// Capture the same durable logs while optionally observing complete stdout lines live.
+pub fn run_observed(
+    command: &mut Command,
+    directory: &Path,
+    label: &str,
+    timeout: Duration,
+    mut observer: Option<&mut dyn FnMut(&str)>,
+) -> Result<String> {
     if interrupted() {
         return Err("interrupted".into());
     }
@@ -66,6 +77,15 @@ pub fn run(
             File::create(&stderr).map_err(|e| e.to_string())?,
         ))
         .stdin(Stdio::null());
+    // A separate reader follows the durable file. Terminal output cannot fill a
+    // pipe connected to the measured driver or change its stdout protocol.
+    let mut reader = observer
+        .as_ref()
+        .map(|_| File::open(&stdout))
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    let mut pending = Vec::new();
+    let mut read_offset = 0u64;
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -77,8 +97,42 @@ pub fn run(
     let mut guard = ChildGroup(child);
     let child = &mut guard.0;
     let start = Instant::now();
+    let mut heartbeat = Instant::now();
     loop {
-        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+        let status = child.try_wait().map_err(|e| e.to_string())?;
+        if let (Some(reader), Some(observer)) = (&mut reader, observer.as_deref_mut()) {
+            // Bound live drains so a noisy child cannot starve timeout/interrupt checks.
+            // After exit, read through the final file boundary before handling its status.
+            let mut budget = if status.is_some() {
+                reader
+                    .metadata()
+                    .map_err(|e| e.to_string())?
+                    .len()
+                    .saturating_sub(read_offset)
+            } else {
+                1024 * 1024
+            };
+            let mut buffer = [0u8; 16384];
+            while budget > 0 {
+                let limit = budget.min(buffer.len() as u64) as usize;
+                let bytes = reader
+                    .read(&mut buffer[..limit])
+                    .map_err(|e| e.to_string())?;
+                if bytes == 0 {
+                    break;
+                }
+                budget -= bytes as u64;
+                read_offset += bytes as u64;
+                for chunk in buffer[..bytes].split_inclusive(|b| *b == b'\n') {
+                    pending.extend_from_slice(chunk);
+                    if pending.last() == Some(&b'\n') {
+                        observer(String::from_utf8_lossy(&pending).trim_end_matches(['\n', '\r']));
+                        pending.clear();
+                    }
+                }
+            }
+        }
+        if let Some(status) = status {
             if !status.success() {
                 return Err(format!(
                     "{label}: process exited {status}; see {}",
@@ -93,6 +147,13 @@ pub fn run(
             } else {
                 format!("{label}: timeout")
             });
+        }
+        if heartbeat.elapsed() >= Duration::from_secs(15) {
+            crate::progress::line(format!(
+                "[RUNNING] {label}: {:.0} s elapsed; process is still active",
+                start.elapsed().as_secs_f64()
+            ));
+            heartbeat = Instant::now();
         }
         std::thread::sleep(Duration::from_millis(25));
     }
