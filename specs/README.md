@@ -26,7 +26,7 @@ A successful result requires every applicable validation event and every applica
 
 `run` and `prepare` emit plain-text live progress on stderr and a final human-readable summary on stdout. `--json` replaces only the final stdout response with `{run_dir, report, batch}`. `inspect` and `list` retain JSON stdout. `report` and `compare` retain Markdown output. Progress never appears in driver NDJSON or evidence sample fields.
 
-Validation rows distinguish passed checks, non-blocking warnings and fatal failures. Measurement rows show per-worker collection; `RECORDED` means the expected observations have arrived, not that the whole C has passed final evidence checks. Diagnostic counts are separate from ordinary samples. Unsupported and unexecuted cases remain explicit in phase/final summaries and full report coverage. A 15-second heartbeat reports active subprocesses or lock waits, not a completion estimate. The final paths are printed only after report publication.
+Terminal output groups resolution/build/probe into Preparation, followed by Correctness, Performance and Diagnostics. Each stage has a start and aggregate completion row. A shared 30-second interval limits live observations across worker and fresh-process invocations; build and lock waits use the same interval. No ordinary case ID, individual warning or per-case rate is printed. Fatal check errors and protocol errors have one concise immediate notice; crashes and interruptions remain visible in the final component status. Warning counts, incomplete outcomes, exclusions and unexecuted checks are retained in summaries and full report coverage. Observed counts do not imply that final evidence validation has succeeded. Final report paths appear only after publication.
 
 ## Process protocol 1
 

@@ -169,7 +169,7 @@ fn execute(
             for entry in &mut record.entries[index..] {
                 entry.error = Some("Not executed because the batch was interrupted".into());
                 crate::progress::line(format!(
-                    "[C{}] NOT EXECUTED | batch interrupted",
+                    "C{} NOT EXECUTED | batch interrupted",
                     entry.component_id
                 ));
             }
@@ -187,7 +187,7 @@ fn execute(
                     previous.status
                 ));
                 crate::progress::line(format!(
-                    "[C{}] NOT EXECUTED | {}",
+                    "C{} NOT EXECUTED | {}",
                     selection.id,
                     record.entries[index].error.as_deref().unwrap()
                 ));
@@ -214,7 +214,7 @@ fn execute(
             }
             Err(error) => {
                 crate::progress::line(format!(
-                    "[C{}] {} | {}",
+                    "C{} {} | {}",
                     selection.id,
                     if process::interrupted() {
                         "INTERRUPTED"
@@ -241,7 +241,7 @@ fn execute(
     record.status = status(&record.entries, prepare_only, record.interrupted);
     record.elapsed_ns = clock.elapsed().as_nanos() as u64;
     checkpoint(&directory, &record)?;
-    crate::progress::line("[REPORT] Sealing evidence and generating the Markdown report");
+    crate::progress::line("REPORT  Writing Markdown report and sealing evidence");
     evidence::seal(&directory)?;
     crate::report::publish(
         &report_directory,

@@ -17,55 +17,64 @@ fn sample(case: &str, worker: usize, rep: usize) -> Value {
     json!({"event":"sample","case":case,"worker":worker,"repetition":rep,"elapsed_ns":1000+rep,"operations":1,"payload_bytes":128,"outcome":"completed","witness":"fixture","details":{}})
 }
 #[test]
-fn validation_warns_without_stopping_and_reports_fatal_distinctly() {
+fn all_validation_events_are_quiet_and_warning_totals_remain_visible() {
     let r = record();
-    let recipe = r.recipe.as_ref().unwrap();
-    let check = recipe
-        .checks
-        .values()
-        .find(|c| c.skip.is_none() && c.spec.warning)
-        .unwrap();
-    let good = recipe
-        .checks
-        .values()
-        .find(|c| c.skip.is_none() && !c.spec.warning)
-        .unwrap();
     let mut p = DriverProgress::new(&r, "validate", 0, None);
     assert!(p.observe(&hello(&r, 0, false)).is_none());
-    let warn = json!({"event":"validation","case":check.spec.id,"severity":"warning","rule":check.rule,"status":"failed"});
-    let line = p.observe(&warn.to_string()).unwrap();
-    assert!(line.contains("[WARN]") && line.contains("timing remains enabled"));
-    let pass = json!({"event":"validation","case":good.spec.id,"severity":"fatal","rule":good.rule,"status":"passed"});
-    assert!(p.observe(&pass.to_string()).unwrap().contains("[PASS]"));
-    let fatal = json!({"event":"validation","case":good.spec.id,"severity":"fatal","rule":"execution-integrity","status":"failed","message":"arithmetic mismatch"});
-    assert!(p.observe(&fatal.to_string()).unwrap().contains("[FATAL]"));
+    let mut warnings = 0;
+    let mut count = 0;
+    for check in r
+        .recipe
+        .as_ref()
+        .unwrap()
+        .checks
+        .values()
+        .filter(|c| c.skip.is_none())
+    {
+        let warning = check.severity == fountain_eval::validation::Severity::Warning;
+        warnings += usize::from(warning);
+        count += 1;
+        let event = json!({"event":"validation","case":check.spec.id,"severity":check.severity,"rule":check.rule,"status":if warning {"failed"} else {"passed"}});
+        assert!(
+            p.observe(&event.to_string()).is_none(),
+            "No per-case validation output"
+        );
+    }
+    let text = p.heartbeat();
+    assert!(text.contains(&format!("{count}/{count} checks observed")));
+    assert!(text.contains(&format!("{warnings} warnings")));
+    assert!(!text.contains("correctness/") && !text.contains("operation/"));
 }
 #[test]
-fn worker_progress_is_not_full_completion_until_all_samples_arrive() {
+fn fatal_errors_are_immediate_concise_and_not_repeated() {
+    let r = record();
+    let case = "chain/plan-build/rq/k64";
+    let mut p = DriverProgress::new(&r, "validate", 0, None);
+    p.observe(&hello(&r, 0, false));
+    let event = json!({"event":"validation","case":case,"severity":"fatal","rule":"execution-integrity","status":"failed","message":format!("arithmetic mismatch\n{}", "state dump".repeat(1000))});
+    let text = p.observe(&event.to_string()).unwrap();
+    assert!(text.contains("FATAL Correctness: arithmetic mismatch"));
+    assert!(text.len() < 250 && !text.contains("state dump") && !text.contains(case));
+    assert!(p.observe(&event.to_string()).is_none());
+    assert!(p.heartbeat().contains("error"));
+}
+#[test]
+fn sampling_aggregates_across_workers_without_printing_cases_or_rates() {
     let mut r = record();
     let case = "chain/plan-build/rq/k64";
     for worker in 0..content::WORKERS {
         let mut p = DriverProgress::new(&r, "measure", worker, None);
         assert!(p.observe(&hello(&r, worker, false)).is_none());
         let mut events = Vec::new();
-        let mut messages = Vec::new();
         for i in 0..content::SAMPLES_PER_WORKER {
             let event = sample(case, worker, worker * content::SAMPLES_PER_WORKER + i);
-            if let Some(line) = p.observe(&event.to_string()) {
-                messages.push(line);
-            }
+            assert!(p.observe(&event.to_string()).is_none());
             events.push(event);
         }
-        assert_eq!(messages.len(), 1);
-        let text = &messages[0];
-        assert!(text.contains(&format!("{}/15 samples", (worker + 1) * 5)));
-        if worker < 2 {
-            assert!(text.contains("[COLLECTED]") && !text.contains("median"));
-        } else {
-            assert!(
-                text.contains("[RECORDED]") && text.contains("median") && text.contains("Gbit/s")
-            );
-        }
+        let text = p.heartbeat();
+        let total = r.recipe.as_ref().unwrap().cases.len() * content::REPETITIONS;
+        assert!(text.contains(&format!("{}/{total} samples observed", (worker + 1) * 5)));
+        assert!(!text.contains(case) && !text.contains("median") && !text.contains("Gbit/s"));
         drop(p);
         r.samples.extend(
             events
@@ -75,40 +84,37 @@ fn worker_progress_is_not_full_completion_until_all_samples_arrive() {
     }
 }
 #[test]
-fn incomplete_recovery_is_never_displayed_as_successful_throughput() {
-    let mut r = record();
-    let case = "chain/plan-build/rq/k64";
-    r.samples = (0..14)
-        .map(|rep| serde_json::from_value(sample(case, rep / 5, rep)).unwrap())
-        .collect();
-    let mut p = DriverProgress::new(&r, "measure", 2, None);
-    p.observe(&hello(&r, 2, false));
-    let mut event = sample(case, 2, 14);
+fn incomplete_recovery_remains_an_observation_not_a_throughput_claim() {
+    let r = record();
+    let mut p = DriverProgress::new(&r, "measure", 0, None);
+    p.observe(&hello(&r, 0, false));
+    let mut event = sample("chain/plan-build/rq/k64", 0, 0);
     event["outcome"] = json!("incomplete_recovery");
-    let text = p.observe(&event.to_string()).unwrap();
-    assert!(text.contains("1 incomplete samples; no successful throughput"));
-    assert!(!text.contains("Gbit/s"));
+    assert!(p.observe(&event.to_string()).is_none());
+    assert!(p.heartbeat().contains("1 incomplete outcomes"));
+    assert!(!p.heartbeat().contains("Gbit/s"));
 }
 #[test]
 fn invalid_identity_duplicates_and_unplanned_cases_stop_live_counts() {
     let r = record();
     let mut p = DriverProgress::new(&r, "measure", 0, None);
-    assert!(p.observe("{}").unwrap().contains("[PROTOCOL]"));
+    assert!(p.observe("{}").unwrap().contains("ERROR"));
     assert!(p.observe(&hello(&r, 0, false)).is_none());
     for case in ["unregistered", "chain/plan-build/rq/k64"] {
         let mut p = DriverProgress::new(&r, "measure", 0, None);
         p.observe(&hello(&r, 0, false));
-        let e = sample(case, 0, 0).to_string();
+        let event = sample(case, 0, 0).to_string();
         if case == "unregistered" {
-            assert!(p.observe(&e).unwrap().contains("[PROTOCOL]"));
+            assert!(p.observe(&event).unwrap().contains("ERROR"));
         } else {
-            assert!(p.observe(&e).is_none());
-            assert!(p.observe(&e).unwrap().contains("[PROTOCOL]"));
+            assert!(p.observe(&event).is_none());
+            assert!(p.observe(&event).unwrap().contains("ERROR"));
         }
+        assert!(!p.heartbeat().contains("samples observed"));
     }
 }
 #[test]
-fn fresh_processes_and_diagnostics_have_separate_completion_counts() {
+fn first_use_and_diagnostics_are_quiet_with_separate_aggregate_counts() {
     let mut r = record();
     let case = r
         .recipe
@@ -116,7 +122,7 @@ fn fresh_processes_and_diagnostics_have_separate_completion_counts() {
         .unwrap()
         .checks
         .values()
-        .rfind(|c| c.skip.is_none() && c.spec.fresh_process)
+        .find(|c| c.skip.is_none() && c.spec.fresh_process)
         .unwrap()
         .spec
         .id
@@ -124,35 +130,24 @@ fn fresh_processes_and_diagnostics_have_separate_completion_counts() {
     for worker in 0..content::REPETITIONS {
         let mut p = DriverProgress::new(&r, "first-use", worker, Some(&case));
         p.observe(&hello(&r, worker, false));
-        let e = sample(&case, worker, worker);
-        let result = p.observe(&e.to_string());
-        if worker == 14 {
-            let text = result.unwrap();
-            let total = r
-                .recipe
-                .as_ref()
-                .unwrap()
-                .checks
-                .values()
-                .filter(|c| c.skip.is_none() && c.measured && c.spec.fresh_process)
-                .count();
-            assert!(text.contains("15/15 samples"));
-            assert!(text.contains(&format!("[FIRST USE {total}/{total}][RECORDED]")));
-        } else {
-            assert!(result.is_none());
-        }
+        let event = sample(&case, worker, worker);
+        assert!(p.observe(&event.to_string()).is_none());
+        assert!(p.heartbeat().contains("first-use sampling"));
+        assert!(!p.heartbeat().contains(&case));
         drop(p);
-        r.samples.push(serde_json::from_value(e).unwrap());
+        r.samples.push(serde_json::from_value(event).unwrap());
     }
-    let case = "chain/plan-build/rq/k64";
     for worker in 0..content::WORKERS {
         let mut p = DriverProgress::new(&r, "diagnose", worker, None);
         p.observe(&hello(&r, worker, true));
-        let e = json!({"event":"diagnostic","case":case,"worker":worker});
-        let text = p.observe(&e.to_string()).unwrap();
-        assert!(text.contains(&format!("{}/3 observations", worker + 1)));
-        assert_eq!(text.contains("[RECORDED]"), worker == 2);
+        let event = json!({"event":"diagnostic","case":"chain/plan-build/rq/k64","worker":worker});
+        assert!(p.observe(&event.to_string()).is_none());
+        assert!(
+            p.heartbeat()
+                .contains(&format!("Diagnostics: {}/", worker + 1))
+        );
+        assert!(p.heartbeat().contains("observations"));
         drop(p);
-        r.diagnostics.push(e);
+        r.diagnostics.push(event);
     }
 }

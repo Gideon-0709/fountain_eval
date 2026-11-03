@@ -48,7 +48,7 @@ enum Command {
     /// Read a sealed result including warnings and complete coverage.
     Report {
         run: PathBuf,
-        /// Export to OUTPUT/<run-id>/report.md instead of stdout.
+        /// Export to `OUTPUT/<run-id>/report.md` instead of stdout.
         #[arg(long)]
         output: Option<PathBuf>,
     },

@@ -110,7 +110,10 @@ fn observer_receives_complete_lines_before_exit_and_keeps_raw_logs() {
     let mut command = Command::new("sh");
     command.current_dir(&t.0).args(["-c", "printf 'rea'; sleep 0.04; printf 'dy\\n'; while [ ! -f continue ]; do sleep 0.01; done; printf 'done\\n'; printf 'diagnostic\\n' >&2"]);
     let mut lines = Vec::new();
-    let mut observe = |line: &str| {
+    let mut observe = |line: Option<&str>| {
+        let Some(line) = line else {
+            return;
+        };
         lines.push(line.to_owned());
         if line == "ready" {
             fs::write(t.0.join("continue"), "observed before child exit").unwrap();
@@ -142,7 +145,11 @@ fn observer_drains_failure_and_large_completed_output() {
         &t.0,
         "failed",
         Duration::from_secs(5),
-        Some(&mut |s| lines.push(s.to_owned())),
+        Some(&mut |s| {
+            if let Some(s) = s {
+                lines.push(s.to_owned());
+            }
+        }),
     )
     .unwrap_err();
     assert!(error.contains("exited"));
@@ -155,6 +162,9 @@ fn observer_drains_failure_and_large_completed_output() {
         "large",
         Duration::from_secs(5),
         Some(&mut |s| {
+            let Some(s) = s else {
+                return;
+            };
             assert_eq!(s.len(), 2000);
             count += 1;
         }),

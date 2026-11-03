@@ -109,7 +109,7 @@ Completed cache entries include manifests, source files, lockfiles, driver/libra
 
 Drivers communicate through a versioned NDJSON protocol on stdout; stderr and build output remain separate logs. The framework checks a hello identity, permitted event types, sample coverage and an explicit completion event. Each invocation uses a bounded child process group. Timeout, interrupt, nonzero exit and protocol errors produce failed/interrupted evidence and terminate remaining child processes.
 
-Terminal progress is an observational host-side view of those same log files. `src/progress.rs` formats phases, applicability, completed validation events, per-worker sampling progress and per-case results. It verifies the invocation identity before displaying case events; final protocol and evidence checks remain authoritative. `src/process.rs` tails complete lines with bounded live reads, preserves raw logs and emits a periodic heartbeat without replacing file capture with a driver pipe. This does not change native timers or I/T content. CLI `run`/`prepare` use stderr for progress and stdout for a concise final summary; `--json` selects the structured final response for automation. Library execution is silent unless progress is explicitly enabled.
+Terminal progress is an observational host-side view of those same log files. `src/progress.rs` groups execution into preparation, correctness, performance and diagnostics, with aggregate counts and concise outcomes. It keeps case-level data in reports and limits live updates to one per 30 seconds across process boundaries. It verifies the invocation identity before counting events; final protocol and evidence checks remain authoritative. `src/process.rs` tails complete lines with bounded live reads, preserves raw logs and emits a periodic heartbeat without replacing file capture with a driver pipe. This does not change native timers or I/T content. CLI `run`/`prepare` use stderr for progress and stdout for a concise final summary; `--json` selects the structured final response for automation. Library execution is silent unless progress is explicitly enabled.
 
 Correctness and measurement are separate process invocations. Correctness can wrap operators with participation and destruction counters; measurement uses the raw selected operator. A product API without the full operation surface records those validation or measurement cases as capability skips while executing its supported codec and callback diagnostic cases.
 
@@ -153,7 +153,7 @@ Linux/macOS CI checks the framework and publicly accessible native combinations.
 | `src/catalog.rs` | I/T registrations, supported families and embedded assets |
 | `src/build.rs` | Workspace expansion, generated manifests, native builds and cache integrity |
 | `src/process.rs` | Controlled build environment, subprocess logs, live event observation, timeouts and process-group cleanup |
-| `src/progress.rs` | Human-readable phases, per-case live progress and final CLI summaries |
+| `src/progress.rs` | Stage-level progress, shared heartbeat throttling and final CLI summaries |
 | `src/batch.rs` | Ordered multi-C execution, checkpoints and child-evidence verification |
 | `src/execution.rs` | Stage orchestration, prepared replay, capability and protocol checks |
 | `src/validation.rs` | Registered fatal/warning severity, evidence checks and correctness reports |

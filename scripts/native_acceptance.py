@@ -70,21 +70,21 @@ def main():
         if "result" in body:
             progress = (work / (label + ".stderr")).read_text()
             record = body["result"]
-            assert "[C0 1/1] START" in progress and "[REPORT]" in progress, label
-            assert f"[C0] {record['status'].upper()}" in progress, label
+            assert "C0 [1/1]" in progress and "REPORT  " in progress, label
+            state = "PASSED" if record["status"] == "succeeded" else record["status"].replace("_", " ").upper()
+            assert f"C0 {state}" in progress, label
+            assert "[VALIDATE" not in progress and "[MEASURE" not in progress, label
+            assert not any(line.startswith("  LIVE") and "/rq/" in line for line in progress.splitlines()), label
             if record["status"] == "succeeded":
-                assert "[PROTOCOL]" not in progress, label
-                assert sum("[VALIDATE " in line for line in progress.splitlines()) == len(record["validation"]), label
-                ordinary = [line for line in progress.splitlines() if "[MEASURE " in line or "[FIRST USE " in line]
-                assert sum("[RECORDED]" in line for line in ordinary) == len(record["recipe"]["cases"]), label
-                diagnostic = [line for line in progress.splitlines() if "[DIAGNOSE " in line]
-                assert len(diagnostic) == len(record["diagnostics"]), label
-            # A crash/protocol failure can produce no per-case event. Its host-side
-            # execution-integrity failure is shown by the C's final status above.
+                assert "  ERROR " not in progress and "  FATAL " not in progress, label
+                assert f"DONE  Correctness: {len(record['validation'])}/{len(record['validation'])} checks" in progress, label
+                assert f"DONE  Performance: {len(record['samples'])}/{len(record['samples'])} samples" in progress, label
+                assert f"DONE  Diagnostics: {len(record['diagnostics'])}/{len(record['diagnostics'])} observations" in progress, label
+                assert sum(line.startswith("  RUN   ") for line in progress.splitlines()) == 4, label
             if any(event.get("severity") == "fatal" and event.get("status") == "failed" for event in record["validation"]):
-                assert "[FATAL]" in progress, label
+                assert "  FATAL " in progress, label
             if record["status"] in ["failed", "interrupted"]:
-                assert record["error"] and record["error"] in progress, label
+                assert record["error"] and f"Reason: {record['error'].split('; see ', 1)[0].splitlines()[0][:80]}" in progress, label
             row.update(run=body["run_dir"], status=body["result"]["status"], stage=body["result"]["stage"], error=body["result"].get("error"))
         ledger.append(row)
         (work / "ledger.json").write_text(json.dumps(ledger, indent=2)+"\n")

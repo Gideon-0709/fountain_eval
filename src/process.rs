@@ -55,13 +55,14 @@ pub fn run(
 ) -> Result<String> {
     run_observed(command, directory, label, timeout, None)
 }
-/// Capture the same durable logs while optionally observing complete stdout lines live.
+pub type OutputObserver<'a> = dyn FnMut(Option<&str>) + 'a;
+/// Observe complete stdout lines (`Some`) and rate-limited display heartbeats (`None`).
 pub fn run_observed(
     command: &mut Command,
     directory: &Path,
     label: &str,
     timeout: Duration,
-    mut observer: Option<&mut dyn FnMut(&str)>,
+    mut observer: Option<&mut OutputObserver<'_>>,
 ) -> Result<String> {
     if interrupted() {
         return Err("interrupted".into());
@@ -97,7 +98,6 @@ pub fn run_observed(
     let mut guard = ChildGroup(child);
     let child = &mut guard.0;
     let start = Instant::now();
-    let mut heartbeat = Instant::now();
     loop {
         let status = child.try_wait().map_err(|e| e.to_string())?;
         if let (Some(reader), Some(observer)) = (&mut reader, observer.as_deref_mut()) {
@@ -126,7 +126,9 @@ pub fn run_observed(
                 for chunk in buffer[..bytes].split_inclusive(|b| *b == b'\n') {
                     pending.extend_from_slice(chunk);
                     if pending.last() == Some(&b'\n') {
-                        observer(String::from_utf8_lossy(&pending).trim_end_matches(['\n', '\r']));
+                        observer(Some(
+                            String::from_utf8_lossy(&pending).trim_end_matches(['\n', '\r']),
+                        ));
                         pending.clear();
                     }
                 }
@@ -148,12 +150,12 @@ pub fn run_observed(
                 format!("{label}: timeout")
             });
         }
-        if heartbeat.elapsed() >= Duration::from_secs(15) {
-            crate::progress::line(format!(
-                "[RUNNING] {label}: {:.0} s elapsed; process is still active",
-                start.elapsed().as_secs_f64()
-            ));
-            heartbeat = Instant::now();
+        if crate::progress::heartbeat_due() {
+            if let Some(observer) = observer.as_deref_mut() {
+                observer(None);
+            } else {
+                crate::progress::line("  LIVE  Preparation: process still active");
+            }
         }
         std::thread::sleep(Duration::from_millis(25));
     }

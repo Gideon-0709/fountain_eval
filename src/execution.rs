@@ -35,23 +35,22 @@ impl PhaseClock {
         }
     }
     fn enter(&mut self, record: &mut Record, name: &str) {
-        if self.name != "setup" {
-            crate::progress::line(format!(
-                "[C{}] {} completed in {:.2} s",
-                record.configuration.component_id,
-                self.name,
-                self.phase.elapsed().as_secs_f64()
-            ));
-        }
         *record
             .timing
             .phases_ns
             .entry(self.name.clone())
             .or_default() += self.phase.elapsed().as_nanos() as u64;
+        if self.name == "setup"
+            || crate::progress::stage(&self.name) != crate::progress::stage(name)
+        {
+            if self.name != "setup" {
+                crate::progress::phase_finished(record, &self.name, true);
+            }
+            crate::progress::phase_started(name);
+        }
         self.phase = Instant::now();
         self.name = name.into();
         record.stage = name.into();
-        crate::progress::phase(record.configuration.component_id, name);
     }
     fn finish(&self, record: &mut Record) {
         *record
@@ -71,8 +70,7 @@ fn lock(cache: &Path) -> Result<std::fs::File> {
         .write(true)
         .open(cache.join("execution.lock"))
         .map_err(|e| e.to_string())?;
-    let start = Instant::now();
-    let mut heartbeat = Instant::now();
+    let mut waiting = false;
     loop {
         match fs2::FileExt::try_lock_exclusive(&f) {
             Ok(()) => return Ok(f),
@@ -80,12 +78,9 @@ fn lock(cache: &Path) -> Result<std::fs::File> {
                 if process::interrupted() {
                     return Err("interrupted waiting for cache lock".into());
                 }
-                if heartbeat.elapsed() >= Duration::from_secs(15) {
-                    crate::progress::line(format!(
-                        "[WAITING] Another run holds the execution lock; {:.0} s elapsed",
-                        start.elapsed().as_secs_f64()
-                    ));
-                    heartbeat = Instant::now();
+                if !waiting || crate::progress::heartbeat_due() {
+                    crate::progress::line("  WAIT  Another evaluation holds the execution lock");
+                    waiting = true;
                 }
                 std::thread::sleep(Duration::from_millis(25));
             }
@@ -135,10 +130,6 @@ pub fn start(configuration: RunConfiguration, prepare_only: bool) -> Result<(Pat
     };
     evidence::save(&directory, &record)?;
     let result = util::catch(|| {
-        crate::progress::line(format!(
-            "[C{}] Waiting for the execution lock",
-            record.configuration.component_id
-        ));
         let _lock = lock(&cache)?;
         clock.enter(&mut record, "resolve");
         evidence::save(&directory, &record)?;
@@ -365,14 +356,6 @@ fn execute(directory: &Path, record: &mut Record, clock: &mut PhaseClock) -> Res
         )?;
     }
     for (index, case) in fresh.iter().enumerate() {
-        crate::progress::line(format!(
-            "[C{}][FIRST USE {}/{}] {} | {} independent fresh processes",
-            record.configuration.component_id,
-            index + 1,
-            fresh.len(),
-            case,
-            crate::content::REPETITIONS
-        ));
         for worker in 0..crate::content::REPETITIONS {
             run_measurement(
                 directory,
@@ -511,17 +494,16 @@ fn invoke_worker(
     }
     let mut progress = crate::progress::enabled()
         .then(|| crate::progress::DriverProgress::new(record, mode, worker, case));
-    if let Some(p) = &progress
-        && let Some(message) = p.start()
-    {
-        crate::progress::line(message);
-    }
     let observe = progress.is_some();
-    let mut observer = |raw: &str| {
-        if let Some(p) = &mut progress
-            && let Some(message) = p.observe(raw)
-        {
-            crate::progress::line(message);
+    let mut observer = |raw: Option<&str>| {
+        if let Some(p) = &mut progress {
+            let message = match raw {
+                Some(raw) => p.observe(raw),
+                None => Some(p.heartbeat()),
+            };
+            if let Some(message) = message {
+                crate::progress::line(message);
+            }
         }
     };
     let raw = process::run_observed(

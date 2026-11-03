@@ -1,4 +1,4 @@
-//! Live, observational CLI progress. Native drivers and their timed regions are unchanged.
+//! Stage-level CLI progress. Native drivers and measured regions are unchanged.
 use crate::{
     batch, content,
     evidence::Record,
@@ -11,10 +11,16 @@ use std::{
     fmt::Write as _,
     io::Write as _,
     path::Path,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
+static ACTIVITY: OnceLock<Mutex<Instant>> = OnceLock::new();
+const INTERVAL: Duration = Duration::from_secs(30);
 /// The CLI enables progress; library execution is silent unless explicitly enabled.
 pub fn set_enabled(value: bool) {
     ENABLED.store(value, Ordering::Relaxed);
@@ -27,29 +33,57 @@ fn clean(text: &str) -> String {
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect()
 }
-fn failure_message(message: &str) -> String {
-    let first = message.lines().next().unwrap_or("Driver execution failed");
-    let mut concise: String = first.chars().take(240).collect();
-    if first.chars().count() > 240 {
-        concise.push_str("...");
+fn concise(text: &str) -> String {
+    let first = text.lines().next().unwrap_or("See the report for details");
+    let mut text: String = first.chars().take(180).collect();
+    if first.chars().count() > 180 {
+        text.push_str("...");
     }
-    format!(
-        "{}; details in the Markdown report and raw driver logs",
-        clean(&concise)
-    )
+    clean(&text)
 }
 pub fn line(text: impl AsRef<str>) {
     if enabled() {
-        // A closed display stream must not turn a valid experiment into a failure.
         let _ = writeln!(std::io::stderr().lock(), "{}", clean(text.as_ref()));
     }
+}
+fn reset_activity() {
+    if let Ok(mut last) = ACTIVITY.get_or_init(|| Mutex::new(Instant::now())).lock() {
+        *last = Instant::now();
+    }
+}
+fn due(last: &mut Instant, now: Instant) -> bool {
+    if now.duration_since(*last) < INTERVAL {
+        return false;
+    }
+    *last = now;
+    true
+}
+/// One shared interval spans worker/fresh-process boundaries and lock waits.
+pub fn heartbeat_due() -> bool {
+    enabled()
+        && ACTIVITY
+            .get_or_init(|| Mutex::new(Instant::now()))
+            .lock()
+            .is_ok_and(|mut last| due(&mut last, Instant::now()))
 }
 fn source(reference: Option<&ComponentReference>) -> String {
     let Some(reference) = reference else {
         return "not selected".into();
     };
     let text = match &reference.source {
-        SourceReference::Path { path } => path.display().to_string(),
+        SourceReference::Path { path } => {
+            let path = if path.file_name().is_some_and(|p| p == "Cargo.toml") {
+                path.parent().unwrap_or(path)
+            } else {
+                path
+            };
+            format!(
+                "{} (local)",
+                path.file_name()
+                    .unwrap_or(path.as_os_str())
+                    .to_string_lossy()
+            )
+        }
         SourceReference::Registry {
             package, version, ..
         } => format!("{package}@{version}"),
@@ -57,123 +91,206 @@ fn source(reference: Option<&ComponentReference>) -> String {
             package, revision, ..
         } => format!("{package}@{}", &revision[..revision.len().min(12)]),
     };
-    if let Some(implementation) = &reference.implementation {
-        format!("{text} ({implementation})")
-    } else {
-        text
+    match &reference.implementation {
+        Some(implementation) => format!("{text} / {implementation}"),
+        None => text,
+    }
+}
+fn status(raw: &str, warnings: usize) -> String {
+    match raw {
+        "succeeded" if warnings > 0 => "PASSED WITH WARNINGS".into(),
+        "succeeded" => "PASSED".into(),
+        "completed_with_unsupported" => "COMPLETED WITH UNSUPPORTED COMPONENTS".into(),
+        _ => raw.replace('_', " ").to_uppercase(),
     }
 }
 pub fn batch_started(r: &batch::Record) {
-    line(format!(
-        "Fountain evaluation | {} | {} component selections | run {}",
-        r.action,
-        r.entries.len(),
-        r.run_id
-    ));
     if let Some(e) = r.entries.first() {
         line(format!(
-            "Test {} | scheme {} | all applicable cases",
-            e.request.test.version, e.request.scheme.name
+            "feval {} | test {} | {} | {} components",
+            r.action,
+            e.request.test.version,
+            e.request.scheme.name.to_uppercase(),
+            r.entries.len()
         ));
     }
-    line(
-        "Live rows describe observed checks and collected samples; each C is accepted only after final evidence validation.",
-    );
 }
 pub fn component_started(index: usize, total: usize, entry: &batch::Entry) {
+    reset_activity();
+    line("");
+    line(format!("C{} [{}/{}]", entry.component_id, index + 1, total));
     line(format!(
-        "[C{} {}/{}] START | engine: {} | operator: {}",
-        entry.component_id,
-        index + 1,
-        total,
-        source(entry.request.components.engine.as_ref()),
+        "  Engine:   {}",
+        source(entry.request.components.engine.as_ref())
+    ));
+    line(format!(
+        "  Operator: {}",
         source(entry.request.components.operator.as_ref())
     ));
 }
-pub fn phase(id: u32, name: &str) {
-    let label = match name {
-        "resolve" => "Resolve and freeze component inputs",
-        "build" => "Build or verify cached native drivers",
-        "probe" => "Check interface and native capabilities",
-        "validate" => "Correctness checks",
-        "measure" => "Ordinary performance measurements",
-        "diagnose" => "Separate stage and resource diagnostics",
-        _ => name,
+pub fn stage(name: &str) -> &'static str {
+    match name {
+        "validate" => "Correctness",
+        "measure" | "first-use" => "Performance",
+        "diagnose" | "complete" => "Diagnostics",
+        _ => "Preparation",
+    }
+}
+pub fn phase_started(name: &str) {
+    reset_activity();
+    line(format!("  RUN   {}", stage(name)));
+}
+fn totals(r: &Record, name: &str) -> (usize, usize, &'static str) {
+    let Some(p) = &r.recipe else {
+        return (0, 0, "");
     };
-    line(format!("[C{id}] {label}"));
+    match name {
+        "validate" => (r.validation.len(), p.validation_cases().len(), "checks"),
+        "measure" | "first-use" => (r.samples.len(), p.cases.len() * p.repetitions, "samples"),
+        "diagnose" | "complete" => (
+            r.diagnostics.len(),
+            p.checks
+                .values()
+                .filter(|c| {
+                    c.skip.is_none()
+                        && c.measured
+                        && !c.spec.fresh_process
+                        && c.spec.category != "operation"
+                })
+                .count()
+                * content::WORKERS,
+            "observations",
+        ),
+        _ => (0, 0, ""),
+    }
+}
+pub fn phase_finished(r: &Record, name: &str, success: bool) {
+    let seconds = r
+        .timing
+        .phases_ns
+        .iter()
+        .filter(|(key, _)| stage(key) == stage(name))
+        .map(|(_, ns)| *ns as f64 / 1e9)
+        .sum::<f64>();
+    let (done, total, unit) = totals(r, name);
+    let mut text = format!(
+        "  {}  {}",
+        if success { "DONE" } else { "STOP" },
+        stage(name)
+    );
+    if !unit.is_empty() {
+        let _ = write!(text, ": {done}/{total} {unit}");
+    }
+    if name == "validate" && !r.correctness.warnings.is_empty() {
+        let _ = write!(text, " | {} warnings", r.correctness.warnings.len());
+    }
+    if name == "measure" {
+        let incomplete = r
+            .samples
+            .iter()
+            .filter(|s| s.outcome != "completed")
+            .count();
+        if incomplete > 0 {
+            let _ = write!(text, " | {incomplete} incomplete outcomes");
+        }
+    }
+    let _ = write!(text, " | {seconds:.1} s");
+    line(text);
+    if name == "validate" && success && !r.correctness.warnings.is_empty() {
+        line("  WARN  Boundary deviations recorded; performance continues. Details in report.");
+    }
 }
 pub fn plan(r: &Record) {
     let Some(plan) = &r.recipe else {
         return;
     };
-    let mut skipped = BTreeMap::<(&str, &str, &str), usize>::new();
-    for c in plan.checks.values() {
-        if let Some(skip) = &c.skip {
-            *skipped
-                .entry(("validation", &skip.code, &skip.reason))
-                .or_default() += 1;
-        }
-        if let Some(skip) = c.skip.as_ref().or(c.measurement_skip.as_ref()) {
-            *skipped
-                .entry(("measurement", &skip.code, &skip.reason))
-                .or_default() += 1;
-        }
-    }
     line(format!(
-        "[C{}] PLAN | {} registered cases; {} applicable checks; {} measured cases",
-        r.configuration.component_id,
-        plan.checks.len(),
+        "  PLAN  {} checks | {} measured cases",
         plan.validation_cases().len(),
         plan.cases.len()
     ));
-    for ((phase, code, reason), count) in skipped {
+    let mut reasons = BTreeMap::<String, usize>::new();
+    let mut measurement_only = 0;
+    for check in plan.checks.values() {
+        if let Some(skip) = &check.skip {
+            *reasons.entry(skip.code.replace('_', " ")).or_default() += 1;
+        } else if check.measurement_skip.is_some() {
+            measurement_only += 1;
+        }
+    }
+    if !reasons.is_empty() {
         line(format!(
-            "[C{}][SKIP] {count} {phase} cases | {code}: {reason}",
-            r.configuration.component_id
+            "  SKIP  {} cases ({})",
+            reasons.values().sum::<usize>(),
+            reasons
+                .iter()
+                .map(|(reason, count)| format!("{reason}: {count}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if measurement_only > 0 {
+        line(format!(
+            "  SKIP  {measurement_only} additional measurement exclusions; details in report"
         ));
     }
 }
 pub fn component_finished(r: &Record) {
-    let applicable = r.recipe.as_ref().map_or(0, |p| p.validation_cases().len());
-    let not_executed = applicable.saturating_sub(r.validation.len());
-    line(format!(
-        "[C{}] {} | last phase: {} | checks {}/{}; warnings {}; fatal failures {}; not executed {}; samples {} | {:.2} s",
+    let success = matches!(r.status.as_str(), "succeeded" | "prepared");
+    phase_finished(r, &r.stage, success);
+    let mut text = format!(
+        "C{} {} | {:.1} s",
         r.configuration.component_id,
-        r.status.to_uppercase(),
-        r.stage,
-        r.validation.len(),
-        applicable,
-        r.correctness.warnings.len(),
-        r.correctness.fatal_failures.len(),
-        not_executed,
-        r.samples.len(),
+        status(&r.status, r.correctness.warnings.len()),
         r.timing.elapsed_ns as f64 / 1e9
-    ));
+    );
+    if !r.correctness.warnings.is_empty() {
+        let _ = write!(text, " | {} warnings", r.correctness.warnings.len());
+    }
+    if !r.correctness.fatal_failures.is_empty() {
+        let _ = write!(
+            text,
+            " | fatal failures: {}",
+            r.correctness.fatal_failures.len()
+        );
+    }
+    if !success {
+        let missing = r
+            .recipe
+            .as_ref()
+            .map_or(0, |p| p.validation_cases().len())
+            .saturating_sub(r.validation.len());
+        if missing > 0 {
+            let _ = write!(text, " | {missing} checks not executed");
+        }
+    }
+    line(text);
     if let Some(error) = &r.error {
-        line(format!("[C{}] {}", r.configuration.component_id, error));
+        line(format!(
+            "  Reason: {}",
+            concise(error.split("; see ").next().unwrap_or(error))
+        ));
     }
 }
 pub fn summary(r: &batch::Record, evidence: &Path) -> String {
     let mut text = format!(
-        "\nEvaluation {} | {} component selections | {:.2} s\n",
-        clean(&r.status),
-        r.entries.len(),
+        "\nRESULT: {} | {:.1} s\n",
+        status(&r.status, r.entries.iter().map(|e| e.warnings).sum()),
         r.elapsed_ns as f64 / 1e9
     );
     for e in &r.entries {
         let _ = writeln!(
             text,
-            "  C{}: {} | checks {}; warnings {}; samples {}",
+            "  C{}  {} | {} warnings | {} skipped",
             e.component_id,
-            clean(&e.status),
-            e.validation_observations,
+            status(&e.status, e.warnings),
             e.warnings,
-            e.samples
+            e.skipped
         );
     }
     let _ = writeln!(
         text,
-        "Report: {}\nEvidence: {}",
+        "\nReport: {}\nEvidence: {}",
         clean(
             &r.configuration
                 .report_root()
@@ -186,49 +303,17 @@ pub fn summary(r: &batch::Record, evidence: &Path) -> String {
     );
     text
 }
-fn duration(ns: u64) -> String {
-    let (scale, unit) = match ns {
-        0..=999 => (1.0, "ns"),
-        1_000..=999_999 => (1e3, "us"),
-        1_000_000..=999_999_999 => (1e6, "ms"),
-        _ => (1e9, "s"),
-    };
-    format!("{:.3} {unit}", ns as f64 / scale)
-}
-fn category(c: &content::Case) -> &'static str {
-    match c.category.as_str() {
-        "correctness" => "Correctness",
-        "operation" => "Operation",
-        "chain" => "Chain",
-        "workflow" => "Workflow",
-        _ => "Test",
-    }
-}
-fn case_name(c: &content::Case) -> String {
-    // IDs retain the complete dimensions, while the leading name is readable.
-    format!(
-        "{} / {} | {}",
-        category(c),
-        c.workload.replace('-', " "),
-        c.id
-    )
-}
-#[derive(Default)]
-struct Samples {
-    times: Vec<u64>,
-    incomplete: usize,
-    warnings: bool,
-}
-/// One invocation's live event view; the sealed execution pipeline remains authoritative.
+
+/// Aggregate one invocation's events; final protocol/evidence validation is authoritative.
 pub struct DriverProgress<'a> {
     record: &'a Record,
     mode: &'a str,
     worker: usize,
     eligible: BTreeSet<String>,
-    completed: BTreeSet<String>,
-    repetitions: BTreeSet<(String, usize)>,
-    samples: BTreeMap<String, Samples>,
-    diagnostics: BTreeMap<String, usize>,
+    seen: BTreeSet<(String, usize)>,
+    received: usize,
+    warnings: usize,
+    incomplete: usize,
     hello: bool,
     invalid: bool,
 }
@@ -268,66 +353,58 @@ impl<'a> DriverProgress<'a> {
                     .collect()
             })
             .unwrap_or_default();
-        let mut out = Self {
+        Self {
             record,
             mode,
             worker,
             eligible,
-            completed: BTreeSet::new(),
-            repetitions: BTreeSet::new(),
-            samples: BTreeMap::new(),
-            diagnostics: BTreeMap::new(),
+            seen: BTreeSet::new(),
+            received: 0,
+            warnings: 0,
+            incomplete: 0,
             hello: false,
             invalid: false,
-        };
-        for sample in &record.samples {
-            out.repetitions
-                .insert((sample.case.clone(), sample.repetition));
-            let state = out.samples.entry(sample.case.clone()).or_default();
-            state.times.push(sample.elapsed_ns);
-            state.incomplete += usize::from(sample.outcome != "completed");
-            if let Some(actual) = &sample.observation
-                && let Some(check) = record.validation.iter().find(|v| v["case"] == sample.case)
-            {
-                state.warnings |=
-                    !crate::validation::observation_matches(actual, &check["expected"]);
-            }
         }
-        for d in &record.diagnostics {
-            if let Some(case) = d["case"].as_str() {
-                *out.diagnostics.entry(case.into()).or_default() += 1;
-            }
-        }
-        out
     }
-    pub fn start(&self) -> Option<String> {
-        let id = self.record.configuration.component_id;
-        match self.mode {
-            "validate" => Some(format!(
-                "[C{id}][VALIDATE] 0/{} applicable checks",
-                self.eligible.len()
-            )),
-            "measure" => Some(format!(
-                "[C{id}][MEASURE] worker {}/{} | {} cases | {} samples/case after warm-up",
-                self.worker + 1,
-                content::WORKERS,
-                self.eligible.len(),
-                content::SAMPLES_PER_WORKER
-            )),
-            "diagnose" => Some(format!(
-                "[C{id}][DIAGNOSE] worker {}/{} | {} cases",
-                self.worker + 1,
-                content::WORKERS,
-                self.eligible.len()
-            )),
-            _ => None,
+    pub fn heartbeat(&self) -> String {
+        let label = stage(self.mode);
+        if self.invalid {
+            return format!("  LIVE  {label}: driver reported an error; waiting for process exit");
         }
+        if self.mode == "describe" {
+            return "  LIVE  Preparation: checking native capabilities".into();
+        }
+        let (previous, total, unit) = totals(self.record, self.mode);
+        let mut text = format!(
+            "  LIVE  {label}: {}/{total} {unit} observed",
+            previous + self.received
+        );
+        if self.warnings > 0 {
+            let _ = write!(text, " | {} warnings", self.warnings);
+        }
+        let incomplete = self.incomplete
+            + if matches!(self.mode, "measure" | "first-use") {
+                self.record
+                    .samples
+                    .iter()
+                    .filter(|s| s.outcome != "completed")
+                    .count()
+            } else {
+                0
+            };
+        if incomplete > 0 {
+            let _ = write!(text, " | {incomplete} incomplete outcomes");
+        }
+        if self.mode == "first-use" {
+            text.push_str(" | first-use sampling");
+        }
+        text
     }
     fn reject(&mut self, reason: &str) -> Option<String> {
         self.invalid = true;
         Some(format!(
-            "[C{}][PROTOCOL] {reason}; live case progress stopped; see raw driver logs",
-            self.record.configuration.component_id
+            "  ERROR {}: {reason}; details in driver logs",
+            stage(self.mode)
         ))
     }
     pub fn observe(&mut self, line: &str) -> Option<String> {
@@ -335,15 +412,18 @@ impl<'a> DriverProgress<'a> {
             return None;
         }
         let Ok(event) = serde_json::from_str::<Value>(line) else {
-            return self.reject("Invalid JSON event");
+            return self.reject("invalid driver output");
         };
         if !self.hello {
-            if self.record.built.as_ref().is_none_or(|built| {
-                crate::execution::check_hello(&event, built, self.record).is_err()
-            }) || event["worker"] != self.worker
+            if self
+                .record
+                .built
+                .as_ref()
+                .is_none_or(|b| crate::execution::check_hello(&event, b, self.record).is_err())
+                || event["worker"] != self.worker
                 || event["diagnostic"] != (self.mode == "diagnose")
             {
-                return self.reject("Driver identity mismatch");
+                return self.reject("driver identity mismatch");
             }
             self.hello = true;
             return None;
@@ -353,26 +433,25 @@ impl<'a> DriverProgress<'a> {
             return None;
         }
         let Some(case) = event["case"].as_str() else {
-            return self.reject("Event has no case ID");
+            return self.reject("event has no case ID");
         };
         if !self.eligible.contains(case) {
-            return self.reject("Event is outside this invocation's test plan");
+            return self.reject("event is outside the test plan");
         }
         let check = &self.record.recipe.as_ref().unwrap().checks[case];
-        let name = case_name(&check.spec);
-        let id = self.record.configuration.component_id;
-        // Panic diagnostics can appear while measuring; they remain fatal, never a collected sample.
         if kind == "validation"
             && event["severity"] == "fatal"
             && event["status"] == "failed"
             && event["rule"] == "execution-integrity"
         {
+            self.invalid = true;
             return Some(format!(
-                "[C{id}][FATAL] {name} | {}",
-                failure_message(
+                "  FATAL {}: {}",
+                stage(self.mode),
+                concise(
                     event["message"]
                         .as_str()
-                        .unwrap_or("Driver execution failed")
+                        .unwrap_or("driver execution failed")
                 )
             ));
         }
@@ -380,153 +459,115 @@ impl<'a> DriverProgress<'a> {
             if event["severity"] != serde_json::to_value(check.severity).unwrap()
                 || event["rule"] != check.rule
                 || !matches!(event["status"].as_str(), Some("passed" | "failed"))
-                || !self.completed.insert(case.into())
+                || !self.seen.insert((case.into(), 0))
             {
-                return self.reject("Inconsistent or repeated validation event");
+                return self.reject("inconsistent or repeated validation event");
             }
-            let status = if event["status"] == "passed" {
-                "PASS"
-            } else if check.severity == Severity::Warning {
-                "WARN"
-            } else {
-                "FATAL"
-            };
-            let explanation = if status == "WARN" {
-                " | boundary deviation; timing remains enabled"
-            } else {
-                ""
-            };
-            return Some(format!(
-                "[C{id}][VALIDATE {}/{}][{status}] {name}{explanation}",
-                self.completed.len(),
-                self.eligible.len()
-            ));
+            self.received += 1;
+            if event["status"] == "failed" {
+                if check.severity == Severity::Warning {
+                    self.warnings += 1;
+                } else {
+                    self.invalid = true;
+                    return Some("  FATAL Correctness check failed; details in report".into());
+                }
+            }
+            return None;
         }
         if matches!(self.mode, "measure" | "first-use") && kind == "sample" {
             let Some(rep) = event["repetition"].as_u64().map(|v| v as usize) else {
-                return self.reject("Sample repetition missing");
+                return self.reject("sample repetition missing");
             };
             let expected_worker = if self.mode == "first-use" {
                 rep
             } else {
                 rep / content::SAMPLES_PER_WORKER
             };
-            let expected = self.record.recipe.as_ref().unwrap().repetitions;
-            if rep >= expected
+            if rep >= self.record.recipe.as_ref().unwrap().repetitions
                 || event["worker"] != self.worker
                 || self.worker != expected_worker
-                || !self.repetitions.insert((case.into(), rep))
+                || !self.seen.insert((case.into(), rep))
             {
-                return self.reject("Sample belongs to the wrong worker or is duplicated");
+                return self.reject("sample worker mismatch or duplicate");
             }
-            let Some(ns) = event["elapsed_ns"].as_u64().filter(|n| *n > 0) else {
-                return self.reject("Invalid sample duration");
-            };
-            let state = self.samples.entry(case.into()).or_default();
-            state.times.push(ns);
-            state.incomplete += usize::from(event["outcome"] != "completed");
-            if check.spec.warning
-                && let Some(validation) = self.record.validation.iter().find(|v| v["case"] == case)
-            {
-                state.warnings |= validation["status"] == "failed"
-                    || !crate::validation::observation_matches(
-                        &event["observation"],
-                        &validation["expected"],
-                    );
+            if event["elapsed_ns"].as_u64().is_none_or(|ns| ns == 0) {
+                return self.reject("invalid sample duration");
             }
-            let count = state.times.len();
-            if self.mode == "first-use" && count != expected {
-                return None;
-            }
-            if self.mode == "measure" && !(rep + 1).is_multiple_of(content::SAMPLES_PER_WORKER) {
-                return None;
-            }
-            self.completed.insert(case.into());
-            let status = if count == expected {
-                "RECORDED"
-            } else {
-                "COLLECTED"
-            };
-            let phase = if self.mode == "first-use" {
-                "FIRST USE"
-            } else {
-                "MEASURE"
-            };
-            let (position, total) = if self.mode == "first-use" {
-                let fresh: Vec<_> = self
-                    .record
-                    .recipe
-                    .as_ref()
-                    .unwrap()
-                    .checks
-                    .values()
-                    .filter(|c| c.skip.is_none() && c.measured && c.spec.fresh_process)
-                    .map(|c| c.spec.id.as_str())
-                    .collect();
-                (
-                    fresh.iter().position(|id| *id == case).unwrap() + 1,
-                    fresh.len(),
-                )
-            } else {
-                (self.completed.len(), self.eligible.len())
-            };
-            let mut text = format!(
-                "[C{id}][{phase} {position}/{total}][{status}] {name} | {count}/{expected} samples"
-            );
-            if count == expected {
-                let mut times = state.times.clone();
-                times.sort_unstable();
-                let median = times[times.len() / 2];
-                let _ = write!(text, " | median {}", duration(median));
-                if let Some(ops) = event["operations"].as_u64().filter(|n| *n > 0) {
-                    let _ = write!(text, " | {:.3} ns/call", median as f64 / ops as f64);
-                }
-                if state.incomplete == 0
-                    && let Some(bytes) = event["payload_bytes"].as_u64().filter(|n| *n > 0)
-                {
-                    let _ = write!(
-                        text,
-                        " | {:.3} {} Gbit/s",
-                        bytes as f64 * 8.0 / median as f64,
-                        if check.spec.category == "operation" {
-                            "logical"
-                        } else {
-                            "source"
-                        }
-                    );
-                }
-                if state.incomplete > 0 {
-                    let _ = write!(
-                        text,
-                        " | {} incomplete samples; no successful throughput",
-                        state.incomplete
-                    );
-                }
-            }
-            if state.warnings {
-                text.push_str(" | WARN: boundary deviation retained");
-            }
-            Some(text)
-        } else if self.mode == "diagnose" && kind == "diagnostic" {
-            if event["worker"] != self.worker || !self.completed.insert(case.into()) {
-                return self.reject("Diagnostic belongs to the wrong worker or is duplicated");
-            }
-            let count = self.diagnostics.entry(case.into()).or_default();
-            *count += 1;
-            Some(format!(
-                "[C{id}][DIAGNOSE {}/{}][{}] {name} | {}/{} observations",
-                self.completed.len(),
-                self.eligible.len(),
-                if *count == content::WORKERS {
-                    "RECORDED"
-                } else {
-                    "COLLECTED"
-                },
-                count,
-                content::WORKERS
-            ))
-        } else {
-            self.reject("Unexpected event for the current phase")
+            self.received += 1;
+            self.incomplete += usize::from(event["outcome"] != "completed");
+            return None;
         }
+        if self.mode == "diagnose" && kind == "diagnostic" {
+            if event["worker"] != self.worker || !self.seen.insert((case.into(), 0)) {
+                return self.reject("diagnostic worker mismatch or duplicate");
+            }
+            self.received += 1;
+            return None;
+        }
+        self.reject("unexpected event for this stage")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn heartbeat_interval_does_not_depend_on_event_or_process_count() {
+        let start = Instant::now();
+        let mut last = start;
+        for millis in 0..30_000 {
+            assert!(!due(&mut last, start + Duration::from_millis(millis)));
+        }
+        assert!(due(&mut last, start + INTERVAL));
+        assert!(!due(&mut last, start + INTERVAL));
+        assert!(!due(&mut last, start + Duration::from_secs(59)));
+        assert!(due(&mut last, start + Duration::from_secs(60)));
+    }
+    #[cfg(unix)]
+    #[test]
+    fn process_heartbeats_share_the_interval_and_preserve_stdout() {
+        let root = std::env::temp_dir().join(format!(
+            "feval-heartbeat-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        set_enabled(true);
+        *ACTIVITY
+            .get_or_init(|| Mutex::new(Instant::now()))
+            .lock()
+            .unwrap() = Instant::now() - INTERVAL;
+        let mut heartbeats = 0;
+        let mut lines = Vec::new();
+        let mut output = Vec::new();
+        for label in ["worker", "fresh-process"] {
+            let result = crate::process::run_observed(
+                std::process::Command::new("sh").current_dir(&root).args([
+                    "-c",
+                    "printf 'ready\\n'; while [ ! -f release ]; do sleep 0.01; done",
+                ]),
+                &root,
+                label,
+                Duration::from_secs(5),
+                Some(&mut |event| match event {
+                    Some(line) => lines.push(line.to_owned()),
+                    None => {
+                        heartbeats += 1;
+                        std::fs::write(root.join("release"), "heartbeat observed").unwrap();
+                    }
+                }),
+            );
+            output.push(result);
+        }
+        set_enabled(false);
+        std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(
+            heartbeats, 1,
+            "Starting another process must not reset the interval"
+        );
+        assert_eq!(lines, vec!["ready", "ready"]);
+        assert!(output.iter().all(|r| r.as_deref() == Ok("ready\n")));
     }
 }

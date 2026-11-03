@@ -38,13 +38,13 @@ All relative paths are relative to the config file. There are no parent-director
 
 ## Terminal progress
 
-`run` and `prepare` print live, plain-text progress to stderr. Each C starts with its position in the batch and its selected components. Resolution, builds, capability checks, correctness, measurements and diagnostics have separate phase messages. The expanded plan reports applicable counts and grouped skip reasons. While a subprocess or execution lock is still active, a heartbeat appears every 15 seconds.
+`run` and `prepare` print compact stage progress to stderr. Each C has a separate heading with its position in the batch and concise component names. Four stages organize the work: **Preparation**, **Correctness**, **Performance** and **Diagnostics**. Preparation groups input resolution, native builds and capability checks. `prepare` stops after that stage.
 
-Each completed correctness check prints `PASS`, `WARN` or `FATAL`, its category, workload and exact case ID. A warning keeps measurement enabled. A fatal failure stops that C and the final status identifies its unexecuted checks; the next independent C still runs. Interruptions, protocol errors and unsupported selections are explicit.
+`RUN` announces a stage; `DONE` summarizes its completed work and elapsed wall time. `PLAN` shows applicable check and measurement counts, and `SKIP` summarizes exclusions by reason. Long stages emit at most one `LIVE` update every 30 seconds, reporting aggregate observed check/sample/diagnostic counts. The interval spans worker and fresh-process boundaries. A lock wait is explicit.
 
-Ordinary measurements print one row per case per worker: `COLLECTED` at 5/15 and 10/15 samples, then `RECORDED` at 15/15 with median elapsed time and applicable call/byte rates. Worker headings explain the case counter; it restarts for each worker. First-use cases announce their 15 fresh processes and print their result after all samples arrive. Diagnostic observations have separate 1/3, 2/3 and 3/3 counts. Incomplete recovery does not display successful throughput.
+Individual case IDs, repeated warning details and per-case timing/rates stay in the Markdown report. Warnings are counted at the end of correctness and in the final outcome; performance continues. A fatal check prints one short `FATAL` reason immediately. Failed or interrupted stages end with `STOP`, and the component summary identifies its outcome and unexecuted checks. The final `RESULT` makes every C's outcome prominent and prints the report/evidence paths.
 
-Live rows describe observations received so far. The whole C succeeds only after protocol, coverage, correctness and evidence validation. The final summary prints each C's outcome and the `Report` and `Evidence` paths. Detailed failure evidence, warning observations and performance dispersion are in the Markdown report.
+Live counts and stage completion describe work performed. The whole C passes only after final protocol, coverage, correctness and evidence validation. Incomplete recovery outcomes are counted separately; the terminal does not aggregate throughput across different workloads. Read the report for individual operations, chains, workflows, detailed warning observations and performance dispersion.
 
 For automation, add `--json` to keep the structured final response on stdout while progress remains on stderr:
 
