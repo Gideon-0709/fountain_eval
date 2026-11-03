@@ -102,7 +102,10 @@ fn human_progress_is_default_and_json_stdout_remains_machine_readable() {
     let stdout = String::from_utf8(human.stdout).unwrap();
     let stderr = String::from_utf8(human.stderr).unwrap();
     assert!(stdout.contains("RESULT: COMPLETED WITH FAILURES"));
-    assert!(stdout.contains("Report:") && stdout.contains("Temporary evidence: cleaned"));
+    assert!(
+        stdout.contains("Report:")
+            && stdout.contains("Temporary evidence and build cache: cleaned")
+    );
     assert!(stderr.contains("C0 [1/2]") && stderr.contains("C1 [2/2]"));
     assert!(stderr.contains("C0 FAILED") && stderr.contains("REPORT  "));
     assert!(
@@ -117,12 +120,8 @@ fn human_progress_is_default_and_json_stdout_remains_machine_readable() {
     assert!(value.get("run_dir").is_none());
     let report = std::path::Path::new(value["report"].as_str().unwrap());
     assert!(report.is_file());
-    assert!(
-        std::fs::read_dir(t.0.join("runs"))
-            .unwrap()
-            .next()
-            .is_none()
-    );
+    assert!(!t.0.join("runs").exists());
+    assert!(!t.0.join(".fountain-eval").exists());
     let index = cli(&t.0, &["report", report.to_str().unwrap(), "--json"]);
     assert!(index.status.success());
     assert_eq!(
@@ -141,4 +140,6 @@ fn human_progress_is_default_and_json_stdout_remains_machine_readable() {
     assert_eq!(prepared.status.code(), Some(4));
     let value: serde_json::Value = serde_json::from_slice(&prepared.stdout).unwrap();
     assert_eq!(value["batch"]["action"], "prepare");
+    assert!(value.get("report").is_none());
+    assert!(std::path::Path::new(value["prepared"].as_str().unwrap()).is_dir());
 }

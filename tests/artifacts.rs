@@ -41,6 +41,22 @@ fn raw(t: &Temp) -> PathBuf {
         entries: vec![entry],
     };
     util::write_json(&dir.join("batch.json"), &b).unwrap();
+    let cache = t.0.join(".fountain-eval/fixture-batch");
+    fs::create_dir_all(&cache).unwrap();
+    util::write_json(
+        &cache.join("owner.json"),
+        &serde_json::json!({"run_id":"fixture-batch","directory":dir.canonicalize().unwrap()}),
+    )
+    .unwrap();
+    util::write_json(
+        &dir.join("workspace.json"),
+        &serde_json::json!({"cache":cache}),
+    )
+    .unwrap();
+    t.write(
+        ".fountain-eval/fixture-batch/builds/driver",
+        "binary fixture",
+    );
     evidence::seal(&dir).unwrap();
     dir
 }
@@ -54,7 +70,8 @@ fn report_survives_cleanup_and_comparison_keeps_all_cases() {
     let cache = t.write(".fountain-eval/keep", "cache");
     artifact::cleanup(&raw, &path).unwrap();
     assert!(!raw.exists());
-    assert!(cache.exists());
+    assert!(cache.exists()); // An unrelated sibling is not owned by this run.
+    assert!(!t.0.join(".fountain-eval/fixture-batch").exists());
     let (_, stored) = artifact::load(&path).unwrap();
     let c = artifact::select(&path).unwrap();
     let comparison = evidence::compare_summaries(&c, &c).unwrap();
@@ -152,5 +169,38 @@ fn failed_invalid_sample_prefix_still_has_a_publishable_failure_report() {
     assert_eq!(
         artifact::load(&path).unwrap().1.components[0].status,
         "failed"
+    );
+}
+
+#[test]
+fn cache_ownership_and_active_workspace_block_cleanup() {
+    let t = Temp::new();
+    let raw = raw(&t);
+    let saved = artifact::Snapshot::capture(&raw).unwrap();
+    let path = artifact::publish(&t.0.join("reports"), "# Report\n", &saved, false).unwrap();
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(raw.join("lease.tmp"))
+        .unwrap();
+    fs2::FileExt::lock_exclusive(&lock).unwrap();
+    assert!(
+        artifact::cleanup(&raw, &path)
+            .unwrap_err()
+            .contains("in use")
+    );
+    drop(lock);
+    t.write(".fountain-eval/fixture-batch/owner.json", "{}");
+    assert!(
+        artifact::cleanup(&raw, &path)
+            .unwrap_err()
+            .contains("ownership")
+    );
+    assert!(raw.exists());
+    assert!(
+        t.0.join(".fountain-eval/fixture-batch/builds/driver")
+            .exists()
     );
 }

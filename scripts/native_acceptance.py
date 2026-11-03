@@ -52,7 +52,7 @@ def main():
             code = process.wait(timeout=7200)
         text = (work / (label + ".stdout")).read_text()
         body = json.loads(text) if text.strip() and arguments[0] not in ["report", "compare"] else {}
-        if "batch" in body:
+        if "report" in body:
             report = Path(body["report"])
             saved = json.loads(subprocess.check_output([str(cli), "report", str(report), "--json"], text=True))
             entries = saved["batch"]["entries"]
@@ -61,13 +61,20 @@ def main():
             assert report.stat().st_size > 0 and report.name == "report.md"
             assert list(report.parent.iterdir()) == [report]
             assert not (runs / saved["batch"]["run_id"]).exists(), "Verified reports must clean temporary raw evidence"
+            assert not (cache / saved["batch"]["run_id"]).exists(), "Batch cache must be removed"
             body = {"report":str(report), "batch":saved["batch"], "result_ref":str(report)+"#C0", "result":saved["components"][0]}
             subprocess.run([str(cli),"report",str(report)],stdout=subprocess.DEVNULL,check=True)
+        elif "prepared" in body:
+            directory = Path(body["prepared"])
+            entry = body["batch"]["entries"][0]
+            record = json.loads((directory / entry["directory"] / "result.json").read_text())
+            body.update(result=record, result_ref=str(directory), prepared=str(directory))
+            assert not (work / "reports" / body["batch"]["run_id"]).exists()
         row = dict(label=label, exit=code, seconds=round(time.monotonic()-started, 3))
         if "result" in body:
             progress = (work / (label + ".stderr")).read_text()
             record = body["result"]
-            assert "C0 [1/1]" in progress and "REPORT  " in progress, label
+            assert "C0 [1/1]" in progress and ("READY   " if arguments[0] == "prepare" else "REPORT  ") in progress, label
             state = "PASSED" if record["status"] == "succeeded" else record["status"].replace("_", " ").upper()
             assert f"C0 {state}" in progress, label
             assert "[VALIDATE" not in progress and "[MEASURE" not in progress, label
@@ -87,6 +94,8 @@ def main():
         (work / "ledger.json").write_text(json.dumps(ledger, indent=2)+"\n")
         print(json.dumps(row), flush=True)
         if expected is not None:
+            if code != expected:
+                print((work / (label + ".stderr")).read_text()[-12000:], flush=True)
             assert code == expected, row
         return body, code
 
@@ -168,13 +177,16 @@ def main():
         prepared,_=run("snapshot",ENGINE,f"path:{checkout}",action="prepare",expected=0)
         lib=checkout/"src/lib.rs"
         lib.write_text('compile_error!("changed original after preparation");\n'+lib.read_text())
-        repeated,_=command("prepared-whole-run",["run","--prepared",prepared["report"]],0)
+        repeated,_=command("prepared-whole-run",["run","--prepared",prepared["prepared"]],0)
         command("prepared-compare",["compare",first["result_ref"],repeated["result_ref"]],0)
         failed,_=run("changed-input",ENGINE,f"path:{checkout}",expected=4)
         assert failed["result"]["stage"]=="build"
-        binary=Path(prepared["result"]["prepared"]["built"]["binary"])
+        # A consumed preparation is removed; create an independent frozen input for corruption.
+        lib.write_text(lib.read_text().removeprefix('compile_error!("changed original after preparation");\n'))
+        prepared,_=run("corrupt-snapshot",ENGINE,f"path:{checkout}",action="prepare",expected=0)
+        binary=Path(prepared["result"]["built"]["binary"])
         with binary.open("ab") as out:out.write(b"corruption fixture")
-        corrupt,_=command("corrupt-cache",["run","--prepared",prepared["report"]],4)
+        corrupt,_=command("corrupt-cache",["run","--prepared",prepared["prepared"]],4)
         assert "checksum" in corrupt["result"]["error"]
 
     if args.faults:

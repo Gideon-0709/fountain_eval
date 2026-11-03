@@ -30,14 +30,13 @@ fn independent_failures_continue_and_automatic_reports_retain_each_c() {
         1
     );
     assert!(!r.configuration.run.output.join(&r.run_id).exists());
-    assert!(r.configuration.run.cache.exists());
+    assert!(!r.configuration.run.cache.exists());
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_feval"))
         .args(["report", path.to_str().unwrap()])
         .output()
         .unwrap();
     assert!(output.status.success());
     assert_eq!(String::from_utf8(output.stdout).unwrap(), report);
-    std::fs::remove_dir_all(&r.configuration.run.cache).unwrap();
     assert!(artifact::load(&path).is_ok());
     std::fs::write(&path, report.replace("Key findings", "Changed findings")).unwrap();
     assert!(artifact::load(&path).is_err());
@@ -57,7 +56,8 @@ fn prepared_failures_are_not_retried_and_their_provenance_is_retained() {
     let origin = saved.prepared_from.unwrap();
     assert_eq!(origin["entries"][0]["status"], "failed");
     assert!(origin["entries"][0]["error"].is_string());
-    assert!(artifact::load(&first).is_ok());
+    assert!(!first.exists());
+    assert!(!t.0.join(".fountain-eval").exists());
     assert!(artifact::load(&second).is_ok());
 }
 #[test]
@@ -89,7 +89,7 @@ fn report_rejects_component_identity_and_count_changes() {
 #[test]
 fn interrupt_stops_the_batch_and_leaves_later_c_unexecuted() {
     use std::{
-        fs::OpenOptions,
+        os::unix::fs::PermissionsExt,
         process::{Command, Stdio},
         thread,
         time::{Duration, Instant},
@@ -97,19 +97,20 @@ fn interrupt_stops_the_batch_and_leaves_later_c_unexecuted() {
     let t = Temp::new();
     let config = t.write(
         "eval.toml",
-        "engine0=\"path:missing0\"\nengine1=\"path:missing1\"\nscheme=\"rq\"\ntest=\"0.1.0\"\n",
+        "engine0=\"git+https://example.invalid/engine.git?package=fountain_engine&rev=1111111111111111111111111111111111111111\"\nengine1=\"path:missing1\"\nscheme=\"rq\"\ntest=\"0.1.0\"\n",
     );
-    std::fs::create_dir(t.0.join(".fountain-eval")).unwrap();
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(t.0.join(".fountain-eval/execution.lock"))
-        .unwrap();
-    fs2::FileExt::lock_exclusive(&lock).unwrap();
+    let git = t.write("bin/git", "#!/bin/sh\nexec sleep 60\n");
+    std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o755)).unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_feval"))
         .args(["run", "--config", config.to_str().unwrap()])
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                t.0.join("bin").display(),
+                std::env::var("PATH").unwrap()
+            ),
+        )
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -161,4 +162,31 @@ fn interrupt_stops_the_batch_and_leaves_later_c_unexecuted() {
     assert_eq!(record.entries[1].status, "not_executed");
     assert!(record.entries[1].directory.is_none());
     assert!(record.entries[1].elapsed_ns.is_none());
+}
+
+#[test]
+fn one_batch_never_cleans_another_preparation_and_busy_preparation_is_rejected() {
+    let t = Temp::new();
+    let (pending, r) = failures(&t, true);
+    assert!(!t.0.join("reports").exists());
+    let cache = r.configuration.run.cache.join(&r.run_id);
+    assert!(cache.is_dir());
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(pending.join("lease.tmp"))
+        .unwrap();
+    fs2::FileExt::lock_exclusive(&lock).unwrap();
+    assert!(
+        batch::from_prepared(&pending)
+            .unwrap_err()
+            .contains("in use")
+    );
+    let (report, _) = failures(&t, false);
+    assert!(report.is_file() && pending.is_dir() && cache.is_dir());
+    drop(lock);
+    let (report, _) = batch::from_prepared(&pending).unwrap();
+    assert!(report.is_file() && !pending.exists() && !cache.exists());
+    assert!(!t.0.join("runs").exists());
+    assert!(!t.0.join(".fountain-eval").exists());
 }

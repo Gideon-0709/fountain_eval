@@ -54,9 +54,6 @@ enum Command {
         /// Replace the existing report for this exact run after verification.
         #[arg(long, requires = "output")]
         replace: bool,
-        /// Remove this raw batch after a verified durable report is published.
-        #[arg(long, requires = "output")]
-        clean: bool,
         /// Read the compact result index instead of Markdown.
         #[arg(long, conflicts_with = "output")]
         json: bool,
@@ -78,7 +75,11 @@ fn emit(value: &impl serde::Serialize) -> Result<()> {
 fn outcome(report: PathBuf, record: batch::Record, machine: bool) -> Result<u8> {
     let code = batch::exit_code(&record);
     if machine {
-        emit(&json!({"report":report,"batch":record}))?;
+        if record.action == "prepare" {
+            emit(&json!({"prepared":report,"batch":record}))?;
+        } else {
+            emit(&json!({"report":report,"batch":record}))?;
+        }
     } else {
         emit_text(&fountain_eval::progress::summary(&record, &report))?;
     }
@@ -128,7 +129,6 @@ fn execute(command: Command) -> Result<u8> {
             run,
             output,
             replace,
-            clean,
             json,
         } => {
             let run = run.canonicalize().map_err(|e| e.to_string())?;
@@ -145,7 +145,7 @@ fn execute(command: Command) -> Result<u8> {
                 fountain_eval::report::failure_logs(&mut body, &saved);
                 (body, saved, true)
             } else {
-                if clean || replace || json {
+                if output.is_some() || replace || json {
                     return Err(
                         "use the complete batch to publish, clean or inspect a stored result"
                             .into(),
@@ -153,13 +153,7 @@ fn execute(command: Command) -> Result<u8> {
                 }
                 let r = evidence::load(&run)?;
                 let text = fountain_eval::report::markdown(&r);
-                if let Some(root) = output {
-                    let dir = fountain_eval::report::reserve(&root, &r.run_id)?;
-                    let path = fountain_eval::report::publish(&dir, &text)?;
-                    emit_text(&format!("{}\n", path.display()))?;
-                } else {
-                    emit_text(&text)?;
-                }
+                emit_text(&text)?;
                 return Ok(0);
             };
             if json {
@@ -171,7 +165,7 @@ fn execute(command: Command) -> Result<u8> {
                     fountain_eval::report::reserve(&root, &saved.batch.run_id)?
                 };
                 let report = fountain_eval::artifact::publish(&directory, &body, &saved, replace)?;
-                if clean && raw {
+                if raw {
                     fountain_eval::artifact::cleanup(&run, &report)?;
                 }
                 emit_text(&format!("{}\n", report.display()))?;

@@ -154,16 +154,16 @@ output = "runs"    # temporary execution evidence
 cache = ".fountain-eval"
 ```
 
-The defaults are the paths above, relative to the config. Set `run.report` to the folder where you want to read reports. Every invocation reserves a unique `<report>/<run-id>/` directory and writes exactly one `report.md` containing every C. Raw evidence is temporary under `<output>/<run-id>/` and is deleted after verified report publication; cache files stay under `cache`. These directories serve different purposes. Report paths do not affect E or comparability. Normal execution never overwrites an existing report. Explicit `report --replace` can update the layout of the same historical run. The original config and its resolved request/settings are retained in the report index. Their location and comments do not affect experiment equality.
+The defaults are the paths above, relative to the config. Set `run.report` to the folder where you want to read reports. Every completed test reserves a unique `<report>/<run-id>/` directory and writes exactly one `report.md` containing every C. Raw evidence is temporary under `<output>/<run-id>/` and is deleted after verified report publication; per-batch cache files under `<cache>/<run-id>/` are removed at the same time. These directories serve different purposes. Report paths do not affect E or comparability. Normal execution never overwrites an existing report. Explicit `report --replace` can update the layout of the same historical run. The original config and its resolved request/settings are retained in the report index. Their location and comments do not affect experiment equality.
 
-Prepared execution consumes the stored config and verified source/build inputs, without rereading the original config:
+`prepare` leaves a pending workspace and its frozen cache, without publishing a final report. Its JSON response contains `prepared` and `batch`. Prepared execution consumes those inputs without rereading the original config:
 
 ```bash
-PREPARED=$(python3 -c 'import json; print(json.load(open("prepared.json"))["report"])')
+PREPARED=$(python3 -c 'import json; print(json.load(open("prepared.json"))["prepared"])')
 feval run --prepared "$PREPARED"
 ```
 
-Its output directory comes from the frozen configuration. Current runtime conditions are observed again; the prepared native binary requires its original CPU and OS family. `--prepared` cannot be combined with `--config`.
+The pending workspace is single-use: after the run publishes its report, both that workspace and its cache are removed. Its output directory comes from the frozen configuration. Current runtime conditions are observed again; the prepared native binary requires its original CPU and OS family. `--prepared` cannot be combined with `--config`.
 
 ## What the formal content runs
 
@@ -205,24 +205,24 @@ feval report "$REPORT" --json
 # Select one C from each report; a single-C report needs no selector:
 feval compare "$REPORT#C0" /path/to/candidate/report.md#C0 > comparison.md
 # Migrate an existing raw batch without repeating measurements:
-feval report /path/to/runs/run-id --output ./reports --clean
+feval report /path/to/runs/run-id --output ./reports
 # Update an existing report for that same run, then clean its raw batch:
-feval report /path/to/runs/run-id --output ./reports --replace --clean
+feval report /path/to/runs/run-id --output ./reports --replace
 ```
 
 The report starts with **Key findings**: component outcomes, fatal boundaries, warning counts, measured coverage and dispersion. Categories then organize correctness, individual operations, chains/plans, workflows, coverage and reproducibility. Each operation/workload has compact tables; long details use expandable sections. Shared diagnostic values and identical environments appear once. `Not measured` means no measured observation exists. Skipped and unfinished cases remain distinct.
 
 Every measured case retains its median, range, mean, standard deviation, CV, worker medians, completion counts and applicable rates. Rates derivable from the same time/work count are not repeated in separate tables; the result index retains their exact values. Diagnostic tables show means, ranges and observation counts, with separate exclusive stages and nested work/resource counters. Exclusive stage means plus unattributed time equal the diagnostic lifecycle mean; they do not add to the ordinary median. No baseline or causal performance ranking is silently selected.
 
-The file includes a checksummed, compressed result index in a Markdown comment. It contains the original config, C/I/T/E, resolved test plan, build/source provenance, complete per-case coverage, correctness findings, grouped warning observations, aggregate performance results and per-metric diagnostic summaries. It contains no individual timing samples or raw log files. This index keeps `report`, `compare` and prepared replay usable after cleanup. Visible text and the index are checked together; checksums detect changes, not authenticate a publisher. `report --json` exposes the index without creating another file. Removing it disables structured reading and comparison.
+The file includes a checksummed, compressed result index in a Markdown comment. It contains the original config, C/I/T/E, resolved test plan, build/source provenance, complete per-case coverage, correctness findings, grouped warning observations, aggregate performance results and per-metric diagnostic summaries. It contains no individual timing samples or raw log files. This index keeps `report`, `compare` usable after cleanup. Visible text and the index are checked together; checksums detect changes, not authenticate a publisher. `report --json` exposes the index without creating another file. Removing it disables structured reading and comparison.
 
-`compare` verifies T/E/I and common fatal-check witnesses before comparing common measured cases. Failed runs are ineligible; semantic warnings remain visible and eligible. Comparison uses the aggregate statistics validated before cleanup; it cannot recalculate statistics from disposed samples. Existing per-C raw evidence directories are still readable. Prepared execution accepts its saved Markdown report and requires its verified build cache.
+`compare` verifies T/E/I and common fatal-check witnesses before comparing common measured cases. Failed runs are ineligible; semantic warnings remain visible and eligible. Comparison uses the aggregate statistics validated before cleanup; it cannot recalculate statistics from disposed samples. Existing per-C raw evidence directories are still readable. A finalized report is a result, not a replayable preparation.
 
 ## Evidence, failures and retention
 
-During execution the workspace contains configuration, plan, source/build provenance, validation, raw samples, diagnostics and subprocess logs. On completion the framework verifies these inputs, publishes the single Markdown file atomically, reads it back, then removes only that invocation's raw batch. The same rule applies to successful, failed, unsupported and interrupted batches. Their completed prefixes, errors, warning findings and exact coverage remain in the report; failed runs never become passes. Failure diagnostics retain labelled excerpts where needed.
+During execution the workspace contains configuration, plan, source/build provenance, validation, raw samples, diagnostics and subprocess logs. On completion the framework verifies these inputs, publishes the single Markdown file atomically, reads it back, then removes that invocation's raw batch, source snapshots, native build products and cache, including a consumed preparation workspace. C entries share cache only during that invocation; subsequent runs build afresh. The same rule applies to successful, failed, unsupported and interrupted batches. Their completed prefixes, errors, warning findings and exact coverage remain in the report; failed runs never become passes. Failure diagnostics retain labelled excerpts where needed. Large byte-array assertions retain lengths, the first differing offset/values, total differing offsets, short prefixes and SHA-256 hashes instead of full payload dumps.
 
-A write, verification or cleanup failure is reported explicitly. Unpublished evidence is retained; it is never discarded to make an attempt appear successful. Cleanup rejects report/cache overlap and evidence changed after publication. Cache entries, user config/source trees, unrelated runs and prior reports are untouched. `report --output DIR --clean` provides explicit recovery after a failed publication. Without durable output, `report` only reads and does not clean its input.
+A write, verification or cleanup failure is reported explicitly. Unpublished evidence is retained; it is never discarded to make an attempt appear successful. Cleanup rejects report/cache overlap and evidence changed after publication. Cleanup uses ownership records and exclusive workspace locks. User config/source trees, other active or pending invocations, prior reports and system-wide Cargo/Rust installations are untouched. Empty storage roots are removed. `report --output DIR` provides explicit recovery after a failed publication. Without durable output, `report` only reads and does not clean its input.
 
 | Exit | Meaning |
 |---|---|
@@ -232,7 +232,7 @@ A write, verification or cleanup failure is reported explicitly. Unpublished evi
 | 4 | At least one failed or unexecuted C; inspect every batch entry |
 | 130 | Interrupted run |
 
-Start failures with the report outcome, fatal findings and expandable failure diagnostics. Incomplete/corrupt build entries fail without rebuilding or retrying silently. Use a new cache directory or explicitly remove a failed entry after inspection. The CLI never uploads or archives results. A verified Markdown report is the retained result; its temporary raw batch is removed automatically. Default reports/results/caches are ignored by Git; custom storage outside those directories is the user's responsibility.
+Start failures with the report outcome, fatal findings and expandable failure diagnostics. Incomplete/corrupt build entries fail without rebuilding or retrying silently. A completed failed run cleans its cache after recording the failure; a pending preparation with a corrupt cache fails without silently rebuilding. The CLI never uploads or archives results. A verified Markdown report is the retained result; all of its temporary run records and cache are removed automatically. Default reports/results/caches are ignored by Git; custom storage outside those directories is the user's responsibility.
 
 ## Maintainer references
 

@@ -288,11 +288,20 @@ pub fn summary(r: &batch::Record, report: &Path) -> String {
             e.skipped
         );
     }
-    let _ = writeln!(
-        text,
-        "\nReport: {}\nTemporary evidence: cleaned after report verification",
-        clean(&report.display().to_string())
-    );
+    if r.action == "prepare" {
+        let _ = writeln!(
+            text,
+            "\nPrepared workspace: {}\nContinue: feval run --prepared '{}'",
+            clean(&report.display().to_string()),
+            clean(&report.display().to_string())
+        );
+    } else {
+        let _ = writeln!(
+            text,
+            "\nReport: {}\nTemporary evidence and build cache: cleaned after report verification",
+            clean(&report.display().to_string())
+        );
+    }
     text
 }
 

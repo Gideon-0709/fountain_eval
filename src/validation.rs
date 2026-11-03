@@ -105,7 +105,11 @@ pub fn report(record: &Record) -> Report {
         if severity == Severity::Fatal || event["rule"] == "execution-integrity" {
             out.fatal_checks += 1;
             if event["status"] == "failed" {
-                out.fatal_failures.push(event.clone());
+                let mut finding = event.clone();
+                if let Some(message) = event["message"].as_str() {
+                    finding["message"] = message_summary(message).into();
+                }
+                out.fatal_failures.push(finding);
             }
         } else {
             out.warning_checks += 1;
@@ -175,4 +179,87 @@ pub fn verify_observation(observation: &Value, calls: u64) -> Result<()> {
         return Err("boundary outcomes do not cover every measured call".into());
     }
     Ok(())
+}
+
+/// Keep the actual mismatch, without copying a multi-megabyte Rust debug byte array into a report.
+pub(crate) fn message_summary(message: &str) -> String {
+    if message.len() <= 16_384 {
+        return message.to_owned();
+    }
+    let bytes = |key: &str| -> Option<Vec<u8>> {
+        let line = message
+            .lines()
+            .find(|line| line.trim_start().starts_with(key))?;
+        serde_json::from_str(line.trim_start().strip_prefix(key)?.trim()).ok()
+    };
+    if let (Some(left), Some(right)) = (bytes("left:"), bytes("right:")) {
+        let first = left
+            .iter()
+            .zip(&right)
+            .position(|(a, b)| a != b)
+            .or_else(|| (left.len() != right.len()).then_some(left.len().min(right.len())));
+        let differing = left.iter().zip(&right).filter(|(a, b)| a != b).count()
+            + left.len().abs_diff(right.len());
+        let context = message
+            .lines()
+            .take_while(|line| !line.trim_start().starts_with("left:"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut out = format!(
+            "{}\nByte-array comparison: left {} bytes; right {} bytes; {} differing offsets.",
+            bounded_text(&context),
+            left.len(),
+            right.len(),
+            differing
+        );
+        if let Some(index) = first {
+            out.push_str(&format!(
+                "\nFirst difference at byte {index}: left {}; right {}.",
+                left.get(index).map_or("missing".into(), u8::to_string),
+                right.get(index).map_or("missing".into(), u8::to_string)
+            ));
+        }
+        out.push_str(&format!("\nLeft prefix: {:?}; right prefix: {:?}.\nLeft SHA-256: {}; right SHA-256: {}.\nFull array dumps omitted (original diagnostic: {} bytes; SHA-256 {}).", &left[..left.len().min(16)], &right[..right.len().min(16)], crate::util::hash(&left), crate::util::hash(&right), message.len(), crate::util::hash(message)));
+        out
+    } else {
+        bounded_text(message)
+    }
+}
+fn bounded_text(message: &str) -> String {
+    if message.len() <= 16_384 {
+        return message.to_owned();
+    }
+    format!(
+        "{}\n[... diagnostic shortened: {} bytes; SHA-256 {} ...]\n{}",
+        message.chars().take(2048).collect::<String>(),
+        message.len(),
+        crate::util::hash(message),
+        message
+            .chars()
+            .rev()
+            .take(1024)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect::<String>()
+    )
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    #[test]
+    fn large_payload_failure_preserves_first_difference_lengths_and_hashes() {
+        let left = vec![0_u8; 10_000];
+        let mut right = left.clone();
+        right[4321] = 17;
+        let message =
+            format!("assertion failed: decoded payload\n  left: {left:?}\n right: {right:?}");
+        let summary = super::message_summary(&message);
+        assert!(summary.contains("left 10000 bytes; right 10000 bytes; 1 differing offsets"));
+        assert!(summary.contains("byte 4321: left 0; right 17"));
+        assert!(summary.contains(&crate::util::hash(&right)));
+        assert!(summary.len() < 1500);
+        let generic = super::message_summary(&"unexpected failure 🦀".repeat(4000));
+        assert!(generic.contains("diagnostic shortened") && generic.len() < 16_384);
+    }
 }

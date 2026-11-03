@@ -38,11 +38,13 @@ fn systematic() -> String {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunSettings {
-    /// Human-readable output, separate from immutable execution evidence.
+    /// The single permanent Markdown result destination.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub report: Option<PathBuf>,
+    /// Temporary execution root; completed run directories are removed.
     #[serde(default = "output_default")]
     pub output: PathBuf,
+    /// Temporary per-batch cache root; entries are reused only within one batch.
     #[serde(default = "cache_default")]
     pub cache: PathBuf,
 }

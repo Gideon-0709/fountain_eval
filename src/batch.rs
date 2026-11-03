@@ -102,43 +102,39 @@ pub fn run(configuration: Configuration, prepare_only: bool) -> Result<(PathBuf,
     execute(configuration, prepare_only, None)
 }
 pub fn from_prepared(path: &Path) -> Result<(PathBuf, Record)> {
-    let (old, components, origin) = if path.is_file() || path.join("report.md").is_file() {
-        let (_, saved) = crate::artifact::load(path)?;
-        let components = saved
-            .components
-            .into_iter()
-            .filter_map(|c| c.prepared.map(|r| (c.component_id, r)))
-            .collect();
-        (saved.batch, components, saved.source_seal)
-    } else {
-        let old = load(path)?;
-        let components = old
-            .entries
-            .iter()
-            .filter(|e| e.status == "prepared")
-            .map(|e| {
-                let child = member(
-                    path,
-                    e.directory.as_ref().ok_or("prepared C has no evidence")?,
-                )?;
-                Ok((e.component_id, evidence::load(&child)?))
-            })
-            .collect::<Result<BTreeMap<_, _>>>()?;
-        (old, components, util::file_hash(&path.join("seal.json"))?)
-    };
+    let lease = crate::workspace::Lease::acquire(path)?;
+    let old = load(&lease.directory)?;
+    let components = old
+        .entries
+        .iter()
+        .filter(|e| e.status == "prepared")
+        .map(|e| {
+            let child = member(
+                &lease.directory,
+                e.directory.as_ref().ok_or("prepared C has no evidence")?,
+            )?;
+            Ok((e.component_id, evidence::load(&child)?))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    let origin = util::file_hash(&lease.directory.join("seal.json"))?;
     if old.action != "prepare" {
         return Err("expected a prepared batch".into());
     }
     execute(
         old.configuration.clone(),
         false,
-        Some((old, components, origin)),
+        Some((old, components, origin, lease)),
     )
 }
 fn execute(
     configuration: Configuration,
     prepare_only: bool,
-    prepared: Option<(Record, BTreeMap<u32, evidence::Record>, String)>,
+    prepared: Option<(
+        Record,
+        BTreeMap<u32, evidence::Record>,
+        String,
+        crate::workspace::Lease,
+    )>,
 ) -> Result<(PathBuf, Record)> {
     process::install_handler()?;
     let started = SystemTime::now()
@@ -149,7 +145,16 @@ fn execute(
     fs::create_dir_all(&configuration.run.output).map_err(|e| e.to_string())?;
     fs::create_dir(&directory).map_err(|e| e.to_string())?;
     let directory = directory.canonicalize().map_err(|e| e.to_string())?;
-    let report_directory = crate::report::reserve(&configuration.report_root(), &id)?;
+    let lease = crate::workspace::Lease::acquire(&directory)?;
+    let cache = if prepared.is_none() {
+        Some(crate::workspace::create_cache(
+            &directory,
+            &configuration.run.cache,
+            &id,
+        )?)
+    } else {
+        None
+    };
     let clock = Instant::now();
     let entries = configuration
         .selections
@@ -180,12 +185,12 @@ fn execute(
         configuration,
         entries,
     };
-    if let Some((old, _, origin)) = &prepared {
+    if let Some((old, _, origin, prepared_lease)) = &prepared {
         util::write_json(
             &directory.join("prepared-from.json"),
             &serde_json::json!({
                 "run_id":old.run_id,"seal":origin,
-                "entries":old.entries
+                "entries":old.entries,"directory":prepared_lease.directory
             }),
         )?;
     }
@@ -206,7 +211,7 @@ fn execute(
         crate::progress::component_started(index, record.entries.len(), &record.entries[index]);
         let output = directory.join(format!("C{}", selection.id));
         let started = Instant::now();
-        let result = if let Some((old, components, origin)) = &prepared {
+        let result = if let Some((old, components, origin, _)) = &prepared {
             let previous = &old.entries[index];
             if previous.status != "prepared" {
                 record.entries[index].error = Some(format!(
@@ -228,6 +233,7 @@ fn execute(
         } else {
             let mut input = record.configuration.selection(selection);
             input.run.output = output;
+            input.run.cache = cache.as_ref().unwrap().clone();
             execution::start(input, prepare_only)
         };
         let elapsed = started.elapsed().as_nanos() as u64;
@@ -264,14 +270,26 @@ fn execute(
     record.status = status(&record.entries, prepare_only, record.interrupted);
     record.elapsed_ns = clock.elapsed().as_nanos() as u64;
     checkpoint(&directory, &record)?;
-    crate::progress::line("REPORT  Writing Markdown report and sealing evidence");
     evidence::seal(&directory)?;
+    if prepare_only {
+        crate::progress::line(
+            "READY   Frozen workspace retained for run --prepared; no final report yet",
+        );
+        return Ok((directory, record));
+    }
+    crate::progress::line("REPORT  Writing Markdown report and sealing evidence");
+    let report_directory =
+        crate::report::reserve(&record.configuration.report_root(), &record.run_id)?;
     let saved = crate::artifact::Snapshot::capture(&directory)?;
     let mut body = crate::report::batch_markdown(&directory, &record)?;
     crate::report::failure_logs(&mut body, &saved);
     let report = crate::artifact::publish(&report_directory, &body, &saved, false)?;
-    crate::artifact::cleanup(&directory, &report)?;
-    crate::progress::line("REPORT  Verified Markdown report; temporary evidence removed");
+    let mut held = vec![&lease];
+    if let Some((_, _, _, prepared_lease)) = &prepared {
+        held.push(prepared_lease);
+    }
+    crate::artifact::cleanup_held(&directory, &report, &held)?;
+    crate::progress::line("REPORT  Verified Markdown report; run records and build cache removed");
     Ok((report, record))
 }
 fn checkpoint(directory: &Path, record: &Record) -> Result<()> {

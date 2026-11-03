@@ -400,7 +400,7 @@ pub fn batch_markdown(directory: &Path, batch: &crate::batch::Record) -> Result<
             environments.entry(q.e.digest.clone()).or_insert(*id);
         }
     }
-    out.push_str("### Result retention\n\nThis file contains the complete result summary and a checksummed machine-readable result index for `report`, `compare` and prepared execution. Raw logs and individual samples are temporary and are removed only after this file has been published and verified. The build cache is retained. Aggregate statistics cannot be recomputed from individual samples after cleanup.\n\n");
+    out.push_str("### Result retention\n\nThis file contains the complete result summary and a checksummed machine-readable result index for `report` and `compare`. After this file is published and verified, this invocation's raw logs, individual samples, source snapshots, build cache and consumed preparation workspace are removed. This report is the only retained output. Aggregate statistics cannot be recomputed from individual samples after cleanup.\n\n");
     Ok(out)
 }
 pub fn markdown(r: &Record) -> String {

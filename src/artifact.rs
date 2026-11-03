@@ -209,6 +209,43 @@ pub struct Snapshot {
     pub source_seal: String,
     pub prepared_from: Option<Value>,
 }
+fn log_excerpt(path: &Path, text: &str) -> String {
+    let compact = if text
+        .lines()
+        .any(|line| line.trim_start().starts_with("left:"))
+    {
+        crate::validation::message_summary(text)
+    } else {
+        text.to_owned()
+    };
+    let lines: Vec<_> = compact.lines().collect();
+    let mut selected = std::collections::BTreeSet::new();
+    selected.extend(0..lines.len().min(12));
+    selected.extend(lines.len().saturating_sub(40)..lines.len());
+    // Keep primary compiler diagnostics even when a long warning tail follows them.
+    for (i, line) in lines.iter().enumerate() {
+        if line.trim_start().starts_with("error") || line.contains("panicked at") {
+            selected.extend(i.saturating_sub(2)..(i + 12).min(lines.len()));
+        }
+    }
+    let mut out = format!(
+        "{}: {} of {} lines (diagnostics and context)\n",
+        path.display(),
+        selected.len(),
+        lines.len()
+    );
+    let mut previous = None;
+    for i in selected {
+        if previous.is_some_and(|p| i > p + 1) {
+            out.push_str("[... omitted ...]\n");
+        }
+        out.push_str(&crate::validation::message_summary(lines[i]));
+        out.push('\n');
+        previous = Some(i);
+    }
+    out
+}
+
 impl Snapshot {
     pub fn capture(directory: &Path) -> Result<Self> {
         let batch = batch::load(directory)?;
@@ -234,20 +271,7 @@ impl Snapshot {
                             let text = fs::read_to_string(child.join("logs").join(&path))
                                 .unwrap_or_default();
                             if !text.trim().is_empty() {
-                                let lines: Vec<_> = text.lines().collect();
-                                let tail = lines
-                                    .iter()
-                                    .skip(lines.len().saturating_sub(80))
-                                    .copied()
-                                    .collect::<Vec<_>>()
-                                    .join("\n");
-                                c.failure_details.push(format!(
-                                    "{}: last {} of {} lines\n{}",
-                                    path.display(),
-                                    lines.len().min(80),
-                                    lines.len(),
-                                    tail
-                                ));
+                                c.failure_details.push(log_excerpt(&path, &text));
                             }
                         }
                     }
@@ -440,36 +464,81 @@ pub fn publish(
     }
     result
 }
-/// Delete only the verified source batch; never cache, report, or an unrelated directory.
+/// Delete the verified batch, its owned cache and a consumed preparation workspace.
 pub fn cleanup(raw: &Path, report: &Path) -> Result<()> {
-    if fs::symlink_metadata(raw)
-        .map_err(|e| e.to_string())?
-        .file_type()
-        .is_symlink()
-    {
-        return Err("refusing to clean a symlinked batch".into());
-    }
-    let raw = raw.canonicalize().map_err(|e| e.to_string())?;
+    cleanup_held(raw, report, &[])
+}
+pub(crate) fn cleanup_held(
+    raw: &Path,
+    report: &Path,
+    held: &[&crate::workspace::Lease],
+) -> Result<()> {
     let report = report.canonicalize().map_err(|e| e.to_string())?;
     let (_, saved) = load(&report)?;
-    if report.starts_with(&raw)
-        || saved.batch.configuration.run.cache.starts_with(&raw)
-        || raw.file_name().and_then(|v| v.to_str()) != Some(saved.batch.run_id.as_str())
+    let mut leases = Vec::new();
+    let mut pending = vec![(
+        raw.to_owned(),
+        saved.batch.clone(),
+        saved.source_seal.clone(),
+    )];
+    if let Some(origin) = &saved.prepared_from
+        && let Some(path) = origin["directory"].as_str()
     {
-        return Err("unsafe report/evidence/cache overlap".into());
+        let path = PathBuf::from(path);
+        // A completed cleanup is idempotent if only final raw removal previously failed.
+        if path.exists() {
+            let old = batch::load(&path)?;
+            if old.action != "prepare"
+                || origin["run_id"] != old.run_id
+                || origin["entries"]
+                    != serde_json::to_value(&old.entries).map_err(|e| e.to_string())?
+            {
+                return Err("prepared origin differs from published provenance; retained".into());
+            }
+            pending.push((
+                path,
+                old,
+                origin["seal"]
+                    .as_str()
+                    .ok_or("missing prepared seal")?
+                    .to_owned(),
+            ));
+        }
     }
-    if util::file_hash(&raw.join("seal.json"))? != saved.source_seal
-        || util::digest(&batch::load(&raw)?) != util::digest(&saved.batch)
-    {
-        return Err("raw evidence changed after report publication; retained".into());
+    let mut targets = Vec::new();
+    for (path, record, seal) in pending {
+        if fs::symlink_metadata(&path)
+            .map_err(|e| e.to_string())?
+            .file_type()
+            .is_symlink()
+        {
+            return Err("refusing to clean a symlinked batch".into());
+        }
+        let path = path.canonicalize().map_err(|e| e.to_string())?;
+        if !held.iter().any(|lease| lease.directory == path) {
+            leases.push(crate::workspace::Lease::acquire(&path)?);
+        }
+        if report.starts_with(&path)
+            || path.file_name().and_then(|v| v.to_str()) != Some(&record.run_id)
+        {
+            return Err("unsafe report/evidence overlap".into());
+        }
+        if util::file_hash(&path.join("seal.json"))? != seal
+            || util::digest(&batch::load(&path)?) != util::digest(&record)
+        {
+            return Err("raw evidence changed after report publication; retained".into());
+        }
+        let cache = crate::workspace::cache_for_cleanup(&path, &record, &report)?;
+        targets.push((path, cache));
     }
-    fs::remove_dir_all(&raw).map_err(|e| {
-        format!(
-            "report saved at {}; raw evidence retained at {}: {e}",
-            report.display(),
-            raw.display()
-        )
-    })
+    // Origin first: retain the current batch and its recovery index if cleanup fails partway.
+    for (path, cache) in targets.into_iter().rev() {
+        if let Some(cache) = cache {
+            crate::workspace::remove(&cache, &report)?;
+        }
+        crate::workspace::remove(&path, &report)?;
+    }
+    Ok(())
 }
 pub fn select(input: &Path) -> Result<Component> {
     let text = input.to_str().ok_or("invalid report path")?;
@@ -493,4 +562,18 @@ pub fn select(input: &Path) -> Result<Component> {
         .into_iter()
         .find(|c| id.is_none_or(|id| id == c.component_id))
         .ok_or("report component not found".into())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn diagnostics_survive_long_compiler_warning_tails() {
+        let text = "compile progress\n".repeat(100)
+            + "error[E0433]: could not find `portable` in the crate root\n --> src/slab.rs:10:1\n"
+            + &"unrelated warning\n".repeat(200);
+        let excerpt = super::log_excerpt(std::path::Path::new("driver-build.stderr"), &text);
+        assert!(excerpt.contains("error[E0433]") && excerpt.contains("portable"));
+        assert!(excerpt.contains("src/slab.rs:10:1") && excerpt.contains("omitted"));
+        assert!(excerpt.lines().count() < 80);
+    }
 }

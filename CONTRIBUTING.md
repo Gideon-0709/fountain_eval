@@ -34,7 +34,7 @@ The repository is an unreleased internal 0.1.0 candidate. Update this baseline a
 
 Write docs and diagnostics in English. README examples must execute the implemented workflow; [DESIGN](docs/DESIGN.md) explains the version boundaries and comparability model. Do not describe smoke measurements as formal performance conclusions.
 
-Do not commit caches, component checkouts, credentials, personal bindings or raw acceptance outputs. After writing an implementation acceptance summary, remove only the explicitly identified temporary validation directories. The CLI never cleans normal user results automatically.
+Do not commit caches, component checkouts, credentials, personal bindings or raw acceptance outputs. After writing an implementation acceptance summary, remove only the explicitly identified temporary validation directories. The CLI keeps the Markdown result and automatically removes that completed invocation's temporary run data and build cache after verified publication.
 
 Repository work targets main as directed by the project owner. Upstream access grants no write permission. Keep `publish = false`; crates.io publication and licensing policy are separate decisions.
 
