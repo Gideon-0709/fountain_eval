@@ -1,6 +1,7 @@
 //! Reproducible Fountain evaluation: resolve, build, validate, measure and compare.
 //! The CLI and the execution API share this single package; native drivers are embedded.
 
+pub mod artifact;
 pub mod batch;
 pub mod build;
 pub mod catalog;

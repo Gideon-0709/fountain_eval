@@ -51,6 +51,15 @@ enum Command {
         /// Export to `OUTPUT/<run-id>/report.md` instead of stdout.
         #[arg(long)]
         output: Option<PathBuf>,
+        /// Replace the existing report for this exact run after verification.
+        #[arg(long, requires = "output")]
+        replace: bool,
+        /// Remove this raw batch after a verified durable report is published.
+        #[arg(long, requires = "output")]
+        clean: bool,
+        /// Read the compact result index instead of Markdown.
+        #[arg(long, conflicts_with = "output")]
+        json: bool,
     },
     /// Compare common measured cases and report coverage differences.
     Compare { left: PathBuf, right: PathBuf },
@@ -66,17 +75,12 @@ fn emit(value: &impl serde::Serialize) -> Result<()> {
     serde_json::to_writer_pretty(&mut out, value).map_err(|e| e.to_string())?;
     writeln!(out).map_err(|e| e.to_string())
 }
-fn outcome(directory: PathBuf, record: batch::Record, machine: bool) -> Result<u8> {
+fn outcome(report: PathBuf, record: batch::Record, machine: bool) -> Result<u8> {
     let code = batch::exit_code(&record);
-    let report = record
-        .configuration
-        .report_root()
-        .join(&record.run_id)
-        .join("report.md");
     if machine {
-        emit(&json!({"run_dir":directory,"report":report,"batch":record}))?;
+        emit(&json!({"report":report,"batch":record}))?;
     } else {
-        emit_text(&fountain_eval::progress::summary(&record, &directory))?;
+        emit_text(&fountain_eval::progress::summary(&record, &report))?;
     }
     Ok(code)
 }
@@ -120,31 +124,69 @@ fn execute(command: Command) -> Result<u8> {
             };
             outcome(path, record, json)
         }
-        Command::Report { run, output } => {
+        Command::Report {
+            run,
+            output,
+            replace,
+            clean,
+            json,
+        } => {
             let run = run.canonicalize().map_err(|e| e.to_string())?;
-            let (id, text) = if run.join("batch.json").exists() {
-                let r = batch::load(&run)?;
-                let text = fountain_eval::report::batch_markdown(&run, &r)?;
-                (r.run_id, text)
+            let (body, saved, raw) = if run.is_file() || run.join("report.md").is_file() {
+                let (text, saved) = fountain_eval::artifact::load(&run)?;
+                (
+                    fountain_eval::artifact::visible_text(&text)?.to_owned(),
+                    saved,
+                    false,
+                )
+            } else if run.join("batch.json").is_file() {
+                let saved = fountain_eval::artifact::Snapshot::capture(&run)?;
+                let mut body = fountain_eval::report::batch_markdown(&run, &saved.batch)?;
+                fountain_eval::report::failure_logs(&mut body, &saved);
+                (body, saved, true)
             } else {
+                if clean || replace || json {
+                    return Err(
+                        "use the complete batch to publish, clean or inspect a stored result"
+                            .into(),
+                    );
+                }
                 let r = evidence::load(&run)?;
                 let text = fountain_eval::report::markdown(&r);
-                (r.run_id, text)
+                if let Some(root) = output {
+                    let dir = fountain_eval::report::reserve(&root, &r.run_id)?;
+                    let path = fountain_eval::report::publish(&dir, &text)?;
+                    emit_text(&format!("{}\n", path.display()))?;
+                } else {
+                    emit_text(&text)?;
+                }
+                return Ok(0);
             };
-            if let Some(root) = output {
-                let directory = fountain_eval::report::reserve(&root, &id)?;
-                let report = fountain_eval::report::publish(&directory, &text)?;
+            if json {
+                emit(&saved)?;
+            } else if let Some(root) = output {
+                let directory = if replace {
+                    root.join(&saved.batch.run_id)
+                } else {
+                    fountain_eval::report::reserve(&root, &saved.batch.run_id)?
+                };
+                let report = fountain_eval::artifact::publish(&directory, &body, &saved, replace)?;
+                if clean && raw {
+                    fountain_eval::artifact::cleanup(&run, &report)?;
+                }
                 emit_text(&format!("{}\n", report.display()))?;
+            } else if raw {
+                emit_text(&body)?;
             } else {
-                emit_text(&text)?;
+                emit_text(&fountain_eval::artifact::load(&run)?.0)?;
             }
             Ok(0)
         }
         Command::Compare { left, right } => {
-            if left.join("batch.json").exists() || right.join("batch.json").exists() {
-                return Err("compare requires two per-C evidence directories; choose the evidence paths listed in the report".into());
-            }
-            let r = evidence::compare(&evidence::load(&left)?, &evidence::load(&right)?)?;
+            let r = evidence::compare_summaries(
+                &fountain_eval::artifact::select(&left)?,
+                &fountain_eval::artifact::select(&right)?,
+            )?;
             emit_text(&fountain_eval::report::comparison(&r))?;
             Ok(0)
         }

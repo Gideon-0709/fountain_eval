@@ -1,5 +1,5 @@
 mod support;
-use fountain_eval::{batch, config::Configuration, evidence, util};
+use fountain_eval::{artifact, batch, config::Configuration};
 use support::Temp;
 
 fn failures(t: &Temp, prepare: bool) -> (std::path::PathBuf, batch::Record) {
@@ -16,36 +16,31 @@ fn independent_failures_continue_and_automatic_reports_retain_each_c() {
     assert_eq!(r.status, "completed_with_failures");
     assert_eq!(batch::exit_code(&r), 4);
     assert_eq!(r.entries.len(), 2);
-    for e in &r.entries {
-        assert_eq!(e.status, "failed");
-        assert!(e.elapsed_ns.unwrap() > 0);
-        let child = path.join(e.directory.as_ref().unwrap());
-        assert!(!child.join("report.md").exists());
-        assert!(!child.join("report.html").exists());
-        let record = evidence::load(&child).unwrap();
-        assert!(record.quadruple.is_none());
-        assert!(record.samples.is_empty());
+    let (_, saved) = artifact::load(&path).unwrap();
+    assert_eq!(saved.components.len(), 2);
+    for c in &saved.components {
+        assert_eq!(c.status, "failed");
+        assert!(c.quadruple.is_none());
+        assert!(c.summary.is_empty());
     }
-    let report_directory = r.configuration.report_root().join(&r.run_id);
-    let report = std::fs::read_to_string(report_directory.join("report.md")).unwrap();
-    assert!(
-        report.contains("C0")
-            && report.contains("C2")
-            && report.contains("Components and outcomes")
+    let report = std::fs::read_to_string(&path).unwrap();
+    assert!(report.contains("C0") && report.contains("C2") && report.contains("Key findings"));
+    assert_eq!(
+        std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
+        1
     );
-    assert_eq!(std::fs::read_dir(&report_directory).unwrap().count(), 1);
-    assert!(!path.join("report.md").exists());
-    assert_eq!(batch::load(&path).unwrap().entries.len(), 2);
+    assert!(!r.configuration.run.output.join(&r.run_id).exists());
+    assert!(r.configuration.run.cache.exists());
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_feval"))
         .args(["report", path.to_str().unwrap()])
         .output()
         .unwrap();
     assert!(output.status.success());
-    // Integrity checks do not depend on surviving build caches.
-    std::fs::remove_dir_all(t.0.join(".fountain-eval")).unwrap();
-    assert!(batch::load(&path).is_ok());
-    std::fs::write(path.join("batch.json"), "corrupt").unwrap();
-    assert!(batch::load(&path).is_err());
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), report);
+    std::fs::remove_dir_all(&r.configuration.run.cache).unwrap();
+    assert!(artifact::load(&path).is_ok());
+    std::fs::write(&path, report.replace("Key findings", "Changed findings")).unwrap();
+    assert!(artifact::load(&path).is_err());
 }
 #[test]
 fn prepared_failures_are_not_retried_and_their_provenance_is_retained() {
@@ -58,26 +53,35 @@ fn prepared_failures_are_not_retried_and_their_provenance_is_retained() {
             .iter()
             .all(|e| e.status == "not_executed" && e.elapsed_ns.is_none() && e.directory.is_none())
     );
-    let origin: serde_json::Value = util::read_json(&second.join("prepared-from.json")).unwrap();
+    let (_, saved) = artifact::load(&second).unwrap();
+    let origin = saved.prepared_from.unwrap();
     assert_eq!(origin["entries"][0]["status"], "failed");
     assert!(origin["entries"][0]["error"].is_string());
-    assert!(batch::load(&first).is_ok());
-    assert!(batch::load(&second).is_ok());
+    assert!(artifact::load(&first).is_ok());
+    assert!(artifact::load(&second).is_ok());
 }
 #[test]
-fn resealed_batch_cannot_change_child_identity_counts_or_duration() {
+fn report_rejects_component_identity_and_count_changes() {
     let t = Temp::new();
-    let (path, r) = failures(&t, false);
+    let (path, _) = failures(&t, false);
+    let (text, saved) = artifact::load(&path).unwrap();
     for field in ["samples", "skipped", "component_id", "elapsed_ns"] {
-        let mut value = serde_json::to_value(&r).unwrap();
-        value["entries"][0][field] = if field == "elapsed_ns" {
+        let mut v = serde_json::to_value(&saved).unwrap();
+        v["batch"]["entries"][0][field] = if field == "elapsed_ns" {
             0.into()
         } else {
             999.into()
         };
-        util::write_json(&path.join("batch.json"), &value).unwrap();
-        evidence::seal(&path).unwrap();
-        assert!(batch::load(&path).is_err(), "accepted altered {field}");
+        let altered = serde_json::from_value(v).unwrap();
+        assert!(
+            artifact::publish(
+                &t.0.join(field),
+                artifact::visible_text(&text).unwrap(),
+                &altered,
+                false
+            )
+            .is_err()
+        );
     }
 }
 
@@ -145,7 +149,13 @@ fn interrupt_stops_the_batch_and_leaves_later_c_unexecuted() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let record = batch::load(&root).unwrap();
+    assert!(!root.exists());
+    let report =
+        t.0.join("reports")
+            .join(root.file_name().unwrap())
+            .join("report.md");
+    let (_, saved) = artifact::load(&report).unwrap();
+    let record = saved.batch;
     assert_eq!(record.status, "interrupted");
     assert_eq!(record.entries[0].status, "interrupted");
     assert_eq!(record.entries[1].status, "not_executed");

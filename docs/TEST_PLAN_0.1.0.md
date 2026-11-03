@@ -221,7 +221,7 @@ Use **B** for symbol bytes so that it cannot be confused with the T identity of 
 
 This is a layered matrix, not a full Cartesian product of every row. Main coding performance covers the six geometries and prescribed output/recovery cases. Width-tail and state-boundary rules expand only relevant checks. For example, a plan-generation case whose contract is independent of B should not duplicate the same work and present the duplicates as additional evidence.
 
-The executable expansion is in `src/content.rs` and each report's `test-plan.json`. Operation widths and arities expand independently of codec geometry; plan generation has no payload-width dimension. The catalog retains actual seeds, operands and work counts, including each applicability reason.
+The executable expansion is in `src/content.rs` and each report's resolved plan in its result index. Operation widths and arities expand independently of codec geometry; plan generation has no payload-width dimension. The catalog retains actual seeds, operands and work counts, including each applicability reason.
 
 Only the configured scheme runs. Both schemes are exercised by maintainer acceptance of the catalog. Scheme-specific reference fixtures may differ, but a baseline/candidate comparison for the same case uses identical inputs. Repair IDs, omission sets, ordering and payload-generation identities belong in evidence.
 
@@ -296,7 +296,7 @@ Warnings do not change denominators. A boundary call that returns immediately st
 
 ### Deliverables
 
-The framework automatically produces one Markdown report for the entire configured batch. It embeds every C, groups results by test category, and separates execution wall time from benchmark time. Sealed JSON evidence retains the full observations and exact per-case coverage. The report is derived from that evidence and is readable locally without uploading component information or results.
+The framework automatically produces one Markdown report for the entire configured batch. It embeds every C, groups results by test category, and separates execution wall time from benchmark time. The retained report index preserves validated aggregate results and exact per-case coverage; temporary observations are cleaned after publication. The report is derived from that evidence and is readable locally without uploading component information or results.
 
 The [artifact contracts](../specs/README.md) define `result.json`, configuration, correctness, coverage, raw samples, separate diagnostics and rendered views. The views derive from the same sealed evidence; framework checks verify missing observations, inconsistent work counts and diagnostic accounting.
 
@@ -316,7 +316,7 @@ The [artifact contracts](../specs/README.md) define `result.json`, configuration
 
 A summary such as "succeeded with warnings and skips" must link to the affected cases. Present expected/actual values at a useful level, with full byte evidence or an exact first-difference location available for inspection. Do not bury warning details only in an appendix while placing an unqualified ranking at the top.
 
-The Markdown report organizes correctness, individual operations, chains and integrated workflows into separate sections, with short repeated-header tables. Fatal findings explain the violated contract and observed difference; warnings remain visible beside their timing context. Stage/resource observations accompany each workload. Coverage is summarized by category, phase, test family and skip reason; exact case IDs and individual samples remain in sealed JSON evidence. Unavailable or fused stages are described as such, not displayed as zero-cost work. Stage means are computed over the same diagnostic observations and remain additive to their mean lifecycle total; ordinary timing medians are separate.
+The Markdown report organizes correctness, individual operations, chains and integrated workflows into separate sections, with short repeated-header tables. Fatal findings explain the violated contract and observed difference; warnings remain visible beside their timing context. Stage/resource observations accompany each workload. Coverage is summarized by category, phase, test family and skip reason; exact case IDs remain in the result index; individual samples are cleaned after publication. Unavailable or fused stages are described as such, not displayed as zero-cost work. Stage means are computed over the same diagnostic observations and remain additive to their mean lifecycle total; ordinary timing medians are separate.
 
 ### How to interpret common patterns
 

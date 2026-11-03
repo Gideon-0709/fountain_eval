@@ -1,0 +1,496 @@
+//! The single durable Markdown artifact. Raw evidence is a temporary execution workspace.
+use crate::{
+    batch, catalog, evidence, measurement,
+    util::{self, Result},
+    validation,
+};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use flate2::{Compression, read::ZlibDecoder, write::ZlibEncoder};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::{
+    collections::BTreeMap,
+    fs,
+    io::{Read, Write},
+    path::{Path, PathBuf},
+};
+const MARKER: &str = "\n<!-- fountain-eval-result\n";
+const LIMIT: u64 = 64 * 1024 * 1024;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Component {
+    pub component_id: u32,
+    pub run_id: String,
+    pub status: String,
+    pub stage: String,
+    pub validation_count: usize,
+    pub sample_count: usize,
+    pub diagnostic_count: usize,
+    pub diagnostic_summaries: BTreeMap<String, Value>,
+    pub timing: crate::execution::Timing,
+    pub planned_measurements: usize,
+    pub request: crate::protocol::EvaluationRequest,
+    pub quadruple: Option<evidence::Quadruple>,
+    pub plan: Option<catalog::Recipe>,
+    pub build: Option<crate::build::Built>,
+    pub correctness: validation::Report,
+    pub coverage: Value,
+    pub summary: Vec<measurement::Summary>,
+    pub aggregation_error: Option<String>,
+    pub fatal_witnesses: BTreeMap<String, Value>,
+    pub error: Option<String>,
+    pub failure_details: Vec<String>,
+    /// Prepared metadata contains no samples and references immutable cache inputs.
+    pub prepared: Option<evidence::Record>,
+}
+impl Component {
+    pub fn from_record(r: &evidence::Record) -> Result<Self> {
+        if r.status == "succeeded" {
+            evidence::validate_samples(r)?;
+        }
+        let mut correctness = validation::report(r);
+        for w in &mut correctness.warnings {
+            let observations = w
+                .as_object_mut()
+                .unwrap()
+                .remove("measured_observations")
+                .unwrap_or(json!([]));
+            let observations = observations
+                .as_array()
+                .ok_or("invalid warning observations")?;
+            let mut variants = BTreeMap::<String, (Value, usize)>::new();
+            for o in observations {
+                let entry = variants
+                    .entry(util::digest(&o["actual"]))
+                    .or_insert((o["actual"].clone(), 0));
+                entry.1 += 1;
+            }
+            w["measurement_summary"] = json!({"samples":observations.len(),"differing":observations.iter().filter(|v|v["matches_reference"]==false).count(),"variants":variants.into_values().map(|(actual,count)|json!({"actual":actual,"samples":count})).collect::<Vec<_>>()});
+        }
+        let fatal_witnesses = r
+            .validation
+            .iter()
+            .filter(|v| v["severity"] == "fatal" && v["status"] == "passed")
+            .filter_map(|v| {
+                v["case"]
+                    .as_str()
+                    .map(|id| (id.to_owned(), v["witness"].clone()))
+            })
+            .collect();
+        let (summary, aggregation_error) = match measurement::summarize(&r.samples) {
+            Ok(values) => (values, None),
+            Err(error) if r.status != "succeeded" => (Vec::new(), Some(error)),
+            Err(error) => return Err(error),
+        };
+        Ok(Self {
+            component_id: r.configuration.component_id,
+            run_id: r.run_id.clone(),
+            status: r.status.clone(),
+            stage: r.stage.clone(),
+            validation_count: r.validation.len(),
+            sample_count: r.samples.len(),
+            diagnostic_count: r.diagnostics.len(),
+            diagnostic_summaries: aggregate_diagnostics(&r.diagnostics),
+            timing: r.timing.clone(),
+            planned_measurements: r.recipe.as_ref().map_or(0, |p| p.cases.len()),
+            request: r.request.clone(),
+            quadruple: r.quadruple.clone(),
+            plan: r.recipe.clone(),
+            build: r.built.clone(),
+            correctness,
+            coverage: crate::coverage::report(r),
+            summary,
+            aggregation_error,
+            fatal_witnesses,
+            error: r.error.clone(),
+            failure_details: Vec::new(),
+            prepared: (r.status == "prepared").then(|| r.clone()),
+        })
+    }
+    pub fn verify_comparison(&self) -> Result<()> {
+        if self.status != "succeeded" {
+            return Err("not comparable: both runs must have succeeded".into());
+        }
+        let q = self.quadruple.as_ref().ok_or("missing tuple")?;
+        let recipe = catalog::recipe(&self.request.test)?;
+        if q.t != recipe.identity {
+            return Err("test identity collision or different catalog candidate".into());
+        }
+        if !catalog::registered_interface(&q.i, &recipe.identity.id) {
+            return Err("interface identity collision or unavailable interface".into());
+        }
+        if q.e.digest != util::digest(&q.e.conditions) {
+            return Err("environment identity mismatch".into());
+        }
+        let plan = catalog::plan(
+            &self.request.test,
+            &self.request.scheme,
+            q.i.id.split('@').next().unwrap_or(""),
+            self.request.components.scope().map_err(|e| e.to_string())?,
+        )?;
+        if self.plan.as_ref().map(util::digest) != Some(util::digest(&plan)) {
+            return Err("stored test plan differs from its registered content".into());
+        }
+        let cases: std::collections::BTreeSet<_> =
+            self.summary.iter().map(|s| s.case.clone()).collect();
+        if cases.len() != self.summary.len()
+            || cases != plan.cases.iter().cloned().collect()
+            || self.summary.iter().any(|s| {
+                s.samples != plan.repetitions
+                    || s.completed + s.incomplete != s.samples
+                    || s.median_ns == 0
+                    || s.min_ns > s.median_ns
+                    || s.max_ns < s.median_ns
+            })
+        {
+            return Err("invalid or incomplete aggregate result coverage".into());
+        }
+        let expected: std::collections::BTreeSet<_> = plan
+            .checks
+            .iter()
+            .filter(|(_, c)| c.skip.is_none() && c.severity == validation::Severity::Fatal)
+            .map(|(id, _)| id.clone())
+            .collect();
+        if expected != self.fatal_witnesses.keys().cloned().collect()
+            || !self.correctness.fatal_failures.is_empty()
+        {
+            return Err("fatal-check witness coverage is incomplete".into());
+        }
+        Ok(())
+    }
+}
+/// Lossless metric coverage with aggregate values; no per-observation timing array.
+fn aggregate_diagnostics(events: &[Value]) -> BTreeMap<String, Value> {
+    fn fields(path: &str, value: &Value, out: &mut BTreeMap<String, Vec<Value>>) {
+        match value {
+            Value::Object(m) => {
+                for (k, v) in m {
+                    fields(
+                        &format!("{path}/{}", k.replace('~', "~0").replace('/', "~1")),
+                        v,
+                        out,
+                    );
+                }
+            }
+            Value::Array(a) => {
+                for (i, v) in a.iter().enumerate() {
+                    fields(&format!("{path}/{i}"), v, out);
+                }
+            }
+            _ => out.entry(path.into()).or_default().push(value.clone()),
+        }
+    }
+    let mut grouped = BTreeMap::<String, Vec<&Value>>::new();
+    for event in events {
+        grouped
+            .entry(event["case"].as_str().unwrap_or("unidentified").into())
+            .or_default()
+            .push(event);
+    }
+    grouped.into_iter().map(|(case,events)| {
+        let mut values=BTreeMap::new();
+        for event in &events {for key in ["elapsed_ns","observation","resources"] {fields(key,&event[key],&mut values);}}
+        let metrics:BTreeMap<_,_>=values.into_iter().map(|(key,values)| {
+            let value=if let Some(ns)=values.iter().map(Value::as_f64).collect::<Option<Vec<_>>>() {
+                json!({"mean":ns.iter().sum::<f64>()/ns.len()as f64,"min":ns.iter().copied().reduce(f64::min),"max":ns.iter().copied().reduce(f64::max),"n":ns.len()})
+            } else {
+                let mut variants=BTreeMap::<String,(Value,usize)>::new();
+                for v in values {let row=variants.entry(util::digest(&v)).or_insert((v,0));row.1+=1;}
+                json!({"variants":variants.into_values().map(|(value,count)|json!({"value":value,"n":count})).collect::<Vec<_>>()})
+            };(key,value)
+        }).collect();
+        (case,json!({"observations":events.len(),"metrics":metrics}))
+    }).collect()
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Snapshot {
+    pub batch: batch::Record,
+    pub components: Vec<Component>,
+    pub source_seal: String,
+    pub prepared_from: Option<Value>,
+}
+impl Snapshot {
+    pub fn capture(directory: &Path) -> Result<Self> {
+        let batch = batch::load(directory)?;
+        let mut components = Vec::new();
+        for entry in &batch.entries {
+            if let Some(relative) = &entry.directory {
+                let child = directory.join(relative);
+                let record = evidence::load(&child)?;
+                let mut c = Component::from_record(&record)?;
+                if matches!(c.status.as_str(), "failed" | "interrupted") {
+                    for path in util::files(&child.join("logs")).unwrap_or_default() {
+                        let name = path.to_string_lossy();
+                        let relevant = match record.stage.as_str() {
+                            "build" => name.contains("build"),
+                            "validate" => name.starts_with("validate"),
+                            "measure" => {
+                                name.starts_with("measure") || name.starts_with("first-use")
+                            }
+                            "diagnose" => name.starts_with("diagnose"),
+                            _ => true,
+                        };
+                        if relevant && path.extension().is_some_and(|v| v == "stderr") {
+                            let text = fs::read_to_string(child.join("logs").join(&path))
+                                .unwrap_or_default();
+                            if !text.trim().is_empty() {
+                                let lines: Vec<_> = text.lines().collect();
+                                let tail = lines
+                                    .iter()
+                                    .skip(lines.len().saturating_sub(80))
+                                    .copied()
+                                    .collect::<Vec<_>>()
+                                    .join("\n");
+                                c.failure_details.push(format!(
+                                    "{}: last {} of {} lines\n{}",
+                                    path.display(),
+                                    lines.len().min(80),
+                                    lines.len(),
+                                    tail
+                                ));
+                            }
+                        }
+                    }
+                }
+                components.push(c);
+            }
+        }
+        Ok(Self {
+            batch,
+            components,
+            source_seal: util::file_hash(&directory.join("seal.json"))?,
+            prepared_from: if directory.join("prepared-from.json").exists() {
+                Some(util::read_json(&directory.join("prepared-from.json"))?)
+            } else {
+                None
+            },
+        })
+    }
+    fn verify(&self) -> Result<()> {
+        if self.batch.run_id.is_empty()
+            || !self
+                .batch
+                .run_id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        {
+            return Err("invalid report run identity".into());
+        }
+        if self
+            .batch
+            .entries
+            .iter()
+            .map(|e| u128::from(e.elapsed_ns.unwrap_or(0)))
+            .sum::<u128>()
+            > u128::from(self.batch.elapsed_ns)
+        {
+            return Err("invalid batch elapsed time".into());
+        }
+        let parsed = crate::config::Configuration::parse(
+            self.batch.configuration.path.clone(),
+            self.batch.configuration.original.clone(),
+        )?;
+        if util::digest(&parsed) != util::digest(&self.batch.configuration)
+            || parsed.selections.len() != self.batch.entries.len()
+        {
+            return Err("report configuration mismatch".into());
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for c in &self.components {
+            if !seen.insert(c.component_id) {
+                return Err("duplicate component in report".into());
+            }
+            let e = self
+                .batch
+                .entries
+                .iter()
+                .find(|e| e.component_id == c.component_id)
+                .ok_or("unexpected report component")?;
+            if e.status != c.status
+                || e.request != c.request
+                || e.warnings != c.correctness.warnings.len()
+                || e.validation_observations != c.validation_count
+                || e.samples != c.sample_count
+                || e.diagnostics != c.diagnostic_count
+                || c.diagnostic_count
+                    != c.diagnostic_summaries
+                        .values()
+                        .map(|d| d["observations"].as_u64().unwrap_or(0) as usize)
+                        .sum::<usize>()
+                || e.error != c.error
+                || e.skipped != c.coverage["skipped_validation"].as_u64().unwrap_or(0) as usize
+                || e.phases_ns != c.timing.phases_ns
+                || e.elapsed_ns.is_none_or(|n| n < c.timing.elapsed_ns)
+                || (c.aggregation_error.is_none()
+                    && e.samples != c.summary.iter().map(|s| s.samples).sum::<usize>())
+                || (c.status == "succeeded" && c.aggregation_error.is_some())
+            {
+                return Err("report component counts or identity mismatch".into());
+            }
+        }
+        for (entry, selection) in self.batch.entries.iter().zip(&parsed.selections) {
+            if entry.component_id != selection.id
+                || entry.request != selection.request
+                || entry.directory.is_some() != seen.contains(&entry.component_id)
+            {
+                return Err("report selection mismatch".into());
+            }
+        }
+        Ok(())
+    }
+}
+fn encode(body: &str, snapshot: &Snapshot) -> Result<String> {
+    snapshot.verify()?;
+    let mut compressor = ZlibEncoder::new(Vec::new(), Compression::default());
+    serde_json::to_writer(&mut compressor, snapshot).map_err(|e| e.to_string())?;
+    let encoded = STANDARD.encode(compressor.finish().map_err(|e| e.to_string())?);
+    let digest = util::hash(format!("{body}{encoded}"));
+    Ok(format!("{body}{MARKER}{digest}\n{encoded}\n-->\n"))
+}
+fn decode(text: &str) -> Result<(String, Snapshot)> {
+    let (body, index) = text
+        .rsplit_once(MARKER)
+        .ok_or("report has no result index; regenerate it from existing raw evidence")?;
+    let mut lines = index.lines();
+    let digest = lines.next().ok_or("missing report checksum")?;
+    let encoded = lines.next().ok_or("missing report index")?;
+    if lines.next() != Some("-->")
+        || lines.next().is_some()
+        || util::hash(format!("{body}{encoded}")) != digest
+    {
+        return Err("report checksum mismatch".into());
+    }
+    let bytes = STANDARD.decode(encoded).map_err(|e| e.to_string())?;
+    let mut data = Vec::new();
+    ZlibDecoder::new(bytes.as_slice())
+        .take(LIMIT + 1)
+        .read_to_end(&mut data)
+        .map_err(|e| e.to_string())?;
+    if data.len() as u64 > LIMIT {
+        return Err("report index exceeds size limit".into());
+    }
+    let snapshot: Snapshot = serde_json::from_slice(&data).map_err(|e| e.to_string())?;
+    snapshot.verify()?;
+    Ok((body.into(), snapshot))
+}
+pub fn visible_text(text: &str) -> Result<&str> {
+    text.rsplit_once(MARKER)
+        .map(|(body, _)| body)
+        .ok_or("missing report index".into())
+}
+pub fn load(path: &Path) -> Result<(String, Snapshot)> {
+    let path = if path.is_dir() {
+        path.join("report.md")
+    } else {
+        path.into()
+    };
+    let text = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let (_, snapshot) = decode(&text)?;
+    Ok((text, snapshot))
+}
+/// Atomic replacement is explicit; verification failure leaves the existing report intact.
+pub fn publish(
+    directory: &Path,
+    body: &str,
+    snapshot: &Snapshot,
+    replace: bool,
+) -> Result<PathBuf> {
+    if body.trim().is_empty() {
+        return Err("refusing to publish an empty report".into());
+    }
+    fs::create_dir_all(directory).map_err(|e| e.to_string())?;
+    let path = directory.join("report.md");
+    if path.exists() {
+        if !replace {
+            return Err("report already exists".into());
+        }
+        let old = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        if !old.contains(&format!("Run: `{}`", snapshot.batch.run_id)) {
+            return Err("replacement report run identity mismatch".into());
+        }
+    }
+    let text = encode(body, snapshot)?;
+    let temporary = directory.join(format!(".report-{}.tmp", std::process::id()));
+    let result = (|| {
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|e| e.to_string())?;
+        f.write_all(text.as_bytes())
+            .and_then(|_| f.sync_all())
+            .map_err(|e| e.to_string())?;
+        let (_, verified) = load(&temporary)?;
+        if util::digest(&verified) != util::digest(snapshot) {
+            return Err("report round-trip verification failed".into());
+        }
+        if replace {
+            fs::rename(&temporary, &path).map_err(|e| e.to_string())?;
+        } else {
+            fs::hard_link(&temporary, &path).map_err(|e| e.to_string())?;
+            fs::remove_file(&temporary).map_err(|e| e.to_string())?;
+        }
+        fs::File::open(directory)
+            .and_then(|f| f.sync_all())
+            .map_err(|e| e.to_string())?;
+        Ok(path.clone())
+    })();
+    if temporary.exists() {
+        let _ = fs::remove_file(temporary);
+    }
+    result
+}
+/// Delete only the verified source batch; never cache, report, or an unrelated directory.
+pub fn cleanup(raw: &Path, report: &Path) -> Result<()> {
+    if fs::symlink_metadata(raw)
+        .map_err(|e| e.to_string())?
+        .file_type()
+        .is_symlink()
+    {
+        return Err("refusing to clean a symlinked batch".into());
+    }
+    let raw = raw.canonicalize().map_err(|e| e.to_string())?;
+    let report = report.canonicalize().map_err(|e| e.to_string())?;
+    let (_, saved) = load(&report)?;
+    if report.starts_with(&raw)
+        || saved.batch.configuration.run.cache.starts_with(&raw)
+        || raw.file_name().and_then(|v| v.to_str()) != Some(saved.batch.run_id.as_str())
+    {
+        return Err("unsafe report/evidence/cache overlap".into());
+    }
+    if util::file_hash(&raw.join("seal.json"))? != saved.source_seal
+        || util::digest(&batch::load(&raw)?) != util::digest(&saved.batch)
+    {
+        return Err("raw evidence changed after report publication; retained".into());
+    }
+    fs::remove_dir_all(&raw).map_err(|e| {
+        format!(
+            "report saved at {}; raw evidence retained at {}: {e}",
+            report.display(),
+            raw.display()
+        )
+    })
+}
+pub fn select(input: &Path) -> Result<Component> {
+    let text = input.to_str().ok_or("invalid report path")?;
+    let (path, id) = if let Some((path, id)) = text.rsplit_once("#C") {
+        (
+            PathBuf::from(path),
+            Some(id.parse::<u32>().map_err(|_| "invalid C selector")?),
+        )
+    } else {
+        (input.into(), None)
+    };
+    if path.join("result.json").is_file() {
+        return Component::from_record(&evidence::load(&path)?);
+    }
+    let (_, snapshot) = load(&path)?;
+    if id.is_none() && snapshot.components.len() != 1 {
+        return Err("select a component using report.md#C0 (or its configured index)".into());
+    }
+    snapshot
+        .components
+        .into_iter()
+        .find(|c| id.is_none_or(|id| id == c.component_id))
+        .ok_or("report component not found".into())
+}

@@ -233,6 +233,14 @@ pub fn start(configuration: RunConfiguration, prepare_only: bool) -> Result<(Pat
 pub fn from_prepared(prepared: &Path, output: &Path) -> Result<(PathBuf, Record)> {
     process::install_handler()?;
     let old = evidence::load(prepared)?;
+    from_prepared_record(&old, &util::file_hash(&prepared.join("seal.json"))?, output)
+}
+pub fn from_prepared_record(
+    old: &Record,
+    origin: &str,
+    output: &Path,
+) -> Result<(PathBuf, Record)> {
+    process::install_handler()?;
     if old.status != "prepared" {
         return Err("expected a prepared run".into());
     }
@@ -293,7 +301,7 @@ pub fn from_prepared(prepared: &Path, output: &Path) -> Result<(PathBuf, Record)
         util::write_json(&directory.join("configuration.json"), &tuple.e)?;
         util::write_json(
             &directory.join("prepared-from.json"),
-            &json!({"run_id":old.run_id,"seal":util::file_hash(&prepared.join("seal.json"))?}),
+            &json!({"run_id":old.run_id,"seal":origin}),
         )?;
         util::write_json(&directory.join("build.json"), built)?;
         crate::progress::plan(&record);

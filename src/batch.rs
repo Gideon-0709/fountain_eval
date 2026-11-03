@@ -102,16 +102,43 @@ pub fn run(configuration: Configuration, prepare_only: bool) -> Result<(PathBuf,
     execute(configuration, prepare_only, None)
 }
 pub fn from_prepared(path: &Path) -> Result<(PathBuf, Record)> {
-    let old = load(path)?;
+    let (old, components, origin) = if path.is_file() || path.join("report.md").is_file() {
+        let (_, saved) = crate::artifact::load(path)?;
+        let components = saved
+            .components
+            .into_iter()
+            .filter_map(|c| c.prepared.map(|r| (c.component_id, r)))
+            .collect();
+        (saved.batch, components, saved.source_seal)
+    } else {
+        let old = load(path)?;
+        let components = old
+            .entries
+            .iter()
+            .filter(|e| e.status == "prepared")
+            .map(|e| {
+                let child = member(
+                    path,
+                    e.directory.as_ref().ok_or("prepared C has no evidence")?,
+                )?;
+                Ok((e.component_id, evidence::load(&child)?))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        (old, components, util::file_hash(&path.join("seal.json"))?)
+    };
     if old.action != "prepare" {
         return Err("expected a prepared batch".into());
     }
-    execute(old.configuration.clone(), false, Some((path, old)))
+    execute(
+        old.configuration.clone(),
+        false,
+        Some((old, components, origin)),
+    )
 }
 fn execute(
     configuration: Configuration,
     prepare_only: bool,
-    prepared: Option<(&Path, Record)>,
+    prepared: Option<(Record, BTreeMap<u32, evidence::Record>, String)>,
 ) -> Result<(PathBuf, Record)> {
     process::install_handler()?;
     let started = SystemTime::now()
@@ -153,11 +180,11 @@ fn execute(
         configuration,
         entries,
     };
-    if let Some((root, old)) = &prepared {
+    if let Some((old, _, origin)) = &prepared {
         util::write_json(
             &directory.join("prepared-from.json"),
             &serde_json::json!({
-                "run_id":old.run_id,"seal":util::file_hash(&root.join("seal.json"))?,
+                "run_id":old.run_id,"seal":origin,
                 "entries":old.entries
             }),
         )?;
@@ -179,7 +206,7 @@ fn execute(
         crate::progress::component_started(index, record.entries.len(), &record.entries[index]);
         let output = directory.join(format!("C{}", selection.id));
         let started = Instant::now();
-        let result = if let Some((root, old)) = &prepared {
+        let result = if let Some((old, components, origin)) = &prepared {
             let previous = &old.entries[index];
             if previous.status != "prepared" {
                 record.entries[index].error = Some(format!(
@@ -194,14 +221,10 @@ fn execute(
                 checkpoint(&directory, &record)?;
                 continue;
             }
-            let path = member(
-                root,
-                previous
-                    .directory
-                    .as_ref()
-                    .ok_or("prepared C has no evidence directory")?,
-            )?;
-            execution::from_prepared(&path, &output)
+            let old = components
+                .get(&selection.id)
+                .ok_or("prepared C metadata missing")?;
+            execution::from_prepared_record(old, origin, &output)
         } else {
             let mut input = record.configuration.selection(selection);
             input.run.output = output;
@@ -243,11 +266,13 @@ fn execute(
     checkpoint(&directory, &record)?;
     crate::progress::line("REPORT  Writing Markdown report and sealing evidence");
     evidence::seal(&directory)?;
-    crate::report::publish(
-        &report_directory,
-        &crate::report::batch_markdown(&directory, &record)?,
-    )?;
-    Ok((directory, record))
+    let saved = crate::artifact::Snapshot::capture(&directory)?;
+    let mut body = crate::report::batch_markdown(&directory, &record)?;
+    crate::report::failure_logs(&mut body, &saved);
+    let report = crate::artifact::publish(&report_directory, &body, &saved, false)?;
+    crate::artifact::cleanup(&directory, &report)?;
+    crate::progress::line("REPORT  Verified Markdown report; temporary evidence removed");
+    Ok((report, record))
 }
 fn checkpoint(directory: &Path, record: &Record) -> Result<()> {
     fs::write(

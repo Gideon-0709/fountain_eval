@@ -272,7 +272,7 @@ pub fn component_finished(r: &Record) {
         ));
     }
 }
-pub fn summary(r: &batch::Record, evidence: &Path) -> String {
+pub fn summary(r: &batch::Record, report: &Path) -> String {
     let mut text = format!(
         "\nRESULT: {} | {:.1} s\n",
         status(&r.status, r.entries.iter().map(|e| e.warnings).sum()),
@@ -290,16 +290,8 @@ pub fn summary(r: &batch::Record, evidence: &Path) -> String {
     }
     let _ = writeln!(
         text,
-        "\nReport: {}\nEvidence: {}",
-        clean(
-            &r.configuration
-                .report_root()
-                .join(&r.run_id)
-                .join("report.md")
-                .display()
-                .to_string()
-        ),
-        clean(&evidence.display().to_string())
+        "\nReport: {}\nTemporary evidence: cleaned after report verification",
+        clean(&report.display().to_string())
     );
     text
 }

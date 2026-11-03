@@ -102,7 +102,7 @@ fn human_progress_is_default_and_json_stdout_remains_machine_readable() {
     let stdout = String::from_utf8(human.stdout).unwrap();
     let stderr = String::from_utf8(human.stderr).unwrap();
     assert!(stdout.contains("RESULT: COMPLETED WITH FAILURES"));
-    assert!(stdout.contains("Report:") && stdout.contains("Evidence:"));
+    assert!(stdout.contains("Report:") && stdout.contains("Temporary evidence: cleaned"));
     assert!(stderr.contains("C0 [1/2]") && stderr.contains("C1 [2/2]"));
     assert!(stderr.contains("C0 FAILED") && stderr.contains("REPORT  "));
     assert!(
@@ -114,6 +114,24 @@ fn human_progress_is_default_and_json_stdout_remains_machine_readable() {
     assert_eq!(machine.status.code(), Some(4));
     let value: serde_json::Value = serde_json::from_slice(&machine.stdout).unwrap();
     assert_eq!(value["batch"]["entries"].as_array().unwrap().len(), 2);
+    assert!(value.get("run_dir").is_none());
+    let report = std::path::Path::new(value["report"].as_str().unwrap());
+    assert!(report.is_file());
+    assert!(
+        std::fs::read_dir(t.0.join("runs"))
+            .unwrap()
+            .next()
+            .is_none()
+    );
+    let index = cli(&t.0, &["report", report.to_str().unwrap(), "--json"]);
+    assert!(index.status.success());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&index.stdout).unwrap()["components"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
     assert!(
         String::from_utf8(machine.stderr)
             .unwrap()

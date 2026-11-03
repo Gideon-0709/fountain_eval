@@ -53,19 +53,16 @@ def main():
         text = (work / (label + ".stdout")).read_text()
         body = json.loads(text) if text.strip() and arguments[0] not in ["report", "compare"] else {}
         if "batch" in body:
-            batch_dir = Path(body["run_dir"])
-            entries = body["batch"]["entries"]
-            assert len(entries) == 1, "This helper inspects one C; multi-C contracts are in tests/batch.rs"
-            entry = entries[0]
-            assert entry["directory"], entry
-            child = batch_dir / entry["directory"]
             report = Path(body["report"])
+            saved = json.loads(subprocess.check_output([str(cli), "report", str(report), "--json"], text=True))
+            entries = saved["batch"]["entries"]
+            assert len(entries) == 1, "This helper inspects one C; multi-C contracts are in tests/batch.rs"
+            assert len(saved["components"]) == 1
             assert report.stat().st_size > 0 and report.name == "report.md"
             assert list(report.parent.iterdir()) == [report]
-            body = {"batch_dir":str(batch_dir), "batch":body["batch"], "run_dir":str(child), "result":json.loads((child/"result.json").read_text())}
-            for name in ["batch.json", "seal.json"]:
-                assert (batch_dir/name).is_file(), name
-            subprocess.run([str(cli),"report",str(batch_dir)],stdout=subprocess.DEVNULL,check=True)
+            assert not (runs / saved["batch"]["run_id"]).exists(), "Verified reports must clean temporary raw evidence"
+            body = {"report":str(report), "batch":saved["batch"], "result_ref":str(report)+"#C0", "result":saved["components"][0]}
+            subprocess.run([str(cli),"report",str(report)],stdout=subprocess.DEVNULL,check=True)
         row = dict(label=label, exit=code, seconds=round(time.monotonic()-started, 3))
         if "result" in body:
             progress = (work / (label + ".stderr")).read_text()
@@ -77,15 +74,15 @@ def main():
             assert not any(line.startswith("  LIVE") and "/rq/" in line for line in progress.splitlines()), label
             if record["status"] == "succeeded":
                 assert "  ERROR " not in progress and "  FATAL " not in progress, label
-                assert f"DONE  Correctness: {len(record['validation'])}/{len(record['validation'])} checks" in progress, label
-                assert f"DONE  Performance: {len(record['samples'])}/{len(record['samples'])} samples" in progress, label
-                assert f"DONE  Diagnostics: {len(record['diagnostics'])}/{len(record['diagnostics'])} observations" in progress, label
+                assert f"DONE  Correctness: {record['validation_count']}/{record['validation_count']} checks" in progress, label
+                assert f"DONE  Performance: {record['sample_count']}/{record['sample_count']} samples" in progress, label
+                assert f"DONE  Diagnostics: {record['diagnostic_count']}/{record['diagnostic_count']} observations" in progress, label
                 assert sum(line.startswith("  RUN   ") for line in progress.splitlines()) == 4, label
-            if any(event.get("severity") == "fatal" and event.get("status") == "failed" for event in record["validation"]):
+            if any(event.get("severity") == "fatal" and event.get("status") == "failed" for event in record["correctness"]["fatal_failures"]):
                 assert "  FATAL " in progress, label
             if record["status"] in ["failed", "interrupted"]:
                 assert record["error"] and f"Reason: {record['error'].split('; see ', 1)[0].splitlines()[0][:80]}" in progress, label
-            row.update(run=body["run_dir"], status=body["result"]["status"], stage=body["result"]["stage"], error=body["result"].get("error"))
+            row.update(run=body["result_ref"], status=body["result"]["status"], stage=body["result"]["stage"], error=body["result"].get("error"))
         ledger.append(row)
         (work / "ledger.json").write_text(json.dumps(ledger, indent=2)+"\n")
         print(json.dumps(row), flush=True)
@@ -101,11 +98,9 @@ def main():
         if body.get("result", {}).get("status") == "succeeded":
             record = body["result"]
             assert code == 0 and not record["correctness"]["fatal_failures"]
-            assert len(record["samples"]) == len(record["recipe"]["cases"]) * record["recipe"]["repetitions"]
+            assert record["sample_count"] == record["planned_measurements"] * 15
             assert all(c["validation"]["status"] != "not_executed" for c in record["coverage"]["cases"])
-            for name in ["samples.json", "diagnostics.json", "seal.json"]:
-                assert (Path(body["run_dir"]) / name).is_file(), name
-            command(label+"-report", ["report", body["run_dir"]], 0)
+            command(label+"-report", ["report", body["report"]], 0)
             markdown = (work / (label + "-report.stdout")).read_text()
             assert "## 2. Correctness" in markdown and "## 6. Coverage" in markdown
             results[label] = body
@@ -133,7 +128,7 @@ def main():
         for op in ["slab", "simd"]:
             body, _ = run("x86-"+op, ENGINE, OPERATORS+"#"+op, expected=4)
             assert body["result"]["stage"] == "build"
-            log = (Path(body["run_dir"])/"logs/driver-build.stderr").read_text()
+            log = "\n".join(body["result"]["failure_details"])
             assert "E0433" in log and "portable" in log
         print("Verified pinned upstream x86 operator build rejection; engine-only planning covered separately", flush=True)
         return
@@ -158,29 +153,28 @@ def main():
     for scheme in ["rq", "r10"]:
         matching = [v for key, v in results.items() if key.endswith("-"+scheme)]
         for index, other in enumerate(matching):
-            common = set(matching[0]["result"]["recipe"]["cases"]) & set(other["result"]["recipe"]["cases"])
-            command(f"compare-{scheme}-{index}", ["compare", matching[0]["run_dir"], other["run_dir"]], 0 if common else 2)
+            common = {s["case"] for s in matching[0]["result"]["summary"]} & {s["case"] for s in other["result"]["summary"]}
+            command(f"compare-{scheme}-{index}", ["compare", matching[0]["result_ref"], other["result_ref"]], 0 if common else 2)
             if not common:
                 assert "no common measured cases" in (work/f"compare-{scheme}-{index}.stderr").read_text()
-    if arena:command("different-scheme", ["compare", results["public-arena-rq"]["run_dir"], results["public-arena-r10"]["run_dir"]], 2)
+    if arena:command("different-scheme", ["compare", results["public-arena-rq"]["result_ref"], results["public-arena-r10"]["result_ref"]], 2)
 
     if args.reproduction:
         # The frozen run is independent of later changes to a local component.
         first=results["public-arena-rq"]
-        source=json.loads((Path(first["run_dir"])/"sources.json").read_text())["operator"]
         checkout=work/"generated-fixtures/arena"
-        shutil.copytree(source["source"]["root"],checkout)
+        shutil.copytree(args.arena.resolve(),checkout,ignore=shutil.ignore_patterns(".git","target",".fountain-eval"))
         subprocess.run(["git","-C",str(checkout),"init","--quiet"],check=True)
         prepared,_=run("snapshot",ENGINE,f"path:{checkout}",action="prepare",expected=0)
         lib=checkout/"src/lib.rs"
         lib.write_text('compile_error!("changed original after preparation");\n'+lib.read_text())
-        repeated,_=command("prepared-whole-run",["run","--prepared",prepared["batch_dir"]],0)
-        command("prepared-compare",["compare",first["run_dir"],repeated["run_dir"]],0)
+        repeated,_=command("prepared-whole-run",["run","--prepared",prepared["report"]],0)
+        command("prepared-compare",["compare",first["result_ref"],repeated["result_ref"]],0)
         failed,_=run("changed-input",ENGINE,f"path:{checkout}",expected=4)
         assert failed["result"]["stage"]=="build"
-        binary=Path(prepared["result"]["built"]["binary"])
+        binary=Path(prepared["result"]["prepared"]["built"]["binary"])
         with binary.open("ab") as out:out.write(b"corruption fixture")
-        corrupt,_=command("corrupt-cache",["run","--prepared",prepared["batch_dir"]],4)
+        corrupt,_=command("corrupt-cache",["run","--prepared",prepared["report"]],4)
         assert "checksum" in corrupt["result"]["error"]
 
     if args.faults:
@@ -209,11 +203,11 @@ def main():
         run("unknown-test",ENGINE,fallback,test="9.0.0",expected=3)
         run("unknown-scheme",ENGINE,fallback,scheme="missing",expected=3)
 
-    registered=set(attempts[0]["result"]["recipe"]["checks"])
-    planned=[body["result"] for body in attempts if body["result"].get("built") and body["result"].get("recipe")]
-    applicable={case for r in planned for case,c in r["recipe"]["checks"].items() if c["skip"] is None}
-    reached={v["case"] for body in attempts for v in body["result"]["validation"]}
-    positive={v["case"] for body in attempts for v in body["result"]["validation"] if v["status"]=="passed" or v["severity"]=="warning"}
+    planned=[body["result"] for body in attempts if body["result"].get("coverage",{}).get("cases")]
+    registered={c["case"] for c in planned[0]["coverage"]["cases"]}
+    applicable={c["case"] for r in planned for c in r["coverage"]["cases"] if c["validation"]["status"] != "skipped"}
+    reached={c["case"] for r in planned for c in r["coverage"]["cases"] if c["validation"]["status"] in ["passed","failed"]}
+    positive={c["case"] for r in planned for c in r["coverage"]["cases"] if c["validation"]["status"] == "passed" or (c["validation"]["status"] == "failed" and c["validation"].get("severity") == "warning")}
     (work/"reachability.json").write_text(json.dumps({"registered":len(registered),"reached":len(reached),"passed_or_warning":len(positive),"applicable_not_executed":sorted(applicable-reached),"applicable_without_positive_evidence":sorted(applicable-positive),"inapplicable_for_all_selected_integrations":sorted(registered-applicable),"note":"Fatal-blocked cases are coverage gaps, not passes; outside-domain rows remain explicit applicability exclusions"},indent=2)+"\n")
     print(f"Framework acceptance finished; inspect ledger and reachability for component failures and coverage gaps: {work}",flush=True)
 

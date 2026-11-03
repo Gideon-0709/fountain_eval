@@ -62,7 +62,9 @@ fn title(s: &str) -> String {
 }
 fn table(out: &mut String, headers: &[&str], rows: Vec<Vec<String>>) {
     for chunk in rows.chunks(PAGE) {
-        out.push('\n');
+        if !out.ends_with("\n\n") {
+            out.push('\n');
+        }
         let _ = writeln!(out, "| {} |", headers.join(" | "));
         let _ = writeln!(out, "| {} |", vec!["---"; headers.len()].join(" | "));
         for row in chunk {
@@ -74,16 +76,6 @@ fn table(out: &mut String, headers: &[&str], rows: Vec<Vec<String>>) {
         }
         out.push('\n');
     }
-}
-fn link(path: &Path) -> String {
-    path.to_string_lossy()
-        .replace('%', "%25")
-        .replace(' ', "%20")
-        .replace('#', "%23")
-        .replace('(', "%28")
-        .replace(')', "%29")
-        .replace('<', "%3C")
-        .replace('>', "%3E")
 }
 /// Reserve a unique report directory before expensive execution. Never overwrite another run.
 pub fn reserve(root: &Path, id: &str) -> Result<PathBuf> {
@@ -181,15 +173,115 @@ fn explanation(r: &Record) -> String {
         );
     }
     if let Some(error) = &r.error {
-        return error.clone();
+        return error.split("; see ").next().unwrap_or(error).to_owned();
     }
     match r.status.as_str() {
-        "succeeded" => "All applicable checks passed; review warnings and skipped coverage".into(),
+        "succeeded" => "All applicable work completed; review warnings and skipped coverage".into(),
         "prepared" => {
             "Build and capability checks completed; correctness and measurements not executed"
                 .into()
         }
         _ => format!("Execution ended at {}", r.stage),
+    }
+}
+fn highlights(out: &mut String, records: &[(u32, Record)]) {
+    out.push_str("## Key findings\n\n");
+    table(
+        out,
+        &[
+            "C",
+            "Outcome",
+            "Checks / warnings",
+            "Measured cases / samples",
+            "Main finding",
+        ],
+        records
+            .iter()
+            .map(|(id, r)| {
+                let finding = if let Some(f) = r.correctness.fatal_failures.first() {
+                    format!(
+                        "Fatal: {}; later work stopped",
+                        f["case"].as_str().unwrap_or("execution integrity")
+                    )
+                } else if let Some(error) = &r.error {
+                    error.split("; see ").next().unwrap_or(error).to_owned()
+                } else if r.status == "prepared" {
+                    "Inputs frozen; measurement not started".into()
+                } else if !r.correctness.warnings.is_empty() {
+                    "Applicable work completed with semantic warnings".into()
+                } else {
+                    "Applicable work completed".into()
+                };
+                vec![
+                    format!("C{id}"),
+                    if r.status == "succeeded" && !r.correctness.warnings.is_empty() {
+                        "passed with warnings".into()
+                    } else {
+                        r.status.clone()
+                    },
+                    format!("{} / {}", r.validation.len(), r.correctness.warnings.len()),
+                    if r.samples.is_empty() {
+                        "Not measured".into()
+                    } else {
+                        format!("{} / {}", r.summary.len(), r.samples.len())
+                    },
+                    finding,
+                ]
+            })
+            .collect(),
+    );
+    for (id, r) in records {
+        if r.status != "succeeded" {
+            continue;
+        }
+        let noisy = r
+            .summary
+            .iter()
+            .filter(|s| s.coefficient_of_variation > 0.10)
+            .count();
+        let _ = writeln!(
+            out,
+            "C{id}: {noisy}/{} measured cases have CV above 10%; this flags dispersion, not failure. No baseline is selected, so this report makes no improvement/regression claim.\n",
+            r.summary.len()
+        );
+        let key: Vec<_> = r
+            .summary
+            .iter()
+            .filter(|s| {
+                if s.case.starts_with("chain/plan-build/") {
+                    return true;
+                }
+                let Some(check) = r.recipe.as_ref().and_then(|p| p.check(&s.case)) else {
+                    return false;
+                };
+                let c = &check.spec;
+                [512, 5008].contains(&c.k)
+                    && [128, 1016].contains(&c.width)
+                    && c.seed == crate::content::SEEDS[0]
+                    && ((c.workload == "encode-repairs" && c.repairs == 8)
+                        || c.workload == "round-trip"
+                        || (c.workload == "decode"
+                            && c.missing == c.k.div_ceil(10)
+                            && c.order == "source-first"))
+            })
+            .collect();
+        if !key.is_empty() {
+            out.push_str("Planning and codec overview: K=512/5008, b=128/1016, first registered seed; 8 repairs for encoding, 10% missing sources for recovery. Plan-only rows also include K=64. All other cases are in the category details.\n\n");
+            table(
+                out,
+                &["Case", "Median ns", "Source Gbit/s", "CV %"],
+                key.iter()
+                    .map(|s| {
+                        vec![
+                            s.case.clone(),
+                            s.median_ns.to_string(),
+                            number(s.source_payload_gbps),
+                            format!("{:.2}", s.coefficient_of_variation * 100.0),
+                        ]
+                    })
+                    .collect(),
+            );
+        }
     }
 }
 fn intro(out: &mut String) {
@@ -222,6 +314,7 @@ pub fn batch_markdown(directory: &Path, batch: &crate::batch::Record) -> Result<
             batch.entries.len()
         );
     }
+    highlights(&mut out, &records);
     intro(&mut out);
     out.push_str("## 1. Components and outcomes\n");
     table(
@@ -291,27 +384,23 @@ pub fn batch_markdown(directory: &Path, batch: &crate::batch::Record) -> Result<
     );
     sections(&mut out, &records);
     out.push_str("## 7. Execution time and reproducibility\n\nWall time includes component resolution, builds, validation, measurement, diagnostics and evidence processing. It is not a codec latency. Failed entries show time to failure. The batch total includes sequential child invocations and checkpoints, excluding its own final seal and Markdown publication.\n");
+    let mut environments = BTreeMap::new();
     for (id, r) in &records {
-        provenance(&mut out, *id, r);
-    }
-    out.push_str("### Evidence locations\n\nThis Markdown file is the complete human-readable report. Raw samples, exact per-case coverage, locks and logs remain in the sealed evidence directories below; they are not additional reports. Moving this file does not remove its tables, findings or diagnostic explanations.\n\n");
-    let _ = writeln!(
-        out,
-        "- Batch evidence: [batch.json]({})",
-        link(&directory.join("batch.json"))
-    );
-    for e in &batch.entries {
-        if let Some(p) = &e.directory {
-            let _ = writeln!(
-                out,
-                "- C{}: [result]({}), [coverage]({}), [logs]({}).",
-                e.component_id,
-                link(&directory.join(p).join("result.json")),
-                link(&directory.join(p).join("coverage.json")),
-                link(&directory.join(p).join("logs"))
-            );
+        let previous = r
+            .quadruple
+            .as_ref()
+            .and_then(|q| environments.get(&q.e.digest).copied());
+        let _ = writeln!(
+            out,
+            "<details>\n<summary>C{id}: inputs, identity and environment</summary>\n"
+        );
+        provenance(&mut out, *id, r, previous);
+        out.push_str("</details>\n\n");
+        if let Some(q) = &r.quadruple {
+            environments.entry(q.e.digest.clone()).or_insert(*id);
         }
     }
+    out.push_str("### Result retention\n\nThis file contains the complete result summary and a checksummed machine-readable result index for `report`, `compare` and prepared execution. Raw logs and individual samples are temporary and are removed only after this file has been published and verified. The build cache is retained. Aggregate statistics cannot be recomputed from individual samples after cleanup.\n\n");
     Ok(out)
 }
 pub fn markdown(r: &Record) -> String {
@@ -322,6 +411,7 @@ pub fn markdown(r: &Record) -> String {
         cell(&r.status),
         cell(&r.stage)
     );
+    highlights(&mut out, &[(r.configuration.component_id, r.clone())]);
     intro(&mut out);
     out.push_str("## 1. Components and outcomes\n");
     table(
@@ -335,7 +425,7 @@ pub fn markdown(r: &Record) -> String {
     );
     sections(&mut out, &[(r.configuration.component_id, r.clone())]);
     out.push_str("## 7. Execution time and reproducibility\n\n");
-    provenance(&mut out, r.configuration.component_id, r);
+    provenance(&mut out, r.configuration.component_id, r, None);
     out
 }
 fn sections(out: &mut String, records: &[(u32, Record)]) {
@@ -368,16 +458,25 @@ fn sections(out: &mut String, records: &[(u32, Record)]) {
         let _ = writeln!(out, "### C{id}: correctness details\n");
         correctness(out, r);
     }
-    out.push_str("## 3. Individual operations\n\nEach row measures a prepared public call across independently initialized instances. `ns/call` divides the ordinary sample median by its call count. Gbit/s, when defined, uses logical bytes; it is not physical memory bandwidth. Direct and execute paths remain separate.\n");
+    out.push_str("## 3. Individual operations\n\nTable key: K = source symbols; b = bytes per symbol; m = missing sources; r = repairs; s = seed. Timing columns use nanoseconds; CV is standard deviation / mean. A dash is undefined, not zero. Each short table repeats its header. Sample counts, completion counts and worker medians remain available in the result index and expanded statistics below.\n\nEach row measures a prepared public call across independently initialized instances. `ns/call` divides the ordinary sample median by its call count. Gbit/s, when defined, uses logical bytes; it is not physical memory bandwidth. Direct and execute paths remain separate.\n");
     performance(out, records, "operation");
-    out.push_str("## 4. Execution chains and encoding plans\n\nPlan construction and export are independent chain workloads. Recorded replay measures the captured operation sequence, excluding solving and sequence capture. Encoding and decoding chains also provide separate stage observations where supported.\n");
+    out.push_str("## 4. Execution chains and encoding plans\n\nPlan construction and export are independent chain workloads. Recorded replay measures the captured operation sequence, excluding solving and sequence capture. Diagnostic values are means from separate instrumented processes; exclusive stage means plus unattributed time equal their lifecycle mean, not the ordinary median. Nested counters belong to their parent stages. Instrumentation differences include process variation; allocation growth can include retained output.\n");
     performance(out, records, "chain");
     out.push_str("## 5. Integrated workflows\n\nThese timings cover the selected complete public workflow through owned output. Source Gbit/s = source payload bytes × 8 / elapsed ns; repair Gbit/s uses actual repair output bytes. An incomplete recovery has no successful source throughput. Lifecycle cases include release; output-ready cases end before release. Continuous cases measure the whole configured block sequence.\n");
     performance(out, records, "workflow");
     out.push_str("## 6. Coverage and explicit skips\n\nEvery registered case is accounted for. Validation, ordinary measurement and diagnostic eligibility are different. `not_executed` means applicable work was not reached; `skipped` records a known applicability reason; `not_applicable` means the case does not define that kind of observation. Counts are grouped by test family and reason. Exact case IDs remain in coverage.json.\n");
     for (id, r) in records {
         let _ = writeln!(out, "### C{id}: coverage\n");
-        coverage(out, r);
+        let coverage = crate::coverage::report(r);
+        let _ = writeln!(
+            out,
+            "Registered cases: {}; validation skips: {}; measurement skips: {}.\n\n<details>\n<summary>Coverage by category, phase and reason</summary>\n",
+            coverage["registered_cases"],
+            coverage["skipped_validation"],
+            coverage["skipped_measurement"]
+        );
+        self::coverage(out, r);
+        out.push_str("</details>\n\n");
     }
 }
 fn correctness(out: &mut String, r: &Record) {
@@ -421,6 +520,20 @@ fn correctness(out: &mut String, r: &Record) {
             {
                 let _ = writeln!(out, "Contract: {}.\n", cell(&check.description));
             }
+            let measured = events
+                .iter()
+                .filter(|e| {
+                    e["measured_observations"]
+                        .as_array()
+                        .is_some_and(|v| !v.is_empty())
+                })
+                .count();
+            let _ = writeln!(
+                out,
+                "{} cases measured; {} not measured.\n\n<details>\n<summary>Case-specific expected/observed results</summary>\n",
+                measured,
+                events.len() - measured
+            );
             table(
                 out,
                 &[
@@ -438,6 +551,7 @@ fn correctness(out: &mut String, r: &Record) {
                             .unwrap_or_default();
                         let repeated = e["measured_observations"].as_array();
                         let observed = repeated
+                            .filter(|xs| !xs.is_empty())
                             .map(|xs| {
                                 let mut text = format!(
                                     "{}/{} samples differ",
@@ -460,7 +574,7 @@ fn correctness(out: &mut String, r: &Record) {
                                 }
                                 text
                             })
-                            .unwrap_or_else(|| "No measured boundary observation".into());
+                            .unwrap_or_else(|| "Not measured".into());
                         vec![
                             short_case(e["case"].as_str().unwrap_or("unknown"), &group),
                             format!("{}; {}", operations, string(&e["details"]["dispatch"])),
@@ -470,6 +584,7 @@ fn correctness(out: &mut String, r: &Record) {
                     })
                     .collect(),
             );
+            out.push_str("</details>\n\n");
         }
     }
 }
@@ -503,23 +618,32 @@ fn difference(expected: &Value, actual: &Value) -> String {
         );
     }
     if let (Some(a), Some(b)) = (expected["symbols"].as_array(), actual["symbols"].as_array()) {
-        let changed: Vec<_> = a
-            .iter()
-            .filter_map(|e| {
-                let got = b.iter().find(|v| v["id"] == e["id"]);
-                if got == Some(e) {
-                    None
-                } else {
-                    Some(format!(
-                        "symbol {}: expected prefix {}, observed {}",
-                        e["id"],
-                        string(&e["prefix"]),
-                        got.map(|v| string(&v["prefix"]))
-                            .unwrap_or_else(|| "absent".into())
-                    ))
-                }
-            })
-            .collect();
+        let changed: Vec<_> =
+            a.iter()
+                .filter_map(|e| {
+                    let got = b.iter().find(|v| v["id"] == e["id"]);
+                    if got == Some(e) {
+                        None
+                    } else {
+                        let detail = got
+                            .and_then(|got| {
+                                let a = e["prefix"].as_array()?;
+                                let b = got["prefix"].as_array()?;
+                                a.iter().zip(b).enumerate().find(|(_, (a, b))| a != b).map(
+                                    |(i, (a, b))| format!("byte {i}: expected {a}, observed {b}"),
+                                )
+                            })
+                            .unwrap_or_else(|| {
+                                if got.is_none() {
+                                    "absent".into()
+                                } else {
+                                    "stored prefix or state hash differs".into()
+                                }
+                            });
+                        Some(format!("symbol {}: {detail}", e["id"]))
+                    }
+                })
+                .collect();
         if changed.is_empty() {
             return "Stored prefixes match; full-state hashes differ or extra symbols were returned".into();
         }
@@ -533,7 +657,7 @@ fn difference(expected: &Value, actual: &Value) -> String {
                 .collect::<Vec<_>>()
                 .join("; "),
             if changed.len() > 2 {
-                "; remaining differences in raw evidence"
+                "; additional differences retained in the result index"
             } else {
                 ""
             }
@@ -608,7 +732,7 @@ fn finding(out: &mut String, r: &Record, event: &Value, fatal: bool) {
     if !message.is_empty() {
         let _ = writeln!(
             out,
-            "Diagnostic message:\n\n> {}\n",
+            "<details>\n<summary>Original diagnostic message</summary>\n\n> {}\n\n</details>\n",
             message.lines().map(cell).collect::<Vec<_>>().join("\n> ")
         );
     }
@@ -639,25 +763,28 @@ fn short_case(case: &str, prefix: &str) -> String {
         .into()
 }
 fn performance(out: &mut String, records: &[(u32, Record)], category: &str) {
-    out.push_str("Table key: K = source symbols; b = bytes per symbol; m = missing sources; r = repair count; s = seed. CV is standard deviation / mean, shown as a percentage. Tables repeat headers every 12 rows. A dash means no metric is defined, not zero.\n\n");
     for (id, r) in records {
         let _ = writeln!(
             out,
             "### C{id}: {}\n",
             CATEGORIES.iter().find(|(c, _)| *c == category).unwrap().1
         );
-        if r.status != "succeeded" {
+        let partial;
+        let summaries = if r.status != "succeeded" {
             let _ = writeln!(
                 out,
-                "No accepted performance summary: **{}** at **{}**. {} raw samples retained across all categories.\n",
+                "No accepted performance summary: **{}** at **{}**. {} samples recorded before termination; no accepted aggregate.\n",
                 cell(&r.status),
                 cell(&r.stage),
                 r.samples.len()
             );
-            continue;
-        }
+            partial = crate::measurement::summarize(&r.samples).unwrap_or_default();
+            &partial
+        } else {
+            &r.summary
+        };
         let mut groups = BTreeMap::<String, Vec<&Summary>>::new();
-        for row in &r.summary {
+        for row in summaries {
             if row.case.starts_with(&format!("{category}/")) {
                 groups.entry(group(&row.case)).or_default().push(row);
             }
@@ -688,87 +815,73 @@ fn performance(out: &mut String, records: &[(u32, Record)], category: &str) {
                 title(prefix.split('/').nth(1).unwrap_or(&prefix)),
                 cell(&prefix)
             );
-            for chunk in rows.chunks(PAGE) {
-                out.push_str("**Ordinary elapsed time and dispersion**\n");
-                table(
+            let counts: std::collections::BTreeSet<_> =
+                rows.iter().map(|s| (s.completed, s.samples)).collect();
+            let _ = writeln!(
+                out,
+                "<details>\n<summary>{} cases: timing, rates and dispersion</summary>\n",
+                rows.len()
+            );
+            if counts.len() == 1 {
+                let (done, total) = counts.iter().next().unwrap();
+                let _ = writeln!(
                     out,
-                    &[
-                        "Case suffix",
-                        "Median ns",
-                        "Min–max ns",
-                        "CV %",
-                        "Samples",
-                        "Worker medians ns",
-                    ],
-                    chunk
-                        .iter()
-                        .map(|s| {
-                            vec![
-                                short_case(&s.case, &prefix),
-                                s.median_ns.to_string(),
-                                format!("{}–{}", s.min_ns, s.max_ns),
-                                format!("{:.2}", 100.0 * s.coefficient_of_variation),
-                                s.samples.to_string(),
-                                s.worker_medians_ns
-                                    .iter()
-                                    .map(|(w, n)| format!("{w}: {n}"))
-                                    .collect::<Vec<_>>()
-                                    .join("; "),
-                            ]
-                        })
-                        .collect(),
+                    "Every case: {total} samples; {done} completed, {} incomplete.\n",
+                    total - done
                 );
-                out.push_str("**Work-normalized rates and completion**\n");
-                if category == "operation" {
-                    table(
-                        out,
-                        &[
-                            "Case suffix",
-                            "ns/call",
-                            "Million calls/s",
-                            "Logical Gbit/s",
-                            "Completed/incomplete",
-                        ],
-                        chunk
-                            .iter()
-                            .map(|s| {
-                                vec![
-                                    short_case(&s.case, &prefix),
-                                    number(s.ns_per_operation),
-                                    number(s.operations_per_second.map(|v| v / 1e6)),
-                                    number(s.source_payload_gbps),
-                                    format!("{}/{}", s.completed, s.incomplete),
-                                ]
-                            })
-                            .collect(),
-                    );
-                } else {
-                    table(
-                        out,
-                        &[
-                            "Case suffix",
-                            "Source Gbit/s",
-                            "Repair Gbit/s",
-                            "Plans/s",
-                            "ns/replayed call",
-                            "Completed/incomplete",
-                        ],
-                        chunk
-                            .iter()
-                            .map(|s| {
-                                vec![
-                                    short_case(&s.case, &prefix),
-                                    number(s.source_payload_gbps),
-                                    number(s.repair_output_gbps),
-                                    number(s.plans_per_second),
-                                    number(s.ns_per_operation),
-                                    format!("{}/{}", s.completed, s.incomplete),
-                                ]
-                            })
-                            .collect(),
-                    );
-                }
             }
+            table(
+                out,
+                &[
+                    "Case suffix",
+                    "Median [min–max] ns",
+                    "CV %; mean ± SD ns",
+                    "Work-normalized rate",
+                    "Worker medians ns",
+                ],
+                rows.iter()
+                    .map(|s| {
+                        let mut rate = if category == "operation" {
+                            format!(
+                                "{} ns/call; {} Gbit/s",
+                                number(s.ns_per_operation),
+                                number(s.source_payload_gbps)
+                            )
+                        } else if let Some(p) = s.plans_per_second {
+                            format!("{p:.3} plans/s")
+                        } else {
+                            format!(
+                                "{} source; {} repair Gbit/s{}",
+                                number(s.source_payload_gbps),
+                                number(s.repair_output_gbps),
+                                s.ns_per_operation
+                                    .map(|n| format!("; {n:.3} ns/call"))
+                                    .unwrap_or_default()
+                            )
+                        };
+                        if counts.len() != 1 {
+                            let _ = write!(rate, "; {}/{} complete", s.completed, s.samples);
+                        }
+                        vec![
+                            short_case(&s.case, &prefix),
+                            format!("{} [{}–{}]", s.median_ns, s.min_ns, s.max_ns),
+                            format!(
+                                "{:.2}; {:.1} ± {:.1}",
+                                s.coefficient_of_variation * 100.0,
+                                s.mean_ns,
+                                s.stddev_ns
+                            ),
+                            rate,
+                            s.worker_medians_ns
+                                .iter()
+                                .map(|(w, n)| format!("{w}:{n}"))
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                        ]
+                    })
+                    .collect(),
+            );
+            out.push_str("</details>\n\n");
             if category != "operation" {
                 diagnostics(out, r, &prefix);
             }
@@ -799,6 +912,9 @@ fn flatten(prefix: &str, v: &Value, fields: &mut BTreeMap<String, Vec<Value>>) {
                 );
             }
         }
+        Value::Array(xs) if xs.iter().all(|x| !x.is_array() && !x.is_object()) => {
+            fields.entry(prefix.into()).or_default().push(v.clone());
+        }
         Value::Array(xs) => {
             for (i, x) in xs.iter().enumerate() {
                 flatten(&format!("{prefix} / item {}", i + 1), x, fields);
@@ -809,223 +925,146 @@ fn flatten(prefix: &str, v: &Value, fields: &mut BTreeMap<String, Vec<Value>>) {
     }
 }
 fn diagnostics(out: &mut String, r: &Record, prefix: &str) {
-    let mut by_case = BTreeMap::<String, Vec<&Value>>::new();
+    let mut cases = BTreeMap::<String, BTreeMap<String, Vec<Value>>>::new();
     for d in &r.diagnostics {
         let case = d["case"].as_str().unwrap_or("");
-        if group(case) == prefix {
-            by_case.entry(case.into()).or_default().push(d);
+        if group(case) != prefix {
+            continue;
+        }
+        let fields = cases.entry(case.into()).or_default();
+        fields
+            .entry("Instrumented elapsed ns".into())
+            .or_default()
+            .push(d["elapsed_ns"].clone());
+        flatten("Work", &d["observation"], fields);
+        flatten("Allocator", &d["resources"], fields);
+        let stages = &d["observation"]["stages"];
+        if let Some(exclusive) = stages["exclusive_ns"].as_object() {
+            let mut sum = 0.0;
+            for (name, value) in exclusive {
+                sum += value.as_f64().unwrap_or(0.0);
+                fields
+                    .entry(format!("Stage / {} ns", title(name)))
+                    .or_default()
+                    .push(value.clone());
+            }
+            for name in ["total_ns", "unattributed_ns"] {
+                fields
+                    .entry(format!("Stage / {}", title(name)))
+                    .or_default()
+                    .push(stages[name].clone());
+            }
+            let residual = stages["total_ns"].as_f64().unwrap_or(0.0)
+                - sum
+                - stages["unattributed_ns"].as_f64().unwrap_or(0.0);
+            fields
+                .entry("Stage / partition residual ns".into())
+                .or_default()
+                .push(Value::from(residual));
+        }
+        if let Some(blocks) = d["observation"]["block_timeline"].as_array() {
+            for (index, block) in blocks.iter().enumerate() {
+                for (label, start, end) in [
+                    (
+                        "start to ready",
+                        block["start_ns"].as_f64(),
+                        block["output_ready_ns"].as_f64(),
+                    ),
+                    (
+                        "ready to release",
+                        block["output_ready_ns"].as_f64(),
+                        block["release_boundary_ns"].as_f64(),
+                    ),
+                    (
+                        "previous release to start",
+                        index
+                            .checked_sub(1)
+                            .and_then(|i| blocks[i]["release_boundary_ns"].as_f64()),
+                        block["start_ns"].as_f64(),
+                    ),
+                ] {
+                    if let (Some(start), Some(end)) = (start, end) {
+                        fields
+                            .entry(format!(
+                                "Continuity / worker {} / {label} ns",
+                                string(&d["worker"])
+                            ))
+                            .or_default()
+                            .push(Value::from(end - start));
+                    }
+                }
+            }
         }
     }
-    if by_case.is_empty() {
-        out.push_str("No separate diagnostic observation for this group; see coverage.\n\n");
+    if cases.is_empty() {
         return;
     }
-    out.push_str("**Stage, work and resource observations**\n\nThese use separate instrumented processes. Stage values below are arithmetic means over the same diagnostic observations, so exclusive stage means + unattributed mean equal the mean lifecycle total (subject to display rounding). They do not sum to the ordinary timing median. Nested internal counters are already included in their parent stage. Allocation growth includes retained output and is not proof of a leak.\n\n");
-    let mut common_notes = BTreeMap::<(String, String), usize>::new();
-    let diagnostic_case_count = by_case.len();
-    for (case, items) in by_case {
-        let _ = writeln!(
-            out,
-            "##### {}\n\n{} diagnostic observations.\n",
-            cell(&short_case(&case, prefix)),
-            items.len()
-        );
-        let mut stages = BTreeMap::<String, Vec<f64>>::new();
-        let mut totals = Vec::new();
-        let mut residuals = Vec::new();
-        for d in &items {
-            let s = &d["observation"]["stages"];
-            if let Some(m) = s["exclusive_ns"].as_object() {
-                for (k, v) in m {
-                    if let Some(n) = v.as_f64() {
-                        stages.entry(k.clone()).or_default().push(n);
-                    }
-                }
-                if let Some(n) = s["total_ns"].as_f64() {
-                    totals.push(n);
-                }
-                if let Some(n) = s["unattributed_ns"].as_f64() {
-                    residuals.push(n);
-                }
-            }
-        }
-        if !totals.is_empty() && totals.len() == items.len() && residuals.len() == items.len() {
-            let total = mean(&totals);
-            let mut rows: Vec<_> = stages
-                .iter()
-                .map(|(name, values)| {
-                    vec![
-                        title(name),
-                        format!("{:.1}", values.iter().sum::<f64>() / items.len() as f64),
-                        format!(
-                            "{:.2}%",
-                            values.iter().sum::<f64>() / items.len() as f64 / total * 100.0
-                        ),
-                    ]
-                })
-                .collect();
-            rows.push(vec![
-                "Unattributed interval".into(),
-                format!("{:.1}", mean(&residuals)),
-                format!("{:.2}%", mean(&residuals) / total * 100.0),
-            ]);
-            rows.push(vec![
-                "Lifecycle total".into(),
-                format!("{total:.1}"),
-                "100%".into(),
-            ]);
-            table(
-                out,
-                &["Exclusive stage", "Mean ns", "Lifecycle share"],
-                rows,
-            );
-            let sum = stages
-                .values()
-                .map(|v| v.iter().sum::<f64>() / items.len() as f64)
-                .sum::<f64>()
-                + mean(&residuals);
-            let _ = writeln!(
-                out,
-                "Partition check: sum {:.1} ns; total {:.1} ns; residual {:.1} ns.\n",
-                sum,
-                total,
-                total - sum
-            );
-            if let Some((name, values)) = stages
-                .iter()
-                .filter(|(n, _)| !n.contains("overhead") && !n.contains("complete"))
-                .max_by(|(_, a), (_, b)| a.iter().sum::<f64>().total_cmp(&b.iter().sum::<f64>()))
-            {
-                let _ = writeln!(
-                    out,
-                    "Largest observed stage: **{}**, {:.1}% of the diagnostic lifecycle. This is a candidate for investigation, not an isolated causal explanation or a promised speedup.\n",
-                    cell(&title(name)),
-                    values.iter().sum::<f64>() / items.len() as f64 / total * 100.0
-                );
-            }
-        }
-        let diagnostic_times: Vec<_> = items
-            .iter()
-            .filter_map(|d| d["elapsed_ns"].as_f64())
-            .collect();
-        if let Some(ordinary) = r.summary.iter().find(|s| s.case == case)
-            && !diagnostic_times.is_empty()
-        {
-            let diagnostic_mean = mean(&diagnostic_times);
-            let _ = writeln!(
-                out,
-                "Instrumented workload mean: {:.1} ns; ordinary median: {} ns; observed difference: {:+.2}%. This includes instrumentation and between-process variation; it is not a correction factor.\n",
-                diagnostic_mean,
-                ordinary.median_ns,
-                (diagnostic_mean / ordinary.median_ns as f64 - 1.0) * 100.0
-            );
-        }
-        let mut fields = BTreeMap::new();
-        for d in &items {
-            flatten("Work", &d["observation"], &mut fields);
-            flatten("Allocator", &d["resources"], &mut fields);
-        }
-        let mut numbers = Vec::new();
-        for (name, values) in fields {
-            let numeric: Option<Vec<f64>> = values.iter().map(Value::as_f64).collect();
-            if let Some(values) = numeric {
-                let min = values.iter().copied().reduce(f64::min).unwrap();
-                let max = values.iter().copied().reduce(f64::max).unwrap();
-                numbers.push(vec![
-                    title(&name),
-                    format!("{:.1}", mean(&values)),
-                    format!("{min:.0}–{max:.0}"),
-                    values.len().to_string(),
-                ]);
+    out.push_str("<details>\n<summary>Stage, work and resource details</summary>\n\nNumeric cells: mean [min–max; n]; a single number means all n observations agree. Stage partition residual must be zero before rounding. Continuity intervals are local to each worker.\n\n");
+    fn metric(values: &[Value]) -> String {
+        if let Some(numbers) = values.iter().map(Value::as_f64).collect::<Option<Vec<_>>>() {
+            let min = numbers.iter().copied().reduce(f64::min).unwrap_or(0.0);
+            let max = numbers.iter().copied().reduce(f64::max).unwrap_or(0.0);
+            if min == max {
+                format!("{min:.1} (n={})", numbers.len())
             } else {
-                let mut values: Vec<_> = values.iter().map(string).collect();
-                values.sort();
-                values.dedup();
-                *common_notes
-                    .entry((title(&name), values.join("; ")))
-                    .or_default() += 1;
+                format!(
+                    "{:.1} [{min:.1}–{max:.1}; n={}]",
+                    mean(&numbers),
+                    numbers.len()
+                )
             }
-        }
-        out.push_str("Work, instruction mix, nested counters and allocation statistics (counts/bytes/ns as named; not additional exclusive stages):\n");
-        table(out, &["Metric", "Mean", "Min–max", "Observations"], numbers);
-        let mut timeline = Vec::new();
-        for d in &items {
-            if let Some(blocks) = d["observation"]["block_timeline"].as_array() {
-                let mut ready = Vec::new();
-                let mut release = Vec::new();
-                let mut gaps = Vec::new();
-                for (index, b) in blocks.iter().enumerate() {
-                    if let (Some(start), Some(end)) =
-                        (b["start_ns"].as_f64(), b["output_ready_ns"].as_f64())
-                    {
-                        ready.push(end - start);
-                    }
-                    if let (Some(start), Some(end)) = (
-                        b["output_ready_ns"].as_f64(),
-                        b["release_boundary_ns"].as_f64(),
-                    ) {
-                        release.push(end - start);
-                    }
-                    if index > 0
-                        && let (Some(start), Some(end)) = (
-                            blocks[index - 1]["release_boundary_ns"].as_f64(),
-                            b["start_ns"].as_f64(),
-                        )
-                    {
-                        gaps.push(end - start);
-                    }
-                }
-                for (name, values) in [
-                    ("Block start → output ready", ready),
-                    ("Output ready → release", release),
-                    ("Release → next block start", gaps),
-                ] {
-                    if !values.is_empty() {
-                        timeline.push(vec![
-                            string(&d["worker"]),
-                            name.into(),
-                            values.len().to_string(),
-                            format!("{:.1}", mean(&values)),
-                            format!(
-                                "{:.0}–{:.0}",
-                                values.iter().copied().reduce(f64::min).unwrap(),
-                                values.iter().copied().reduce(f64::max).unwrap()
-                            ),
-                        ]);
-                    }
-                }
-            }
-        }
-        if !timeline.is_empty() {
-            out.push_str("Block continuity (local to each diagnostic worker):\n");
-            table(
-                out,
-                &[
-                    "Worker",
-                    "Interval",
-                    "Blocks / gaps",
-                    "Mean ns",
-                    "Min–max ns",
-                ],
-                timeline,
-            );
+        } else {
+            let mut text: Vec<_> = values.iter().map(string).collect();
+            text.sort();
+            text.dedup();
+            text.join("; ")
         }
     }
-    out.push_str("**Diagnostic scope and limitations for this workload group**\n");
-    table(
-        out,
-        &[
-            "Observation boundary",
-            "Meaning / limitation",
-            "Cases reporting this scope",
-        ],
-        common_notes
-            .into_iter()
-            .map(|((name, note), count)| {
-                vec![name, note, format!("{count}/{diagnostic_case_count}")]
+    let names: std::collections::BTreeSet<_> =
+        cases.values().flat_map(|f| f.keys().cloned()).collect();
+    let mut shared = Vec::new();
+    let mut varying = Vec::new();
+    for name in names {
+        let values: Vec<_> = cases
+            .values()
+            .map(|f| {
+                f.get(&name)
+                    .map(|v| metric(v))
+                    .unwrap_or_else(|| "Not observed".into())
             })
-            .collect(),
-    );
+            .collect();
+        if values.iter().all(|v| *v == values[0]) {
+            shared.push(vec![name, values[0].clone()]);
+        } else {
+            varying.push(name);
+        }
+    }
+    if !shared.is_empty() {
+        out.push_str("Shared by every case in this group:\n");
+        table(out, &["Metric", "Value"], shared);
+    }
+    for names in varying.chunks(4) {
+        let mut headers = vec!["Case suffix"];
+        headers.extend(names.iter().map(String::as_str));
+        table(
+            out,
+            &headers,
+            cases
+                .iter()
+                .map(|(case, fields)| {
+                    let mut row = vec![short_case(case, prefix)];
+                    row.extend(names.iter().map(|name| {
+                        fields
+                            .get(name)
+                            .map(|v| metric(v))
+                            .unwrap_or_else(|| "Not observed".into())
+                    }));
+                    row
+                })
+                .collect(),
+        );
+    }
+    out.push_str("</details>\n\n");
 }
 
 fn coverage(out: &mut String, r: &Record) {
@@ -1089,7 +1128,7 @@ fn coverage(out: &mut String, r: &Record) {
         }
     }
 }
-fn provenance(out: &mut String, id: u32, r: &Record) {
+fn provenance(out: &mut String, id: u32, r: &Record, shared_environment: Option<u32>) {
     let _ = writeln!(
         out,
         "### C{id}: inputs, identity and host\n\nEngine request: {}.\n\nOperator request: {}.\n\nScheme: **{}**, mode **{}**.\n",
@@ -1137,6 +1176,13 @@ fn provenance(out: &mut String, id: u32, r: &Record) {
                 cell(&string(&c["origin"]["revision"]))
             );
         }
+    }
+    if let Some(other) = shared_environment {
+        let _ = writeln!(
+            out,
+            "Environment: identical to C{other}; see that component's conditions.\n"
+        );
+        return;
     }
     let mut fields = BTreeMap::new();
     flatten("Environment", &q.e.conditions, &mut fields);
@@ -1316,4 +1362,32 @@ pub fn comparison(value: &Value) -> String {
     }
     out.push_str("\nRead each run's chain and workflow observations for operation counts, received symbols, stage shares and allocation domains. A stage shift is an investigation lead; ordinary performance and diagnostic timings are separate measurements.\n");
     out
+}
+
+/// Compiler/host diagnostics remain readable after temporary logs are removed.
+pub fn failure_logs(out: &mut String, saved: &crate::artifact::Snapshot) {
+    for c in &saved.components {
+        if c.failure_details.is_empty() && c.aggregation_error.is_none() {
+            continue;
+        }
+        let _ = writeln!(
+            out,
+            "<details>\n<summary>C{}: failure diagnostics</summary>\n",
+            c.component_id
+        );
+        if let Some(error) = &c.aggregation_error {
+            let _ = writeln!(
+                out,
+                "Partial samples could not be aggregated: {}. Counts and failed coverage are retained.\n",
+                cell(error)
+            );
+        }
+        for text in &c.failure_details {
+            for line in text.lines() {
+                let _ = writeln!(out, "> {}", cell(line));
+            }
+            out.push('\n');
+        }
+        out.push_str("</details>\n\n");
+    }
 }

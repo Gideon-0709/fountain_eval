@@ -42,7 +42,7 @@ All relative paths are relative to the config file. There are no parent-director
 
 `RUN` announces a stage; `DONE` summarizes its completed work and elapsed wall time. `PLAN` shows applicable check and measurement counts, and `SKIP` summarizes exclusions by reason. Long stages emit at most one `LIVE` update every 30 seconds, reporting aggregate observed check/sample/diagnostic counts. The interval spans worker and fresh-process boundaries. A lock wait is explicit.
 
-Individual case IDs, repeated warning details and per-case timing/rates stay in the Markdown report. Warnings are counted at the end of correctness and in the final outcome; performance continues. A fatal check prints one short `FATAL` reason immediately. Failed or interrupted stages end with `STOP`, and the component summary identifies its outcome and unexecuted checks. The final `RESULT` makes every C's outcome prominent and prints the report/evidence paths.
+Individual case IDs, repeated warning details and per-case timing/rates stay in the Markdown report. Warnings are counted at the end of correctness and in the final outcome; performance continues. A fatal check prints one short `FATAL` reason immediately. Failed or interrupted stages end with `STOP`, and the component summary identifies its outcome and unexecuted checks. The final `RESULT` makes every C's outcome prominent and prints the report path and cleanup result.
 
 Live counts and stage completion describe work performed. The whole C passes only after final protocol, coverage, correctness and evidence validation. Incomplete recovery outcomes are counted separately; the terminal does not aggregate throughput across different workloads. Read the report for individual operations, chains, workflows, detailed warning observations and performance dispersion.
 
@@ -150,16 +150,16 @@ Optional storage settings belong in the same file:
 ```toml
 [run]
 report = "reports" # human-readable reports
-output = "runs"    # sealed raw evidence
+output = "runs"    # temporary execution evidence
 cache = ".fountain-eval"
 ```
 
-The defaults are the paths above, relative to the config. Set `run.report` to the folder where you want to read reports. Every invocation reserves a unique `<report>/<run-id>/` directory and writes exactly one `report.md` containing every C. Raw evidence stays under `<output>/<run-id>/`; cache files stay under `cache`. These directories serve different purposes. Report paths do not affect E or comparability. An existing report is never overwritten. The original config and its resolved request/settings are saved as evidence. Their location and comments do not affect experiment equality.
+The defaults are the paths above, relative to the config. Set `run.report` to the folder where you want to read reports. Every invocation reserves a unique `<report>/<run-id>/` directory and writes exactly one `report.md` containing every C. Raw evidence is temporary under `<output>/<run-id>/` and is deleted after verified report publication; cache files stay under `cache`. These directories serve different purposes. Report paths do not affect E or comparability. Normal execution never overwrites an existing report. Explicit `report --replace` can update the layout of the same historical run. The original config and its resolved request/settings are retained in the report index. Their location and comments do not affect experiment equality.
 
 Prepared execution consumes the stored config and verified source/build inputs, without rereading the original config:
 
 ```bash
-PREPARED=$(python3 -c 'import json; print(json.load(open("prepared.json"))["run_dir"])')
+PREPARED=$(python3 -c 'import json; print(json.load(open("prepared.json"))["report"])')
 feval run --prepared "$PREPARED"
 ```
 
@@ -194,42 +194,35 @@ reports/
     report.md
 ```
 
-The terminal summary prints both paths. With `--json`, the command response contains `report` (the Markdown path) and `run_dir` (the sealed evidence path). No HTML/CSV reports or per-C report folders are generated. Raw machine-readable evidence is retained independently for verification and later comparisons.
-
-For a run saved with `--json > run.json`:
+The terminal prints the report path and confirms cleanup. With `--json`, the response contains `report` and `batch`. No HTML/CSV files, per-C reports or permanent raw result directories are generated.
 
 ```bash
-python3 -c 'import json; print(json.load(open("run.json"))["report"])'
-RUN=$(python3 -c 'import json; print(json.load(open("run.json"))["run_dir"])')
-# Verify and render the complete report to stdout:
-feval report "$RUN"
-# Re-render historical evidence into a new report folder without rerunning measurements:
-feval report "$RUN" --output ./review-reports
-# The two arguments below are evidence directories, not Markdown files:
-feval compare /path/to/batch/C0/run-id /path/to/batch/C1/run-id > comparison.md
+REPORT=$(python3 -c 'import json; print(json.load(open("run.json"))["report"])')
+# Verify and read the saved Markdown file:
+feval report "$REPORT"
+# Read its compact structured result index for automation:
+feval report "$REPORT" --json
+# Select one C from each report; a single-C report needs no selector:
+feval compare "$REPORT#C0" /path/to/candidate/report.md#C0 > comparison.md
+# Migrate an existing raw batch without repeating measurements:
+feval report /path/to/runs/run-id --output ./reports --clean
+# Update an existing report for that same run, then clean its raw batch:
+feval report /path/to/runs/run-id --output ./reports --replace --clean
 ```
 
-`report` and `compare` produce Markdown only. `report --output DIR` creates `DIR/<run-id>/report.md` and refuses an existing destination. Report generation verifies the original evidence and does not modify or reseal it. Historical sealed results may still contain older report formats; those files remain part of their original checksum record, and the new renderer does not use them.
+The report starts with **Key findings**: component outcomes, fatal boundaries, warning counts, measured coverage and dispersion. Categories then organize correctness, individual operations, chains/plans, workflows, coverage and reproducibility. Each operation/workload has compact tables; long details use expandable sections. Shared diagnostic values and identical environments appear once. `Not measured` means no measured observation exists. Skipped and unfinished cases remain distinct.
 
-The report follows this reading order:
+Every measured case retains its median, range, mean, standard deviation, CV, worker medians, completion counts and applicable rates. Rates derivable from the same time/work count are not repeated in separate tables; the result index retains their exact values. Diagnostic tables show means, ranges and observation counts, with separate exclusive stages and nested work/resource counters. Exclusive stage means plus unattributed time equal the diagnostic lifecycle mean; they do not add to the ordinary median. No baseline or causal performance ranking is silently selected.
 
-1. **Components and outcomes:** selected engine/operator, scope, outcome, elapsed wall time and the reason a C stopped.
-2. **Correctness:** fatal failures explain the check, input, expected/observed behavior and impact; warnings show operation/dispatch, observed differences and repeated measurement deviations.
-3. **Individual operations:** grouped by public operation, with separate short tables for latency/dispersion and work-normalized rates.
-4. **Execution chains:** plan generation/export, recorded replay, stage partitions, operation mix and allocation observations.
-5. **Integrated workflows:** full encode/decode, first use, reuse, continuity and lifecycle timings, with stage/resource details alongside the related workload.
-6. **Coverage:** separate validation, measurement and diagnostic counts, plus skipped/unexecuted families and reasons. The linked `coverage.json` retains every exact case ID.
-7. **Reproducibility:** component requests and source identities, I/T/E, host/build conditions, operational phase times and evidence locations.
+The file includes a checksummed, compressed result index in a Markdown comment. It contains the original config, C/I/T/E, resolved test plan, build/source provenance, complete per-case coverage, correctness findings, grouped warning observations, aggregate performance results and per-metric diagnostic summaries. It contains no individual timing samples or raw log files. This index keeps `report`, `compare` and prepared replay usable after cleanup. Visible text and the index are checked together; checksums detect changes, not authenticate a publisher. `report --json` exposes the index without creating another file. Removing it disables structured reading and comparison.
 
-All C details are embedded in the same file. Tables repeat headings every 12 rows and have at most six columns. Ordinary medians, ranges, CV and worker medians are distinct from instrumented observations. Diagnostic stage **means** use the same observation set: exclusive stage means plus the unattributed mean reproduce the mean diagnostic lifecycle, subject to rounding. They cannot be added to ordinary medians. Allocator scope and fused/unavailable internal stages are explicitly described.
-
-A successful C can have warnings and skipped cases. Review its coverage before comparing it with a C that exercised a larger API surface. A fatal failure blocks a complete performance aggregate; raw sample prefixes remain evidence. Source Gbit/s is decimal and uses source payload bytes; repair Gbit/s uses actual repair output bytes. Incomplete recovery does not report successful throughput.
-
-`compare` accepts two per-C evidence directories and validates T/E/I compatibility and common fatal witnesses before comparing common measured cases. It separates operations, chains and workflows, shows absolute/relative time changes and dispersion, and includes coverage differences and semantic warnings. A change to C and I together is attributed to both. No baseline or global ranking is silently selected.
+`compare` verifies T/E/I and common fatal-check witnesses before comparing common measured cases. Failed runs are ineligible; semantic warnings remain visible and eligible. Comparison uses the aggregate statistics validated before cleanup; it cannot recalculate statistics from disposed samples. Existing per-C raw evidence directories are still readable. Prepared execution accepts its saved Markdown report and requires its verified build cache.
 
 ## Evidence, failures and retention
 
-Each result includes `config.toml`, `config-resolved.json`, `request.json`, `test-plan.json`, `coverage.json`, `correctness.json`, `configuration.json`, source/build/dependency provenance, raw validation/samples, subprocess logs, `result.json` and a checksum seal. Product runs also retain library loader evidence. `report` and `compare` work after build-cache removal. Prepared execution still requires its verified cache.
+During execution the workspace contains configuration, plan, source/build provenance, validation, raw samples, diagnostics and subprocess logs. On completion the framework verifies these inputs, publishes the single Markdown file atomically, reads it back, then removes only that invocation's raw batch. The same rule applies to successful, failed, unsupported and interrupted batches. Their completed prefixes, errors, warning findings and exact coverage remain in the report; failed runs never become passes. Failure diagnostics retain labelled excerpts where needed.
+
+A write, verification or cleanup failure is reported explicitly. Unpublished evidence is retained; it is never discarded to make an attempt appear successful. Cleanup rejects report/cache overlap and evidence changed after publication. Cache entries, user config/source trees, unrelated runs and prior reports are untouched. `report --output DIR --clean` provides explicit recovery after a failed publication. Without durable output, `report` only reads and does not clean its input.
 
 | Exit | Meaning |
 |---|---|
@@ -239,7 +232,7 @@ Each result includes `config.toml`, `config-resolved.json`, `request.json`, `tes
 | 4 | At least one failed or unexecuted C; inspect every batch entry |
 | 130 | Interrupted run |
 
-Start failures with `error`, `stages.json` and the referenced log. Incomplete/corrupt build entries fail without rebuilding or retrying silently. Use a new cache directory or explicitly remove a failed entry after inspection. The CLI never uploads, archives, overwrites or deletes normal results. Default reports/results/caches are ignored by Git; custom storage outside those directories is the user's responsibility.
+Start failures with the report outcome, fatal findings and expandable failure diagnostics. Incomplete/corrupt build entries fail without rebuilding or retrying silently. Use a new cache directory or explicitly remove a failed entry after inspection. The CLI never uploads or archives results. A verified Markdown report is the retained result; its temporary raw batch is removed automatically. Default reports/results/caches are ignored by Git; custom storage outside those directories is the user's responsibility.
 
 ## Maintainer references
 

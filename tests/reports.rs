@@ -19,7 +19,8 @@ fn report_is_self_contained_grouped_and_bounds_every_table() {
     }
     assert!(md.contains("chain/plan-build"));
     assert!(md.contains("operation/xor-one"));
-    assert!(md.contains("Partition check: sum 4.0 ns; total 4.0 ns; residual 0.0 ns"));
+    assert!(md.contains("Stage / partition residual ns | 0.0 (n=3)"));
+    assert!(md.find("## Key findings").unwrap() < md.find("## 2. Correctness").unwrap());
     assert!(!md.contains("```json") && !md.contains("report.html"));
     let mut rows = 0;
     for line in md.lines() {
@@ -88,5 +89,7 @@ fn unreadable_boundary_output_is_explained_without_dumping_the_state() {
         "Expected 1 readable output symbols; observed output unreadable after boundary call"
     ));
     assert!(!md.contains("full-state-hash"));
+    assert!(md.contains("Not measured"));
+    assert!(!md.contains("0/0 samples differ"));
     assert!(!md.contains("{\"symbols\""));
 }

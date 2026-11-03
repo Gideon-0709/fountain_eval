@@ -219,6 +219,15 @@ pub fn load(directory: &Path) -> Result<Record> {
     Ok(record)
 }
 pub fn compare(left: &Record, right: &Record) -> Result<Value> {
+    compare_summaries(
+        &crate::artifact::Component::from_record(left)?,
+        &crate::artifact::Component::from_record(right)?,
+    )
+}
+pub fn compare_summaries(
+    left: &crate::artifact::Component,
+    right: &crate::artifact::Component,
+) -> Result<Value> {
     catalog::verify_lock()?;
     if left.status != "succeeded" || right.status != "succeeded" {
         return Err("not comparable: both runs must have succeeded".into());
@@ -231,45 +240,25 @@ pub fn compare(left: &Record, right: &Record) -> Result<Value> {
     if a.e.digest != b.e.digest || a.e.conditions != b.e.conditions {
         return Err("not comparable: effective experiment conditions differ".into());
     }
-    for record in [left, right] {
-        let q = record.quadruple.as_ref().unwrap();
-        let recipe = catalog::recipe(&record.request.test)?;
-        if q.t != recipe.identity {
-            return Err("test identity collision or different catalog candidate".into());
-        }
-        if !catalog::registered_interface(&q.i, &recipe.identity.id) {
-            return Err("interface identity collision or unavailable interface".into());
-        }
-        validate_samples(record)?;
-    }
-    let left_recipe = left.recipe.as_ref().unwrap();
-    let right_recipe = right.recipe.as_ref().unwrap();
-    for (case, check) in &left_recipe.checks {
-        if check.skip.is_none()
-            && check.severity == crate::validation::Severity::Fatal
-            && right_recipe.check(case).is_some_and(|c| c.skip.is_none())
+    left.verify_comparison()?;
+    right.verify_comparison()?;
+    for (case, witness) in &left.fatal_witnesses {
+        if let Some(other) = right.fatal_witnesses.get(case)
+            && witness != other
         {
-            let witness = |r: &Record| {
-                r.validation
-                    .iter()
-                    .find(|v| v["case"] == *case)
-                    .map(|v| v["witness"].clone())
-            };
-            if witness(left) != witness(right) {
-                return Err("not comparable: common fatal-check witnesses differ".into());
-            }
+            return Err("not comparable: common fatal-check witnesses differ".into());
         }
     }
-    let a_summary = crate::measurement::summarize(&left.samples)?;
-    let b_summary = crate::measurement::summarize(&right.samples)?;
-    let left_correctness = crate::validation::report(left);
-    let right_correctness = crate::validation::report(right);
+    let a_summary = &left.summary;
+    let b_summary = &right.summary;
+    let left_correctness = &left.correctness;
+    let right_correctness = &right.correctness;
     let rows:Vec<_>=a_summary.iter().filter_map(|a|b_summary.iter().find(|b|b.case==a.case).map(|b|(a,b))).map(|(a,b)|json!({"case":a.case,"left_median_ns":a.median_ns,"right_median_ns":b.median_ns,"left_over_right_time":a.median_ns as f64/b.median_ns as f64,"left_cv":a.coefficient_of_variation,"right_cv":b.coefficient_of_variation,"left_worker_medians_ns":a.worker_medians_ns,"right_worker_medians_ns":b.worker_medians_ns,"left_completed":a.completed,"right_completed":b.completed,"left_operations_per_second":a.operations_per_second,"right_operations_per_second":b.operations_per_second,"left_source_payload_gbps":a.source_payload_gbps,"right_source_payload_gbps":b.source_payload_gbps,"left_warnings":left_correctness.warnings.iter().filter(|w|w["case"]==a.case).collect::<Vec<_>>(),"right_warnings":right_correctness.warnings.iter().filter(|w|w["case"]==b.case).collect::<Vec<_>>()})).collect();
     if rows.is_empty() {
         return Err("not comparable: no common measured cases".into());
     }
     Ok(
-        json!({"status":"comparable","comparison_scope":"common measured cases only","coverage":{"left":crate::coverage::report(left),"right":crate::coverage::report(right)},"purpose":"formal","left":left.run_id,"right":right.run_id,"interface_equivalence":{"contract":a.t,"evidence":"registered timing contract and matching fatal-check witnesses; warning outcomes may differ","interfaces":[a.i,b.i]},"attribution":if a.i!=b.i&&a.c!=b.c{"component and interface path together"}else if a.i!=b.i{"interface path"}else if a.c["dependencies"]["support_packages"]!=b.c["dependencies"]["support_packages"]{"component combination including support dependency changes"}else{"selected component combination"},"correctness":{"left":left_correctness,"right":right_correctness},"warning":"Interpret timings with dispersion, semantic warnings, work counters and diagnostic overhead; no performance pass threshold.","rows":rows}),
+        json!({"status":"comparable","comparison_scope":"common measured cases only","coverage":{"left":left.coverage,"right":right.coverage},"purpose":"formal","left":left.run_id,"right":right.run_id,"interface_equivalence":{"contract":a.t,"evidence":"registered timing contract and matching fatal-check witnesses; warning outcomes may differ","interfaces":[a.i,b.i]},"attribution":if a.i!=b.i&&a.c!=b.c{"component and interface path together"}else if a.i!=b.i{"interface path"}else if a.c["dependencies"]["support_packages"]!=b.c["dependencies"]["support_packages"]{"component combination including support dependency changes"}else{"selected component combination"},"correctness":{"left":left_correctness,"right":right_correctness},"warning":"Interpret timings with dispersion, semantic warnings, work counters and diagnostic overhead; no performance pass threshold.","rows":rows}),
     )
 }
 pub fn validate_samples(record: &Record) -> Result<()> {
