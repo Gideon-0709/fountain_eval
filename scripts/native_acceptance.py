@@ -79,8 +79,12 @@ def main():
                 assert sum("[RECORDED]" in line for line in ordinary) == len(record["recipe"]["cases"]), label
                 diagnostic = [line for line in progress.splitlines() if "[DIAGNOSE " in line]
                 assert len(diagnostic) == len(record["diagnostics"]), label
-            if record["correctness"]["fatal_failures"]:
+            # A crash/protocol failure can produce no per-case event. Its host-side
+            # execution-integrity failure is shown by the C's final status above.
+            if any(event.get("severity") == "fatal" and event.get("status") == "failed" for event in record["validation"]):
                 assert "[FATAL]" in progress, label
+            if record["status"] in ["failed", "interrupted"]:
+                assert record["error"] and record["error"] in progress, label
             row.update(run=body["run_dir"], status=body["result"]["status"], stage=body["result"]["stage"], error=body["result"].get("error"))
         ledger.append(row)
         (work / "ledger.json").write_text(json.dumps(ledger, indent=2)+"\n")
