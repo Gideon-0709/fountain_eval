@@ -84,7 +84,7 @@ def main():
                 assert f"DONE  Correctness: {record['validation_count']}/{record['validation_count']} checks" in progress, label
                 assert f"DONE  Performance: {record['sample_count']}/{record['sample_count']} samples" in progress, label
                 assert f"DONE  Diagnostics: {record['diagnostic_count']}/{record['diagnostic_count']} observations" in progress, label
-                assert sum(line.startswith("  RUN   ") for line in progress.splitlines()) == 4, label
+                assert all(f"[{i}/4] {name}" in progress for i, name in enumerate(["Preparation", "Correctness", "Performance", "Diagnostics"], start=1)), label
             if any(event.get("severity") == "fatal" and event.get("status") == "failed" for event in record["correctness"]["fatal_failures"]):
                 assert "  FATAL " in progress, label
             if record["status"] in ["failed", "interrupted"]:
@@ -111,7 +111,7 @@ def main():
             assert all(c["validation"]["status"] != "not_executed" for c in record["coverage"]["cases"])
             command(label+"-report", ["report", body["report"]], 0)
             markdown = (work / (label + "-report.stdout")).read_text()
-            assert "## 2. Correctness" in markdown and "## 6. Coverage" in markdown
+            assert "## Correctness and warnings" in markdown and "## Coverage and measurement context" in markdown
             results[label] = body
         elif body.get("result", {}).get("status") != "prepared":
             assert not body.get("result", {}).get("summary"), "Failure published a complete performance summary"

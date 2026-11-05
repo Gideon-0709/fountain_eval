@@ -300,23 +300,9 @@ The framework automatically produces one Markdown report for the entire configur
 
 The [artifact contracts](../specs/README.md) define `result.json`, configuration, correctness, coverage, raw samples, separate diagnostics and rendered views. The views derive from the same sealed evidence; framework checks verify missing observations, inconsistent work counts and diagnostic accounting.
 
-### Read reports in this order
+### Read the report
 
-| Report panel | What to examine | What it prevents |
-| --- | --- | --- |
-| Run identity and scope | C/I/T/E, selected scheme, host, build mode, observation mode and run status. | Comparing different experiments as if only an operator changed. |
-| Coverage | Every case's applicability, validation and measurement status; exact skip reasons and combined stages. | Treating skipped/unexecuted work as passed or zero-cost. |
-| Correctness | Fatal checks, warning observations, first divergence and resource/lifecycle outcomes. | Hiding ambiguous semantics behind a clean throughput number. |
-| Integrated results | Encode/decode/reuse/continuity rows, geometry, R/M, work consumed, endpoint and dispersion. | Confusing kernel speed with useful application performance. |
-| Chain decomposition | Stage tree, exclusive/inclusive labels, unattributed time and diagnostics overhead. | Double counting nested stages or inventing a complete decomposition. |
-| Operation results | Per-operation state, width, arity, dispatch, calls and warning status. | Comparing different primitive workloads under one name. |
-| Work and resource composition | Operation histogram, plan size, allocation/copy observations and their domains. | Attributing reduced work entirely to faster execution. |
-| Baseline comparison | Matched cases, missing coverage, absolute/relative changes and variability. | Claiming a global winner from an incomplete intersection. |
-| Explanation and limitations | Supported findings, plausible causes and unavailable evidence, visibly distinguished. | Presenting a performance hypothesis as a verified root cause. |
-
-A summary such as "succeeded with warnings and skips" must link to the affected cases. Present expected/actual values at a useful level, with full byte evidence or an exact first-difference location available for inspection. Do not bury warning details only in an appendix while placing an unqualified ranking at the top.
-
-The Markdown report organizes correctness, individual operations, chains and integrated workflows into separate sections, with short repeated-header tables. Fatal findings explain the violated contract and observed difference; warnings remain visible beside their timing context. Stage/resource observations accompany each workload. Coverage is summarized by category, phase, test family and skip reason; exact case IDs remain in the result index; individual samples are cleaned after publication. Unavailable or fused stages are described as such, not displayed as zero-cost work. Stage means are computed over the same diagnostic observations and remain additive to their mean lifecycle total; ordinary timing medians are separate.
+Start with each component’s outcome and the first failed check or semantic warning group. Read codec throughput at K=512/5008 and widths 128/1016, independent encoding-plan timings, the largest instrumented lifecycle stages and the direct/execute ns per core operation. Coverage distinguishes skipped cases from checks left unfinished. The result index contains timings for the entire matrix, including other widths and seeds, continuity/reuse workloads, allocation metrics and all stage observations. Read it with `feval report REPORT.md --json`.
 
 ### How to interpret common patterns
 

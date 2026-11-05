@@ -9,7 +9,7 @@ use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Write as _,
-    io::Write as _,
+    io::{IsTerminal, Write as _},
     path::Path,
     sync::{
         Mutex, OnceLock,
@@ -41,18 +41,91 @@ fn concise(text: &str) -> String {
     }
     clean(&text)
 }
-pub fn line(text: impl AsRef<str>) {
-    if enabled() {
-        let _ = writeln!(std::io::stderr().lock(), "{}", clean(text.as_ref()));
+struct Display {
+    interactive: bool,
+    color: bool,
+    live: bool,
+    group: String,
+    phase_start: Instant,
+    prepare_only: bool,
+}
+fn display() -> &'static Mutex<Display> {
+    static DISPLAY: OnceLock<Mutex<Display>> = OnceLock::new();
+    DISPLAY.get_or_init(|| {
+        let interactive = std::io::stderr().is_terminal()
+            && std::env::var_os("CI").is_none()
+            && std::env::var("TERM").as_deref() != Ok("dumb");
+        Mutex::new(Display {
+            interactive,
+            color: interactive && std::env::var_os("NO_COLOR").is_none(),
+            live: false,
+            group: String::new(),
+            phase_start: Instant::now(),
+            prepare_only: false,
+        })
+    })
+}
+fn emit(text: &str, color: &str, live: bool) {
+    if !enabled() {
+        return;
     }
+    let Ok(mut ui) = display().lock() else { return };
+    let text = clean(text);
+    let mut stderr = std::io::stderr().lock();
+    if ui.live {
+        let _ = write!(stderr, "\r\x1b[2K");
+    }
+    ui.live = live && ui.interactive;
+    if ui.color {
+        let _ = write!(stderr, "\x1b[{color}m");
+    }
+    if ui.live {
+        // Clip at the right edge even when the user resizes a narrow terminal.
+        let _ = write!(stderr, "\x1b[?7l{text}\x1b[?7h");
+    } else {
+        let _ = write!(stderr, "{text}");
+    }
+    if ui.color {
+        let _ = write!(stderr, "\x1b[0m");
+    }
+    if !ui.live {
+        let _ = writeln!(stderr);
+    }
+    let _ = stderr.flush();
+}
+pub fn line(text: impl AsRef<str>) {
+    emit(text.as_ref(), "0", false);
+}
+fn heading(text: &str) {
+    line("");
+    emit(&format!("━━ {text} ━━"), "1;36", false);
+}
+pub fn live(text: &str) {
+    emit(text, "36", true);
+}
+pub fn preparation_step(name: &str) {
+    let step = match name {
+        "resolve" => "Resolve and freeze sources",
+        "build" => "Build native drivers",
+        "probe" => "Check driver capabilities",
+        _ => return,
+    };
+    line(format!("    › {step}"));
 }
 fn reset_activity() {
     if let Ok(mut last) = ACTIVITY.get_or_init(|| Mutex::new(Instant::now())).lock() {
         *last = Instant::now();
     }
 }
-fn due(last: &mut Instant, now: Instant) -> bool {
-    if now.duration_since(*last) < INTERVAL {
+fn interval() -> Duration {
+    if display().lock().is_ok_and(|s| s.interactive) {
+        Duration::from_secs(1)
+    } else {
+        INTERVAL
+    }
+}
+fn due(last: &mut Instant, now: Instant, interval: Duration) -> bool {
+    if now.duration_since(*last) < interval {
         return false;
     }
     *last = now;
@@ -64,9 +137,9 @@ pub fn heartbeat_due() -> bool {
         && ACTIVITY
             .get_or_init(|| Mutex::new(Instant::now()))
             .lock()
-            .is_ok_and(|mut last| due(&mut last, Instant::now()))
+            .is_ok_and(|mut last| due(&mut last, Instant::now(), interval()))
 }
-fn source(reference: Option<&ComponentReference>) -> String {
+pub(crate) fn source(reference: Option<&ComponentReference>) -> String {
     let Some(reference) = reference else {
         return "not selected".into();
     };
@@ -105,10 +178,13 @@ fn status(raw: &str, warnings: usize) -> String {
     }
 }
 pub fn batch_started(r: &batch::Record) {
+    if let Ok(mut ui) = display().lock() {
+        ui.prepare_only = r.action == "prepare";
+    }
     if let Some(e) = r.entries.first() {
+        heading(&format!("Fountain evaluation · {}", r.action));
         line(format!(
-            "feval {} | test {} | {} | {} components",
-            r.action,
+            "  Suite {}    Scheme {}    Components {}",
             e.request.test.version,
             e.request.scheme.name.to_uppercase(),
             r.entries.len()
@@ -117,8 +193,12 @@ pub fn batch_started(r: &batch::Record) {
 }
 pub fn component_started(index: usize, total: usize, entry: &batch::Entry) {
     reset_activity();
-    line("");
-    line(format!("C{} [{}/{}]", entry.component_id, index + 1, total));
+    heading(&format!(
+        "C{} [{}/{}] · Component",
+        entry.component_id,
+        index + 1,
+        total
+    ));
     line(format!(
         "  Engine:   {}",
         source(entry.request.components.engine.as_ref())
@@ -136,9 +216,28 @@ pub fn stage(name: &str) -> &'static str {
         _ => "Preparation",
     }
 }
+pub fn publication() {
+    heading("Report · verify and clean");
+}
 pub fn phase_started(name: &str) {
     reset_activity();
-    line(format!("  RUN   {}", stage(name)));
+    let label = stage(name);
+    let (index, action) = match label {
+        "Correctness" => (2, "validate outputs and boundary behavior"),
+        "Performance" => (3, "measure operators, chains and workflows"),
+        "Diagnostics" => (4, "trace codec stages and resource use"),
+        _ => (1, "resolve, build and probe"),
+    };
+    let total = display().lock().map_or(4, |mut ui| {
+        ui.group.clear();
+        ui.phase_start = Instant::now();
+        if ui.prepare_only { 1 } else { 4 }
+    });
+    emit(
+        &format!("  [{index}/{total}] {label} — {action}"),
+        "1;34",
+        false,
+    );
 }
 fn totals(r: &Record, name: &str) -> (usize, usize, &'static str) {
     let Some(p) = &r.recipe else {
@@ -195,7 +294,7 @@ pub fn phase_finished(r: &Record, name: &str, success: bool) {
         }
     }
     let _ = write!(text, " | {seconds:.1} s");
-    line(text);
+    emit(&text, if success { "32" } else { "1;31" }, false);
     if name == "validate" && success && !r.correctness.warnings.is_empty() {
         line("  WARN  Boundary deviations recorded; performance continues. Details in report.");
     }
@@ -264,7 +363,17 @@ pub fn component_finished(r: &Record) {
             let _ = write!(text, " | {missing} checks not executed");
         }
     }
-    line(text);
+    emit(
+        &text,
+        if !success {
+            "1;31"
+        } else if r.correctness.warnings.is_empty() {
+            "1;32"
+        } else {
+            "1;33"
+        },
+        false,
+    );
     if let Some(error) = &r.error {
         line(format!(
             "  Reason: {}",
@@ -274,7 +383,7 @@ pub fn component_finished(r: &Record) {
 }
 pub fn summary(r: &batch::Record, report: &Path) -> String {
     let mut text = format!(
-        "\nRESULT: {} | {:.1} s\n",
+        "\n━━ Evaluation summary ━━\nRESULT: {} | {:.1} s\n",
         status(&r.status, r.entries.iter().map(|e| e.warnings).sum()),
         r.elapsed_ns as f64 / 1e9
     );
@@ -317,6 +426,7 @@ pub struct DriverProgress<'a> {
     incomplete: usize,
     hello: bool,
     invalid: bool,
+    category: Option<&'static str>,
 }
 impl<'a> DriverProgress<'a> {
     pub fn new(record: &'a Record, mode: &'a str, worker: usize, selected: Option<&str>) -> Self {
@@ -365,6 +475,40 @@ impl<'a> DriverProgress<'a> {
             incomplete: 0,
             hello: false,
             invalid: false,
+            category: None,
+        }
+    }
+    fn location(&self) -> String {
+        let section = self.category.unwrap_or("Starting driver");
+        match self.mode {
+            "first-use" => format!("{section} · fresh processes"),
+            "measure" | "diagnose" => format!(
+                "{section} · worker {}/{}",
+                self.worker + 1,
+                content::WORKERS
+            ),
+            _ => section.to_owned(),
+        }
+    }
+    fn section(&mut self, category: &'static str) {
+        if self.category == Some(category) {
+            return;
+        }
+        self.category = Some(category);
+        if !enabled() {
+            return;
+        }
+        let label = self.location();
+        let changed = display().lock().is_ok_and(|mut ui| {
+            if ui.group == label {
+                false
+            } else {
+                ui.group = label.clone();
+                true
+            }
+        });
+        if changed {
+            line(format!("    › {label}"));
         }
     }
     pub fn heartbeat(&self) -> String {
@@ -396,8 +540,22 @@ impl<'a> DriverProgress<'a> {
         if incomplete > 0 {
             let _ = write!(text, " | {incomplete} incomplete outcomes");
         }
+        let done = previous + self.received;
+        let percent = if total > 0 {
+            done as f64 * 100.0 / total as f64
+        } else {
+            0.0
+        };
+        let seconds = display()
+            .lock()
+            .map_or(0.0, |ui| ui.phase_start.elapsed().as_secs_f64());
+        let _ = write!(
+            text,
+            " · {percent:.0}% · {} · {seconds:.0}s",
+            self.location()
+        );
         if self.mode == "first-use" {
-            text.push_str(" | first-use sampling");
+            text.push_str(" · first-use sampling");
         }
         text
     }
@@ -440,6 +598,15 @@ impl<'a> DriverProgress<'a> {
             return self.reject("event is outside the test plan");
         }
         let check = &self.record.recipe.as_ref().unwrap().checks[case];
+        let category = match check.spec.category.as_str() {
+            "correctness" => "Correctness contracts",
+            "operation" => "Individual operations",
+            "chain" if check.spec.workload.starts_with("plan-") => "Encoding plans",
+            "chain" => "Codec chains",
+            "workflow" if self.mode == "first-use" => "First-use encoding",
+            "workflow" => "Integrated workflows",
+            _ => "Other workloads",
+        };
         if kind == "validation"
             && event["severity"] == "fatal"
             && event["status"] == "failed"
@@ -473,6 +640,7 @@ impl<'a> DriverProgress<'a> {
                     return Some("  FATAL Correctness check failed; details in report".into());
                 }
             }
+            self.section(category);
             return None;
         }
         if matches!(self.mode, "measure" | "first-use") && kind == "sample" {
@@ -496,6 +664,7 @@ impl<'a> DriverProgress<'a> {
             }
             self.received += 1;
             self.incomplete += usize::from(event["outcome"] != "completed");
+            self.section(category);
             return None;
         }
         if self.mode == "diagnose" && kind == "diagnostic" {
@@ -503,6 +672,7 @@ impl<'a> DriverProgress<'a> {
                 return self.reject("diagnostic worker mismatch or duplicate");
             }
             self.received += 1;
+            self.section(category);
             return None;
         }
         self.reject("unexpected event for this stage")
@@ -517,12 +687,16 @@ mod tests {
         let start = Instant::now();
         let mut last = start;
         for millis in 0..30_000 {
-            assert!(!due(&mut last, start + Duration::from_millis(millis)));
+            assert!(!due(
+                &mut last,
+                start + Duration::from_millis(millis),
+                INTERVAL
+            ));
         }
-        assert!(due(&mut last, start + INTERVAL));
-        assert!(!due(&mut last, start + INTERVAL));
-        assert!(!due(&mut last, start + Duration::from_secs(59)));
-        assert!(due(&mut last, start + Duration::from_secs(60)));
+        assert!(due(&mut last, start + INTERVAL, INTERVAL));
+        assert!(!due(&mut last, start + INTERVAL, INTERVAL));
+        assert!(!due(&mut last, start + Duration::from_secs(59), INTERVAL));
+        assert!(due(&mut last, start + Duration::from_secs(60), INTERVAL));
     }
     #[cfg(unix)]
     #[test]

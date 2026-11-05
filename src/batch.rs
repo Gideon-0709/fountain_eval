@@ -270,6 +270,9 @@ fn execute(
     record.status = status(&record.entries, prepare_only, record.interrupted);
     record.elapsed_ns = clock.elapsed().as_nanos() as u64;
     checkpoint(&directory, &record)?;
+    if !prepare_only {
+        crate::progress::publication();
+    }
     evidence::seal(&directory)?;
     if prepare_only {
         crate::progress::line(
@@ -281,8 +284,7 @@ fn execute(
     let report_directory =
         crate::report::reserve(&record.configuration.report_root(), &record.run_id)?;
     let saved = crate::artifact::Snapshot::capture(&directory)?;
-    let mut body = crate::report::batch_markdown(&directory, &record)?;
-    crate::report::failure_logs(&mut body, &saved);
+    let body = crate::report::snapshot(&saved);
     let report = crate::artifact::publish(&report_directory, &body, &saved, false)?;
     let mut held = vec![&lease];
     if let Some((_, _, _, prepared_lease)) = &prepared {

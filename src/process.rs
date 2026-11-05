@@ -154,7 +154,11 @@ pub fn run_observed(
             if let Some(observer) = observer.as_deref_mut() {
                 observer(None);
             } else {
-                crate::progress::line("  LIVE  Preparation: process still active");
+                crate::progress::live(&format!(
+                    "  LIVE  Preparation · {} · {:.0}s",
+                    label.split_once('-').map_or(label, |(stage, _)| stage),
+                    start.elapsed().as_secs_f64()
+                ));
             }
         }
         std::thread::sleep(Duration::from_millis(25));

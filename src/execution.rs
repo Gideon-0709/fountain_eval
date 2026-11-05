@@ -48,6 +48,7 @@ impl PhaseClock {
             }
             crate::progress::phase_started(name);
         }
+        crate::progress::preparation_step(name);
         self.phase = Instant::now();
         self.name = name.into();
         record.stage = name.into();
@@ -507,7 +508,10 @@ fn invoke_worker(
         if let Some(p) = &mut progress {
             let message = match raw {
                 Some(raw) => p.observe(raw),
-                None => Some(p.heartbeat()),
+                None => {
+                    crate::progress::live(&p.heartbeat());
+                    None
+                }
             };
             if let Some(message) = message {
                 crate::progress::line(message);

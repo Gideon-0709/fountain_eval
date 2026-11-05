@@ -65,7 +65,7 @@ fn report_survives_cleanup_and_comparison_keeps_all_cases() {
     let t = Temp::new();
     let raw = raw(&t);
     let saved = artifact::Snapshot::capture(&raw).unwrap();
-    let body = report::batch_markdown(&raw, &saved.batch).unwrap();
+    let body = report::snapshot(&saved);
     let path = artifact::publish(&t.0.join("reports/fixture-batch"), &body, &saved, false).unwrap();
     let cache = t.write(".fountain-eval/keep", "cache");
     artifact::cleanup(&raw, &path).unwrap();
@@ -161,8 +161,7 @@ fn failed_invalid_sample_prefix_still_has_a_publishable_failure_report() {
     let saved = artifact::Snapshot::capture(&raw).unwrap();
     assert!(saved.components[0].aggregation_error.is_some());
     assert!(saved.components[0].summary.is_empty());
-    let mut body = report::batch_markdown(&raw, &b).unwrap();
-    report::failure_logs(&mut body, &saved);
+    let body = report::snapshot(&saved);
     assert!(body.contains("Partial samples could not be aggregated"));
     let path = artifact::publish(&t.0.join("reports"), &body, &saved, false).unwrap();
     artifact::cleanup(&raw, &path).unwrap();

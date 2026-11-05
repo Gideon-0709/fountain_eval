@@ -59,7 +59,12 @@ enum Command {
         json: bool,
     },
     /// Compare common measured cases and report coverage differences.
-    Compare { left: PathBuf, right: PathBuf },
+    Compare {
+        left: PathBuf,
+        right: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
 }
 fn emit_text(text: &str) -> Result<()> {
     io::stdout()
@@ -133,16 +138,11 @@ fn execute(command: Command) -> Result<u8> {
         } => {
             let run = run.canonicalize().map_err(|e| e.to_string())?;
             let (body, saved, raw) = if run.is_file() || run.join("report.md").is_file() {
-                let (text, saved) = fountain_eval::artifact::load(&run)?;
-                (
-                    fountain_eval::artifact::visible_text(&text)?.to_owned(),
-                    saved,
-                    false,
-                )
+                let (_, saved) = fountain_eval::artifact::load(&run)?;
+                (fountain_eval::report::snapshot(&saved), saved, false)
             } else if run.join("batch.json").is_file() {
                 let saved = fountain_eval::artifact::Snapshot::capture(&run)?;
-                let mut body = fountain_eval::report::batch_markdown(&run, &saved.batch)?;
-                fountain_eval::report::failure_logs(&mut body, &saved);
+                let body = fountain_eval::report::snapshot(&saved);
                 (body, saved, true)
             } else {
                 if output.is_some() || replace || json {
@@ -169,19 +169,21 @@ fn execute(command: Command) -> Result<u8> {
                     fountain_eval::artifact::cleanup(&run, &report)?;
                 }
                 emit_text(&format!("{}\n", report.display()))?;
-            } else if raw {
-                emit_text(&body)?;
             } else {
-                emit_text(&fountain_eval::artifact::load(&run)?.0)?;
+                emit_text(&body)?;
             }
             Ok(0)
         }
-        Command::Compare { left, right } => {
+        Command::Compare { left, right, json } => {
             let r = evidence::compare_summaries(
                 &fountain_eval::artifact::select(&left)?,
                 &fountain_eval::artifact::select(&right)?,
             )?;
-            emit_text(&fountain_eval::report::comparison(&r))?;
+            if json {
+                emit(&r)?;
+            } else {
+                emit_text(&fountain_eval::report::comparison(&r))?;
+            }
             Ok(0)
         }
     }

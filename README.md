@@ -40,9 +40,9 @@ All relative paths are relative to the config file. There are no parent-director
 
 `run` and `prepare` print compact stage progress to stderr. Each C has a separate heading with its position in the batch and concise component names. Four stages organize the work: **Preparation**, **Correctness**, **Performance** and **Diagnostics**. Preparation groups input resolution, native builds and capability checks. `prepare` stops after that stage.
 
-`RUN` announces a stage; `DONE` summarizes its completed work and elapsed wall time. `PLAN` shows applicable check and measurement counts, and `SKIP` summarizes exclusions by reason. Long stages emit at most one `LIVE` update every 30 seconds, reporting aggregate observed check/sample/diagnostic counts. The interval spans worker and fresh-process boundaries. A lock wait is explicit.
+A component heading such as `C1 [2/2]` identifies the active selection. Numbered headings show preparation, correctness, performance and diagnostics. Preparation names the source, build and probe steps. During driver execution, subheadings identify the latest observed test group, such as encoding plans, individual operations or integrated workflows. Measurement and diagnostic groups also identify the worker.
 
-Individual case IDs, repeated warning details and per-case timing/rates stay in the Markdown report. Warnings are counted at the end of correctness and in the final outcome; performance continues. A fatal check prints one short `FATAL` reason immediately. Failed or interrupted stages end with `STOP`, and the component summary identifies its outcome and unexecuted checks. The final `RESULT` makes every C's outcome prominent and prints the report path and cleanup result.
+A terminal refreshes one progress line with the observed count, percentage and stage elapsed time. CI and redirected stderr use plain lines at group changes and at 30-second intervals during long stages. A fatal error appears immediately. The final summary gives each component's outcome and the report path. `NO_COLOR` disables color.
 
 Live counts and stage completion describe work performed. The whole C passes only after final protocol, coverage, correctness and evidence validation. Incomplete recovery outcomes are counted separately; the terminal does not aggregate throughput across different workloads. Read the report for individual operations, chains, workflows, detailed warning observations and performance dispersion.
 
@@ -210,9 +210,9 @@ feval report /path/to/runs/run-id --output ./reports
 feval report /path/to/runs/run-id --output ./reports --replace
 ```
 
-The report starts with **Key findings**: component outcomes, fatal boundaries, warning counts, measured coverage and dispersion. Categories then organize correctness, individual operations, chains/plans, workflows, coverage and reproducibility. Each operation/workload has compact tables; long details use expandable sections. Shared diagnostic values and identical environments appear once. `Not measured` means no measured observation exists. Skipped and unfinished cases remain distinct.
+The report opens with component outcomes, fatal errors and grouped semantic warnings. Its performance tables show source-equivalent codec throughput at K=512/5008 and T=128/1016, plan construction/export time, dominant diagnostic stages and seven core operations in ns/call. A dagger flags a displayed median with CV above 10%. Coverage counts explain skipped and unfinished work.
 
-Every measured case retains its median, range, mean, standard deviation, CV, worker medians, completion counts and applicable rates. Rates derivable from the same time/work count are not repeated in separate tables; the result index retains their exact values. Diagnostic tables show means, ranges and observation counts, with separate exclusive stages and nested work/resource counters. Exclusive stage means plus unattributed time equal the diagnostic lifecycle mean; they do not add to the ordinary median. No baseline or causal performance ranking is silently selected.
+`feval report REPORT.md` prints the readable summary. To refresh an older report in place, run `feval report REPORT.md --output REPORT_ROOT --replace`. The renderer reads the verified result index, so refreshing the layout also works after cache cleanup. `feval report REPORT.md --json` returns every case and diagnostic, and `feval compare LEFT RIGHT --json` returns all validated comparison rows.
 
 The file includes a checksummed, compressed result index in a Markdown comment. It contains the original config, C/I/T/E, resolved test plan, build/source provenance, complete per-case coverage, correctness findings, grouped warning observations, aggregate performance results and per-metric diagnostic summaries. It contains no individual timing samples or raw log files. This index keeps `report`, `compare` usable after cleanup. Visible text and the index are checked together; checksums detect changes, not authenticate a publisher. `report --json` exposes the index without creating another file. Removing it disables structured reading and comparison.
 
@@ -232,7 +232,7 @@ A write, verification or cleanup failure is reported explicitly. Unpublished evi
 | 4 | At least one failed or unexecuted C; inspect every batch entry |
 | 130 | Interrupted run |
 
-Start failures with the report outcome, fatal findings and expandable failure diagnostics. Incomplete/corrupt build entries fail without rebuilding or retrying silently. A completed failed run cleans its cache after recording the failure; a pending preparation with a corrupt cache fails without silently rebuilding. The CLI never uploads or archives results. A verified Markdown report is the retained result; all of its temporary run records and cache are removed automatically. Default reports/results/caches are ignored by Git; custom storage outside those directories is the user's responsibility.
+Start failures with the report outcome, fatal findings and the diagnostic excerpts in the result index. Incomplete/corrupt build entries fail without rebuilding or retrying silently. A completed failed run cleans its cache after recording the failure; a pending preparation with a corrupt cache fails without silently rebuilding. The CLI never uploads or archives results. A verified Markdown report is the retained result; all of its temporary run records and cache are removed automatically. Default reports/results/caches are ignored by Git; custom storage outside those directories is the user's responsibility.
 
 ## Maintainer references
 

@@ -54,9 +54,6 @@ fn string(v: &Value) -> String {
 fn seconds(n: u64) -> String {
     format!("{:.2} s", n as f64 / 1e9)
 }
-fn number(v: Option<f64>) -> String {
-    v.map(|n| format!("{n:.3}")).unwrap_or_else(|| "—".into())
-}
 fn title(s: &str) -> String {
     s.replace(['-', '_'], " ")
 }
@@ -116,492 +113,594 @@ pub fn publish(directory: &Path, text: &str) -> Result<PathBuf> {
     }
     Ok(path)
 }
-fn component_reference(r: &crate::protocol::ComponentReference) -> String {
-    use crate::protocol::SourceReference;
-    let mut text = match &r.source {
-        SourceReference::Path { path } => format!("path:{}", path.display()),
-        SourceReference::Registry {
-            package, version, ..
-        } => format!("registry:{package}@{version}"),
-        SourceReference::Git {
-            url,
-            revision,
-            package,
-        } => format!("git+{url}?package={package}&rev={revision}"),
-    };
-    if let Some(implementation) = &r.implementation {
-        let _ = write!(text, "#{implementation}");
+fn brief(s: &str, limit: usize) -> String {
+    let mut text: String = s.chars().take(limit).collect();
+    if s.chars().count() > limit {
+        text.push('…');
     }
     text
 }
-fn reference(r: &Record, role: &str) -> String {
-    let selection = if role == "engine" {
-        &r.request.components.engine
+fn outcome(c: &crate::artifact::Component) -> String {
+    match c.status.as_str() {
+        "succeeded" if !c.correctness.warnings.is_empty() => {
+            format!("PASS · {} warnings", c.correctness.warnings.len())
+        }
+        "succeeded" => "PASS".into(),
+        "failed" => format!("FAIL · {} fatal", c.correctness.fatal_failures.len()),
+        other => title(other).to_uppercase(),
+    }
+}
+fn identity(c: &crate::artifact::Component, role: &str) -> String {
+    if let Some(q) = &c.quadruple {
+        let v = &q.c[role];
+        if let Some(s) = v.as_str() {
+            return s.into();
+        }
+        if !v.is_null() {
+            let mut name = format!("{} {}", string(&v["package"]), string(&v["version"]));
+            if role == "operator" {
+                let _ = write!(name, " / {}", string(&q.c["implementation"]));
+            }
+            if let Some(rev) = v["origin"]["revision"].as_str() {
+                let _ = write!(name, " ({})", brief(rev, 12));
+            }
+            return name;
+        }
+    }
+    let selected = if role == "engine" {
+        &c.request.components.engine
     } else {
-        &r.request.components.operator
+        &c.request.components.operator
     };
-    selection
+    selected
         .as_ref()
-        .map(component_reference)
-        .unwrap_or_else(|| "Not selected".into())
+        .map(|r| crate::progress::source(Some(r)))
+        .unwrap_or_else(|| "—".into())
 }
-fn identity(r: &Record, role: &str) -> String {
-    let Some(q) = &r.quadruple else {
-        return reference(r, role);
-    };
-    let c = &q.c[role];
-    if c.is_null() {
-        return "Not selected".into();
-    }
-    if c.is_string() {
-        return string(c);
-    }
-    let mut text = format!("{} {}", string(&c["package"]), string(&c["version"]));
-    if role == "operator" {
-        let _ = write!(text, " / {}", string(&q.c["implementation"]));
-    }
-    if let Some(rev) = c["origin"]["revision"].as_str() {
-        let _ = write!(text, " / {}", &rev[..rev.len().min(12)]);
-    }
-    text
-}
-fn explanation(r: &Record) -> String {
-    if let Some(f) = r.correctness.fatal_failures.first() {
-        return format!(
-            "Fatal check {}; later work in this C stopped",
-            f["case"].as_str().unwrap_or("execution integrity")
-        );
-    }
-    if let Some(error) = &r.error {
-        return error.split("; see ").next().unwrap_or(error).to_owned();
-    }
-    match r.status.as_str() {
-        "succeeded" => "All applicable work completed; review warnings and skipped coverage".into(),
-        "prepared" => {
-            "Build and capability checks completed; correctness and measurements not executed"
-                .into()
-        }
-        _ => format!("Execution ended at {}", r.stage),
+fn mark(s: &Summary) -> &'static str {
+    if s.coefficient_of_variation > 0.10 {
+        "†"
+    } else {
+        ""
     }
 }
-fn highlights(out: &mut String, records: &[(u32, Record)]) {
-    out.push_str("## Key findings\n\n");
-    table(
-        out,
-        &[
-            "C",
-            "Outcome",
-            "Checks / warnings",
-            "Measured cases / samples",
-            "Main finding",
-        ],
-        records
-            .iter()
-            .map(|(id, r)| {
-                let finding = if let Some(f) = r.correctness.fatal_failures.first() {
-                    format!(
-                        "Fatal: {}; later work stopped",
-                        f["case"].as_str().unwrap_or("execution integrity")
-                    )
-                } else if let Some(error) = &r.error {
-                    error.split("; see ").next().unwrap_or(error).to_owned()
-                } else if r.status == "prepared" {
-                    "Inputs frozen; measurement not started".into()
-                } else if !r.correctness.warnings.is_empty() {
-                    "Applicable work completed with semantic warnings".into()
-                } else {
-                    "Applicable work completed".into()
-                };
-                vec![
-                    format!("C{id}"),
-                    if r.status == "succeeded" && !r.correctness.warnings.is_empty() {
-                        "passed with warnings".into()
-                    } else {
-                        r.status.clone()
-                    },
-                    format!("{} / {}", r.validation.len(), r.correctness.warnings.len()),
-                    if r.samples.is_empty() {
-                        "Not measured".into()
-                    } else {
-                        format!("{} / {}", r.summary.len(), r.samples.len())
-                    },
-                    finding,
-                ]
-            })
-            .collect(),
-    );
-    for (id, r) in records {
-        if r.status != "succeeded" {
-            continue;
-        }
-        let noisy = r
-            .summary
-            .iter()
-            .filter(|s| s.coefficient_of_variation > 0.10)
-            .count();
-        let _ = writeln!(
-            out,
-            "C{id}: {noisy}/{} measured cases have CV above 10%; this flags dispersion, not failure. No baseline is selected, so this report makes no improvement/regression claim.\n",
-            r.summary.len()
-        );
-        let key: Vec<_> = r
-            .summary
-            .iter()
-            .filter(|s| {
-                if s.case.starts_with("chain/plan-build/") {
-                    return true;
-                }
-                let Some(check) = r.recipe.as_ref().and_then(|p| p.check(&s.case)) else {
-                    return false;
-                };
-                let c = &check.spec;
-                [512, 5008].contains(&c.k)
-                    && [128, 1016].contains(&c.width)
-                    && c.seed == crate::content::SEEDS[0]
-                    && ((c.workload == "encode-repairs" && c.repairs == 8)
-                        || c.workload == "round-trip"
-                        || (c.workload == "decode"
-                            && c.missing == c.k.div_ceil(10)
-                            && c.order == "source-first"))
-            })
-            .collect();
-        if !key.is_empty() {
-            out.push_str("Planning and codec overview: K=512/5008, b=128/1016, first registered seed; 8 repairs for encoding, 10% missing sources for recovery. Plan-only rows also include K=64. All other cases are in the category details.\n\n");
-            table(
-                out,
-                &["Case", "Median ns", "Source Gbit/s", "CV %"],
-                key.iter()
-                    .map(|s| {
-                        vec![
-                            s.case.clone(),
-                            s.median_ns.to_string(),
-                            number(s.source_payload_gbps),
-                            format!("{:.2}", s.coefficient_of_variation * 100.0),
-                        ]
-                    })
-                    .collect(),
-            );
-        }
+fn metric(c: &crate::artifact::Component, id: &str, kind: &str) -> String {
+    if c.status != "succeeded" {
+        return "Not measured".into();
     }
-}
-fn intro(out: &mut String) {
-    out.push_str("[Components and outcomes](#1-components-and-outcomes) · [Correctness](#2-correctness-and-failures) · [Operations](#3-individual-operations) · [Chains and plans](#4-execution-chains-and-encoding-plans) · [Workflows](#5-integrated-workflows) · [Coverage](#6-coverage-and-explicit-skips) · [Reproducibility](#7-execution-time-and-reproducibility)\n\n");
-    out.push_str("Success covers applicable cases only. A fatal failure stops that C; warnings retain their timings. Skipped cases and work not reached after a failure are reported separately. A successful product API run does not imply that skipped operator or planning APIs passed.\n\nRead the outcome and correctness sections first, then individual operations, execution chains and integrated workflows. Performance tables contain ordinary measurements. Instrumented stage and resource observations are separate. No baseline is selected automatically; use `compare` for verified relative changes.\n\n");
-}
-pub fn batch_markdown(directory: &Path, batch: &crate::batch::Record) -> Result<String> {
-    let mut records = Vec::new();
-    for e in &batch.entries {
-        if let Some(path) = &e.directory {
-            records.push((
-                e.component_id,
-                crate::evidence::load(&directory.join(path))?,
-            ));
-        }
-    }
-    let mut out = format!(
-        "# Fountain evaluation report\n\nRun: `{}` · Action: **{}** · Outcome: **{}** · Execution wall time: **{}**.\n\n",
-        cell(&batch.run_id),
-        cell(&batch.action),
-        cell(&batch.status),
-        seconds(batch.elapsed_ns)
-    );
-    if let Some(selection) = batch.configuration.selections.first() {
-        let _ = writeln!(
-            out,
-            "Test content: **{}** · Scheme: **{}** · Component selections: **{}**.\n",
-            cell(&selection.request.test.version),
-            cell(&selection.request.scheme.name),
-            batch.entries.len()
-        );
-    }
-    highlights(&mut out, &records);
-    intro(&mut out);
-    out.push_str("## 1. Components and outcomes\n");
-    table(
-        &mut out,
-        &["C", "Selected scope", "Engine", "Operator"],
-        batch
-            .entries
-            .iter()
-            .map(|e| {
-                let r = records
-                    .iter()
-                    .find(|(id, _)| *id == e.component_id)
-                    .map(|(_, r)| r);
-                vec![
-                    format!("C{}", e.component_id),
-                    match e.request.components.scope().unwrap() {
-                        crate::protocol::Scope::Pair => "Engine + operator",
-                        crate::protocol::Scope::Engine => "Engine only",
-                        crate::protocol::Scope::Operator => "Operator only",
-                    }
-                    .into(),
-                    r.map(|r| identity(r, "engine")).unwrap_or_else(|| {
-                        e.request
-                            .components
-                            .engine
-                            .as_ref()
-                            .map(component_reference)
-                            .unwrap_or_else(|| "Not selected".into())
-                    }),
-                    r.map(|r| identity(r, "operator")).unwrap_or_else(|| {
-                        e.request
-                            .components
-                            .operator
-                            .as_ref()
-                            .map(component_reference)
-                            .unwrap_or_else(|| "Not selected".into())
-                    }),
-                ]
-            })
-            .collect(),
-    );
-    table(
-        &mut out,
-        &["C", "Outcome", "Wall time", "Meaning / failure boundary"],
-        batch
-            .entries
-            .iter()
-            .map(|e| {
-                vec![
-                    format!("C{}", e.component_id),
-                    e.status.clone(),
-                    e.elapsed_ns
-                        .map(seconds)
-                        .unwrap_or_else(|| "Not executed".into()),
-                    records
-                        .iter()
-                        .find(|(id, _)| *id == e.component_id)
-                        .map(|(_, r)| explanation(r))
-                        .unwrap_or_else(|| {
-                            e.error
-                                .clone()
-                                .unwrap_or_else(|| "No child evidence".into())
-                        }),
-                ]
-            })
-            .collect(),
-    );
-    sections(&mut out, &records);
-    out.push_str("## 7. Execution time and reproducibility\n\nWall time includes component resolution, builds, validation, measurement, diagnostics and evidence processing. It is not a codec latency. Failed entries show time to failure. The batch total includes sequential child invocations and checkpoints, excluding its own final seal and Markdown publication.\n");
-    let mut environments = BTreeMap::new();
-    for (id, r) in &records {
-        let previous = r
-            .quadruple
+    let Some(s) = c.summary.iter().find(|s| s.case == id) else {
+        return if c
+            .plan
             .as_ref()
-            .and_then(|q| environments.get(&q.e.digest).copied());
-        let _ = writeln!(
-            out,
-            "<details>\n<summary>C{id}: inputs, identity and environment</summary>\n"
-        );
-        provenance(&mut out, *id, r, previous);
-        out.push_str("</details>\n\n");
-        if let Some(q) = &r.quadruple {
-            environments.entry(q.e.digest.clone()).or_insert(*id);
+            .and_then(|p| p.check(id))
+            .is_some_and(|p| p.skip.is_some() || p.measurement_skip.is_some())
+        {
+            "Skipped"
+        } else {
+            "Not measured"
         }
+        .into();
+    };
+    if s.incomplete > 0 {
+        return format!("Incomplete ({}/{})", s.completed, s.samples);
     }
-    out.push_str("### Result retention\n\nThis file contains the complete result summary and a checksummed machine-readable result index for `report` and `compare`. After this file is published and verified, this invocation's raw logs, individual samples, source snapshots, build cache and consumed preparation workspace are removed. This report is the only retained output. Aggregate statistics cannot be recomputed from individual samples after cleanup.\n\n");
-    Ok(out)
+    let value = match kind {
+        "rate" => s.source_payload_gbps,
+        "op" => s.ns_per_operation,
+        _ => Some(s.median_ns as f64 / 1e6),
+    };
+    value
+        .map(|n| format!("{n:.3}{}", mark(s)))
+        .unwrap_or_else(|| "Not applicable".into())
 }
-pub fn markdown(r: &Record) -> String {
+const OPS: &[&str] = &[
+    "zero-one",
+    "copy-one",
+    "move-one",
+    "xor-one",
+    "xor-many-4",
+    "scale-7",
+    "mul-add-7",
+];
+fn important(c: &crate::content::Case) -> bool {
+    match c.category.as_str() {
+        "operation" => {
+            OPS.contains(&c.workload.as_str())
+                && [128, 1016].contains(&c.width)
+                && c.instances == 64
+        }
+        "chain" => matches!(c.workload.as_str(), "plan-build" | "plan-export"),
+        "workflow" => {
+            [512, 5008].contains(&c.k)
+                && [128, 1016].contains(&c.width)
+                && c.seed == crate::content::SEEDS[0]
+                && ((c.workload == "decode"
+                    && c.missing == c.k.div_ceil(10)
+                    && c.order == "source-first")
+                    || (c.workload == "encode-repairs" && c.repairs == 8)
+                    || matches!(c.workload.as_str(), "round-trip"))
+        }
+        _ => false,
+    }
+}
+pub fn snapshot(saved: &crate::artifact::Snapshot) -> String {
+    let b = &saved.batch;
     let mut out = format!(
-        "# Fountain evaluation report\n\nRun: `{}` · C{} · Outcome: **{}** · Last phase: **{}**.\n\n",
-        cell(&r.run_id),
-        r.configuration.component_id,
-        cell(&r.status),
-        cell(&r.stage)
+        "# Fountain evaluation report\n\nRun: `{}` · **{}** · wall time {} · test {} · {}\n\n",
+        cell(&b.run_id),
+        title(&b.status),
+        seconds(b.elapsed_ns),
+        b.configuration.selections[0].request.test.version,
+        b.configuration.selections[0]
+            .request
+            .scheme
+            .name
+            .to_uppercase()
     );
-    highlights(&mut out, &[(r.configuration.component_id, r.clone())]);
-    intro(&mut out);
-    out.push_str("## 1. Components and outcomes\n");
+    out.push_str("## Key findings\n");
     table(
         &mut out,
-        &["Engine", "Operator", "Outcome detail"],
-        vec![vec![
-            identity(r, "engine"),
-            identity(r, "operator"),
-            explanation(r),
-        ]],
+        &["C", "Engine / operator", "Outcome", "Performance"],
+        b.entries
+            .iter()
+            .map(|e| {
+                if let Some(c) = saved
+                    .components
+                    .iter()
+                    .find(|c| c.component_id == e.component_id)
+                {
+                    vec![
+                        format!("C{}", e.component_id),
+                        format!("{} + {}", identity(c, "engine"), identity(c, "operator")),
+                        outcome(c),
+                        if c.sample_count == 0 {
+                            "Not measured".into()
+                        } else {
+                            format!(
+                                "{} cases · {} samples{}",
+                                c.summary.len(),
+                                c.sample_count,
+                                if c.status == "succeeded" {
+                                    ""
+                                } else {
+                                    " (partial; not accepted)"
+                                }
+                            )
+                        },
+                    ]
+                } else {
+                    vec![
+                        format!("C{}", e.component_id),
+                        "No resolved component".into(),
+                        format!(
+                            "{} · {}",
+                            title(&e.status),
+                            e.error.as_deref().unwrap_or("No child result")
+                        ),
+                        "Not measured".into(),
+                    ]
+                }
+            })
+            .collect(),
     );
-    sections(&mut out, &[(r.configuration.component_id, r.clone())]);
-    out.push_str("## 7. Execution time and reproducibility\n\n");
-    provenance(&mut out, r.configuration.component_id, r, None);
+    sections(&mut out, &saved.components);
     out
 }
-fn sections(out: &mut String, records: &[(u32, Record)]) {
-    out.push_str("## 2. Correctness and failures\n\nFatal checks enforce defined arithmetic, payload and execution contracts. Boundary warnings report ambiguous or divergent semantics without suppressing performance. Counts below are executed observations, not every registered case.\n");
-    table(
-        out,
-        &[
-            "C",
-            "Correctness",
-            "Fatal checks executed",
-            "Fatal failures",
-            "Boundary checks executed",
-            "Warnings",
-        ],
-        records
-            .iter()
-            .map(|(id, r)| {
-                vec![
-                    format!("C{id}"),
-                    r.correctness.status.clone(),
-                    r.correctness.fatal_checks.to_string(),
-                    r.correctness.fatal_failures.len().to_string(),
-                    r.correctness.warning_checks.to_string(),
-                    r.correctness.warnings.len().to_string(),
-                ]
-            })
-            .collect(),
-    );
-    for (id, r) in records {
-        let _ = writeln!(out, "### C{id}: correctness details\n");
-        correctness(out, r);
-    }
-    out.push_str("## 3. Individual operations\n\nTable key: K = source symbols; b = bytes per symbol; m = missing sources; r = repairs; s = seed. Timing columns use nanoseconds; CV is standard deviation / mean. A dash is undefined, not zero. Each short table repeats its header. Sample counts, completion counts and worker medians remain available in the result index and expanded statistics below.\n\nEach row measures a prepared public call across independently initialized instances. `ns/call` divides the ordinary sample median by its call count. Gbit/s, when defined, uses logical bytes; it is not physical memory bandwidth. Direct and execute paths remain separate.\n");
-    performance(out, records, "operation");
-    out.push_str("## 4. Execution chains and encoding plans\n\nPlan construction and export are independent chain workloads. Recorded replay measures the captured operation sequence, excluding solving and sequence capture. Diagnostic values are means from separate instrumented processes; exclusive stage means plus unattributed time equal their lifecycle mean, not the ordinary median. Nested counters belong to their parent stages. Instrumentation differences include process variation; allocation growth can include retained output.\n");
-    performance(out, records, "chain");
-    out.push_str("## 5. Integrated workflows\n\nThese timings cover the selected complete public workflow through owned output. Source Gbit/s = source payload bytes × 8 / elapsed ns; repair Gbit/s uses actual repair output bytes. An incomplete recovery has no successful source throughput. Lifecycle cases include release; output-ready cases end before release. Continuous cases measure the whole configured block sequence.\n");
-    performance(out, records, "workflow");
-    out.push_str("## 6. Coverage and explicit skips\n\nEvery registered case is accounted for. Validation, ordinary measurement and diagnostic eligibility are different. `not_executed` means applicable work was not reached; `skipped` records a known applicability reason; `not_applicable` means the case does not define that kind of observation. Counts are grouped by test family and reason. Exact case IDs remain in coverage.json.\n");
-    for (id, r) in records {
-        let _ = writeln!(out, "### C{id}: coverage\n");
-        let coverage = crate::coverage::report(r);
-        let _ = writeln!(
-            out,
-            "Registered cases: {}; validation skips: {}; measurement skips: {}.\n\n<details>\n<summary>Coverage by category, phase and reason</summary>\n",
-            coverage["registered_cases"],
-            coverage["skipped_validation"],
-            coverage["skipped_measurement"]
-        );
-        self::coverage(out, r);
-        out.push_str("</details>\n\n");
+pub fn markdown(r: &Record) -> String {
+    match crate::artifact::Component::from_record(r) {
+        Ok(mut c) => {
+            // The record's derived view is also used by callers constructing report previews.
+            c.correctness = r.correctness.clone();
+            let mut out = format!(
+                "# Fountain evaluation report\n\nRun `{}` · C{} · **{}**\n\n",
+                cell(&r.run_id),
+                c.component_id,
+                outcome(&c)
+            );
+            sections(&mut out, &[c]);
+            out
+        }
+        Err(e) => format!(
+            "# Fountain evaluation report\n\nRun: `{}` · Report unavailable: {}.\n",
+            cell(&r.run_id),
+            cell(&e)
+        ),
     }
 }
-fn correctness(out: &mut String, r: &Record) {
-    if r.correctness.fatal_failures.is_empty() {
-        out.push_str("No fatal correctness failure was recorded. Review execution status and coverage before inferring that checks ran.\n\n");
-        if let Some(error) = &r.error {
-            let _ = writeln!(
-                out,
-                "**Execution outcome at {}:** {}\n",
-                cell(&r.stage),
-                cell(error)
-            );
-        }
-    } else {
-        out.push_str("#### Fatal correctness failures\n\n");
-        for event in &r.correctness.fatal_failures {
-            finding(out, r, event, true);
-        }
+fn sections(out: &mut String, components: &[crate::artifact::Component]) {
+    out.push_str("## Correctness and warnings\n\nWarnings allow measurement to continue. A fatal failure stops the affected component.\n");
+    for c in components {
+        findings(out, c);
     }
-    if r.correctness.warnings.is_empty() {
-        out.push_str("No semantic warning recorded.\n\n");
-    } else {
-        out.push_str("#### Semantic warnings\n\nThe following deviations remain warnings. Their operation timings are included in the performance section. Expected and observed values below are validation results; repeated measured observations are summarized separately.\n\n");
-        let mut groups = BTreeMap::<String, Vec<&Value>>::new();
-        for w in &r.correctness.warnings {
-            let case = w["case"].as_str().unwrap_or("unknown");
-            let prefix = case.split('/').take(2).collect::<Vec<_>>().join("/");
-            groups.entry(prefix).or_default().push(w);
+    codec_results(out, components);
+    plan_results(out, components);
+    operation_results(out, components);
+    coverage(out, components);
+}
+fn codec_results(out: &mut String, components: &[crate::artifact::Component]) {
+    out.push_str("## Codec throughput\n\nMedian source-equivalent throughput for 8 repair symbols and recovery with 10% missing sources (source-first, seed 6513). K counts source symbols. T is bytes per symbol. † marks CV above 10%.\n");
+    for c in components {
+        if !c.summary.iter().any(|s| s.case.starts_with("workflow/")) || c.status != "succeeded" {
+            continue;
         }
-        for (group, events) in groups {
-            let _ = writeln!(
-                out,
-                "**{} — {} affected cases.**\n",
-                cell(&group),
-                events.len()
-            );
-            if let Some(check) = r
-                .recipe
-                .as_ref()
-                .and_then(|p| p.check(events[0]["case"].as_str().unwrap_or("")))
-            {
-                let _ = writeln!(out, "Contract: {}.\n", cell(&check.description));
-            }
-            let measured = events
-                .iter()
-                .filter(|e| {
-                    e["measured_observations"]
-                        .as_array()
-                        .is_some_and(|v| !v.is_empty())
+        let _ = writeln!(out, "### C{}\n", c.component_id);
+        table(
+            out,
+            &["K", "T", "Encode Gbit/s", "Decode Gbit/s", "Round trip ms"],
+            [512usize, 5008]
+                .into_iter()
+                .flat_map(|k| [128, 1016].into_iter().map(move |w| (k, w)))
+                .map(|(k, w)| {
+                    let base = format!("{}/k{k}/b{w}", c.request.scheme.name);
+                    vec![
+                        k.to_string(),
+                        w.to_string(),
+                        metric(c, &format!("workflow/encode-repairs/{base}/r8"), "rate"),
+                        metric(
+                            c,
+                            &format!(
+                                "workflow/decode/{base}/m{}/source-first/s6513",
+                                k.div_ceil(10)
+                            ),
+                            "rate",
+                        ),
+                        metric(c, &format!("workflow/round-trip/{base}"), "ms"),
+                    ]
                 })
-                .count();
-            let _ = writeln!(
-                out,
-                "{} cases measured; {} not measured.\n\n<details>\n<summary>Case-specific expected/observed results</summary>\n",
-                measured,
-                events.len() - measured
-            );
+                .collect(),
+        );
+    }
+    if !components.iter().any(|c| {
+        c.status == "succeeded" && c.summary.iter().any(|s| s.case.starts_with("workflow/"))
+    }) {
+        out.push_str("Not measured. See outcomes and coverage below.\n\n");
+    }
+}
+fn plan_results(out: &mut String, components: &[crate::artifact::Component]) {
+    out.push_str("## Encoding plans and dominant stages\n\nPlan construction and export are timed independently.\n");
+    for c in components {
+        if c.status != "succeeded" {
+            continue;
+        }
+        let _ = writeln!(out, "### C{}\n", c.component_id);
+        if c.summary.iter().any(|s| s.case.starts_with("chain/plan-")) {
             table(
                 out,
-                &[
-                    "Case",
-                    "Operation / dispatch",
-                    "Expected versus observed",
-                    "Measured observations",
-                ],
-                events
-                    .iter()
-                    .map(|e| {
-                        let operations = e["details"]["operations"]
-                            .as_array()
-                            .map(|xs| xs.iter().map(action).collect::<Vec<_>>().join("; "))
-                            .unwrap_or_default();
-                        let repeated = e["measured_observations"].as_array();
-                        let observed = repeated
-                            .filter(|xs| !xs.is_empty())
-                            .map(|xs| {
-                                let mut text = format!(
-                                    "{}/{} samples differ",
-                                    xs.iter()
-                                        .filter(|v| v["matches_reference"] == false)
-                                        .count(),
-                                    xs.len()
-                                );
-                                if let Some(outcome) = xs
-                                    .iter()
-                                    .filter_map(|v| v["actual"]["outcomes"].as_array())
-                                    .flatten()
-                                    .find(|v| v["actual"] != e["expected"])
-                                {
-                                    let _ = write!(
-                                        text,
-                                        "; example: {}",
-                                        difference(&e["expected"], &outcome["actual"])
-                                    );
-                                }
-                                text
-                            })
-                            .unwrap_or_else(|| "Not measured".into());
+                &["K", "Build plan ms", "Export plan ms"],
+                [64, 512, 5008]
+                    .into_iter()
+                    .map(|k| {
                         vec![
-                            short_case(e["case"].as_str().unwrap_or("unknown"), &group),
-                            format!("{}; {}", operations, string(&e["details"]["dispatch"])),
-                            difference(&e["expected"], &e["actual"]),
-                            observed,
+                            k.to_string(),
+                            metric(
+                                c,
+                                &format!("chain/plan-build/{}/k{k}", c.request.scheme.name),
+                                "ms",
+                            ),
+                            metric(
+                                c,
+                                &format!("chain/plan-export/{}/k{k}", c.request.scheme.name),
+                                "ms",
+                            ),
                         ]
                     })
                     .collect(),
             );
-            out.push_str("</details>\n\n");
+        } else {
+            out.push_str(
+                "Plan generation/export: Not measured (no applicable standalone result).\n\n",
+            );
+        }
+        let mut rows = Vec::new();
+        for k in [512, 5008] {
+            for w in [128, 1016] {
+                let a = dominant(
+                    c,
+                    &format!("chain/encode-chain/{}/k{k}/b{w}", c.request.scheme.name),
+                );
+                let b = dominant(
+                    c,
+                    &format!("chain/decode-chain/{}/k{k}/b{w}", c.request.scheme.name),
+                );
+                if a.is_some() || b.is_some() {
+                    rows.push(vec![
+                        format!("{k} / {w}"),
+                        a.unwrap_or_else(|| "Not measured".into()),
+                        b.unwrap_or_else(|| "Not measured".into()),
+                    ]);
+                }
+            }
+        }
+        if !rows.is_empty() {
+            out.push_str("Two largest exclusive stages, as shares of the instrumented lifecycle (separate from headline timings):\n");
+            table(out, &["K / T", "Encode", "Decode"], rows);
         }
     }
+    if !components.iter().any(|c| c.status == "succeeded") {
+        out.push_str("Not measured.\n\n");
+    }
 }
-fn action(v: &Value) -> String {
-    if let Some(fields) = v.as_object() {
-        format!(
-            "{}({})",
-            v["op"].as_str().unwrap_or("operation"),
-            fields
-                .iter()
-                .filter(|(k, _)| *k != "op")
-                .map(|(k, v)| format!("{k}={}", string(v)))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-    } else {
-        string(v)
+fn operation_results(out: &mut String, components: &[crate::artifact::Component]) {
+    out.push_str("## Individual operations\n\nMedian ns/call across 64 independent instances. The multi-source XOR uses 4 sources. GF operations use scalar 7.\n");
+    let mut measured = false;
+    for c in components {
+        if c.status != "succeeded" || !c.summary.iter().any(|s| s.case.starts_with("operation/")) {
+            continue;
+        }
+        measured = true;
+        let _ = writeln!(out, "### C{}\n", c.component_id);
+        table(
+            out,
+            &[
+                "Operation",
+                "128 direct",
+                "128 execute",
+                "1016 direct",
+                "1016 execute",
+            ],
+            OPS.iter()
+                .map(|op| {
+                    let mut row = vec![title(op)];
+                    for w in [128, 1016] {
+                        for dispatch in ["direct", "execute"] {
+                            row.push(metric(
+                                c,
+                                &format!("operation/{op}/b{w}/{dispatch}/small"),
+                                "op",
+                            ));
+                        }
+                    }
+                    row
+                })
+                .collect(),
+        );
+    }
+    if !measured {
+        out.push_str("Not measured. See outcomes and coverage below.\n\n");
+    }
+}
+fn coverage(out: &mut String, components: &[crate::artifact::Component]) {
+    out.push_str("## Coverage and measurement context\n");
+    table(
+        out,
+        &[
+            "C",
+            "Checks run / applicable",
+            "Measurements / planned",
+            "Skipped checks",
+            "Unfinished checks",
+        ],
+        components
+            .iter()
+            .map(|c| {
+                if c.coverage["status"] == "not_planned" {
+                    return vec![
+                        format!("C{}", c.component_id),
+                        "Plan unavailable".into(),
+                        "Not measured".into(),
+                        "—".into(),
+                        "—".into(),
+                    ];
+                }
+                vec![
+                    format!("C{}", c.component_id),
+                    format!(
+                        "{} / {}",
+                        c.validation_count,
+                        c.plan.as_ref().map_or(0, |p| p.validation_cases().len())
+                    ),
+                    format!("{} / {}", c.summary.len(), c.planned_measurements),
+                    string(&c.coverage["skipped_validation"]),
+                    c.plan
+                        .as_ref()
+                        .map_or(0, |p| {
+                            p.validation_cases()
+                                .len()
+                                .saturating_sub(c.validation_count)
+                        })
+                        .to_string(),
+                ]
+            })
+            .collect(),
+    );
+    for c in components {
+        let mut reasons = BTreeMap::<String, usize>::new();
+        for row in c.coverage["cases"].as_array().into_iter().flatten() {
+            if row["validation"]["status"] == "skipped" {
+                *reasons
+                    .entry(title(&string(&row["validation"]["reason"]["code"])))
+                    .or_default() += 1;
+            }
+        }
+        if !reasons.is_empty() {
+            let _ = writeln!(
+                out,
+                "C{} skips: {}.\n",
+                c.component_id,
+                reasons
+                    .into_iter()
+                    .map(|(s, n)| format!("{n} × {}", brief(&s, 160)))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            );
+        }
+    }
+    if let Some(q) = components.iter().find_map(|c| c.quadruple.as_ref()) {
+        let runtime = &q.e.conditions["runtime"];
+        let cpu = runtime["cpu"]["brand"]
+            .as_str()
+            .or_else(|| runtime["cpu"]["model"].as_str())
+            .or_else(|| runtime["cpu"].as_str())
+            .unwrap_or("recorded in result index");
+        let _ = writeln!(
+            out,
+            "Host: {} / {} · {}. Ordinary cases: 3 workers × 5 samples; one excluded warmup per worker. First use: 15 fresh processes.\n",
+            string(&runtime["os"]),
+            string(&runtime["arch"]),
+            cell(cpu)
+        );
+    }
+    out.push_str("Read all case results, diagnostic metrics and provenance with `feval report REPORT.md --json`.\n");
+}
+fn dominant(c: &crate::artifact::Component, id: &str) -> Option<String> {
+    let metrics = &c.diagnostic_summaries.get(id)?["metrics"];
+    let total = metrics["observation/stages/total_ns"]["mean"].as_f64()?;
+    if total <= 0.0 {
+        return None;
+    }
+    let mut stages: Vec<_> = metrics
+        .as_object()?
+        .iter()
+        .filter_map(|(key, v)| {
+            Some((
+                key.strip_prefix("observation/stages/exclusive_ns/")?,
+                v["mean"].as_f64()?,
+            ))
+        })
+        .collect();
+    stages.sort_by(|a, b| b.1.total_cmp(&a.1));
+    if stages.is_empty() {
+        return None;
+    }
+    Some(
+        stages
+            .into_iter()
+            .take(2)
+            .map(|(s, n)| format!("{} {:.1}%", title(s), n / total * 100.0))
+            .collect::<Vec<_>>()
+            .join("; "),
+    )
+}
+fn findings(out: &mut String, c: &crate::artifact::Component) {
+    let _ = writeln!(out, "**C{} — {}.**\n", c.component_id, outcome(c));
+    for f in &c.correctness.fatal_failures {
+        let case = f["case"].as_str().unwrap_or("execution integrity");
+        let message = f["message"].as_str().unwrap_or("No diagnostic message");
+        let _ = writeln!(out, "**Fatal** · `{}`", cell(case));
+        if message.contains("MulAdd { src: 0, scalar: 0, dst: 8 }") {
+            out.push_str(
+                "\nFor GF multiply-add with scalar 0, the destination must stay unchanged.",
+            );
+            let parse_state = |key: &str| -> Option<BTreeMap<usize, Vec<u8>>> {
+                let line = message.lines().find(|s| s.trim_start().starts_with(key))?;
+                let body = line
+                    .split_once(':')?
+                    .1
+                    .trim()
+                    .strip_prefix('{')?
+                    .strip_suffix('}')?;
+                body.split("],")
+                    .map(|piece| {
+                        let (id, bytes) = piece.trim().split_once(':')?;
+                        let bytes = bytes.trim().trim_end_matches(']');
+                        Some((
+                            id.parse().ok()?,
+                            serde_json::from_str(&format!("{bytes}]")).ok()?,
+                        ))
+                    })
+                    .collect()
+            };
+            if let (Some(actual), Some(expected)) = (parse_state("left:"), parse_state("right:"))
+                && let (Some(left), Some(right)) = (actual.get(&8), expected.get(&8))
+            {
+                let _ = writeln!(out, " Symbol 8 expected {right:?}, observed {left:?}.\n");
+                continue;
+            }
+        }
+        let _ = writeln!(out, "\n{}\n", cell(&brief(message, 500)));
+    }
+    if c.correctness.fatal_failures.is_empty() && c.status != "succeeded" {
+        let _ = writeln!(
+            out,
+            "Stopped at {}: {}.\n",
+            cell(&c.stage),
+            cell(c.error.as_deref().unwrap_or("Not executed"))
+        );
+    }
+    if let Some(e) = &c.aggregation_error {
+        let _ = writeln!(
+            out,
+            "Partial samples could not be aggregated: {}.\n",
+            cell(e)
+        );
+    }
+    if c.status != "succeeded" && c.sample_count > 0 {
+        let _ = writeln!(
+            out,
+            "{} partial samples collected before termination.\n",
+            c.sample_count
+        );
+    }
+    let mut warnings = BTreeMap::<String, Vec<&Value>>::new();
+    for w in &c.correctness.warnings {
+        warnings
+            .entry(
+                w["case"]
+                    .as_str()
+                    .unwrap_or("unknown")
+                    .split('/')
+                    .nth(1)
+                    .unwrap_or("unknown")
+                    .into(),
+            )
+            .or_default()
+            .push(w);
+    }
+    if !warnings.is_empty() {
+        table(
+            out,
+            &[
+                "Boundary",
+                "Affected cases",
+                "Observed deviation (example)",
+                "Timed cases",
+            ],
+            warnings
+                .into_iter()
+                .map(|(name, ws)| {
+                    let timed = ws
+                        .iter()
+                        .filter(|w| {
+                            w["measurement_summary"]["samples"].as_u64().unwrap_or(0) > 0
+                                || w["measured_observations"]
+                                    .as_array()
+                                    .is_some_and(|a| !a.is_empty())
+                        })
+                        .count();
+                    vec![
+                        title(&name),
+                        ws.len().to_string(),
+                        difference(&ws[0]["expected"], &ws[0]["actual"]),
+                        if timed == 0 {
+                            "Not measured".into()
+                        } else {
+                            format!("{timed}; {} not measured", ws.len() - timed)
+                        },
+                    ]
+                })
+                .collect(),
+        );
+    }
+    if !c.failure_details.is_empty() && c.stage == "build" {
+        let notes = c
+            .failure_details
+            .iter()
+            .flat_map(|s| s.lines())
+            .filter(|s| s.trim_start().starts_with("error") || s.contains("panicked at"))
+            .take(3)
+            .map(|s| brief(s, 300))
+            .collect::<Vec<_>>();
+        if !notes.is_empty() {
+            let _ = writeln!(
+                out,
+                "{}\n",
+                notes
+                    .into_iter()
+                    .map(|s| format!("> {}", cell(&s)))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+        }
     }
 }
 fn difference(expected: &Value, actual: &Value) -> String {
@@ -665,729 +764,101 @@ fn difference(expected: &Value, actual: &Value) -> String {
     }
     format!("Expected {}; observed {}", string(expected), string(actual))
 }
-fn finding(out: &mut String, r: &Record, event: &Value, fatal: bool) {
-    let case = event["case"].as_str().unwrap_or("execution integrity");
-    let _ = writeln!(
-        out,
-        "**{}: {}**\n",
-        if fatal { "Fatal" } else { "Warning" },
-        cell(case)
-    );
-    if let Some(check) = r.recipe.as_ref().and_then(|p| p.check(case)) {
-        let _ = writeln!(
-            out,
-            "- Check: {} ({}).\n- Input: symbol width {} bytes; seed {}; workload {}.\n- Expected contract: {}.\n",
-            cell(&check.spec.family),
-            cell(&check.rule),
-            check.spec.width,
-            check.spec.seed,
-            cell(&check.spec.workload),
-            cell(&check.description)
-        );
-    }
-    let message = event["message"].as_str().unwrap_or("");
-    if message.contains("MulAdd { src: 0, scalar: 0, dst: 8 }")
-        && message.contains("left:")
-        && message.contains("right:")
-    {
-        out.push_str("The failed operation is **GF multiply-add with scalar 0**, source ID 0 and destination ID 8 (distinct symbols). The contract is `dst = dst XOR (0 × src)`, so the destination must stay unchanged.\n\n");
-        let parse_state = |key: &str| -> Option<BTreeMap<usize, Vec<u8>>> {
-            let line = message.lines().find(|s| s.trim_start().starts_with(key))?;
-            let body = line
-                .split_once(':')?
-                .1
-                .trim()
-                .strip_prefix('{')?
-                .strip_suffix('}')?;
-            body.split("],")
-                .map(|piece| {
-                    let (id, bytes) = piece.trim().split_once(':')?;
-                    let bytes = bytes.trim().trim_end_matches(']');
-                    Some((
-                        id.parse().ok()?,
-                        serde_json::from_str(&format!("{bytes}]")).ok()?,
-                    ))
-                })
-                .collect()
-        };
-        if let (Some(actual), Some(expected)) = (parse_state("left:"), parse_state("right:")) {
-            table(
-                out,
-                &["Symbol", "Expected bytes", "Observed bytes"],
-                expected
-                    .iter()
-                    .filter(|(id, value)| actual.get(id) != Some(value))
-                    .map(|(id, value)| {
-                        vec![
-                            id.to_string(),
-                            format!("{value:?}"),
-                            format!("{:?}", actual.get(id).unwrap_or(&Vec::new())),
-                        ]
-                    })
-                    .collect(),
-            );
-            out.push_str("This is defined arithmetic, not an ambiguous alias rule. The observed mismatch can invalidate computations using this operation. It does not establish that a codec workload produced incorrect bytes: that C stopped before subsequent measurements.\n\n");
-        }
-    }
-    if !message.is_empty() {
-        let _ = writeln!(
-            out,
-            "<details>\n<summary>Original diagnostic message</summary>\n\n> {}\n\n</details>\n",
-            message.lines().map(cell).collect::<Vec<_>>().join("\n> ")
-        );
-    }
-    if !event["expected"].is_null() || !event["actual"].is_null() {
-        let _ = writeln!(
-            out,
-            "{}\n",
-            cell(&difference(&event["expected"], &event["actual"]))
-        );
-    }
-    let _ = writeln!(
-        out,
-        "Phase: **{}**. Impact: {}.\n",
-        cell(event["phase"].as_str().unwrap_or(&r.stage)),
-        if fatal {
-            "this C is not accepted; later unexecuted cases are not passes and no complete performance aggregate is published"
-        } else {
-            "the warning remains visible alongside measured performance"
-        }
-    );
-}
-fn group(case: &str) -> String {
-    case.split('/').take(2).collect::<Vec<_>>().join("/")
-}
-fn short_case(case: &str, prefix: &str) -> String {
-    case.strip_prefix(&format!("{prefix}/"))
-        .unwrap_or(case)
-        .into()
-}
-fn performance(out: &mut String, records: &[(u32, Record)], category: &str) {
-    for (id, r) in records {
-        let _ = writeln!(
-            out,
-            "### C{id}: {}\n",
-            CATEGORIES.iter().find(|(c, _)| *c == category).unwrap().1
-        );
-        let partial;
-        let summaries = if r.status != "succeeded" {
-            let _ = writeln!(
-                out,
-                "No accepted performance summary: **{}** at **{}**. {} samples recorded before termination; no accepted aggregate.\n",
-                cell(&r.status),
-                cell(&r.stage),
-                r.samples.len()
-            );
-            partial = crate::measurement::summarize(&r.samples).unwrap_or_default();
-            &partial
-        } else {
-            &r.summary
-        };
-        let mut groups = BTreeMap::<String, Vec<&Summary>>::new();
-        for row in summaries {
-            if row.case.starts_with(&format!("{category}/")) {
-                groups.entry(group(&row.case)).or_default().push(row);
-            }
-        }
-        if groups.is_empty() {
-            out.push_str(
-                "No measured cases in this category. See this C's explicit coverage reasons.\n\n",
-            );
-            continue;
-        }
-        let unstable = r
-            .summary
-            .iter()
-            .filter(|s| {
-                s.case.starts_with(&format!("{category}/")) && s.coefficient_of_variation > 0.10
-            })
-            .count();
-        if unstable > 0 {
-            let _ = writeln!(
-                out,
-                "Dispersion note: {unstable} cases have CV above 10%. This is a descriptive flag, not a correctness or performance threshold. Inspect their ranges and worker medians before interpreting small changes.\n"
-            );
-        }
-        for (prefix, rows) in groups {
-            let _ = writeln!(
-                out,
-                "#### {}\n\nCase prefix: `{}`.\n",
-                title(prefix.split('/').nth(1).unwrap_or(&prefix)),
-                cell(&prefix)
-            );
-            let counts: std::collections::BTreeSet<_> =
-                rows.iter().map(|s| (s.completed, s.samples)).collect();
-            let _ = writeln!(
-                out,
-                "<details>\n<summary>{} cases: timing, rates and dispersion</summary>\n",
-                rows.len()
-            );
-            if counts.len() == 1 {
-                let (done, total) = counts.iter().next().unwrap();
-                let _ = writeln!(
-                    out,
-                    "Every case: {total} samples; {done} completed, {} incomplete.\n",
-                    total - done
-                );
-            }
-            table(
-                out,
-                &[
-                    "Case suffix",
-                    "Median [min–max] ns",
-                    "CV %; mean ± SD ns",
-                    "Work-normalized rate",
-                    "Worker medians ns",
-                ],
-                rows.iter()
-                    .map(|s| {
-                        let mut rate = if category == "operation" {
-                            format!(
-                                "{} ns/call; {} Gbit/s",
-                                number(s.ns_per_operation),
-                                number(s.source_payload_gbps)
-                            )
-                        } else if let Some(p) = s.plans_per_second {
-                            format!("{p:.3} plans/s")
-                        } else {
-                            format!(
-                                "{} source; {} repair Gbit/s{}",
-                                number(s.source_payload_gbps),
-                                number(s.repair_output_gbps),
-                                s.ns_per_operation
-                                    .map(|n| format!("; {n:.3} ns/call"))
-                                    .unwrap_or_default()
-                            )
-                        };
-                        if counts.len() != 1 {
-                            let _ = write!(rate, "; {}/{} complete", s.completed, s.samples);
-                        }
-                        vec![
-                            short_case(&s.case, &prefix),
-                            format!("{} [{}–{}]", s.median_ns, s.min_ns, s.max_ns),
-                            format!(
-                                "{:.2}; {:.1} ± {:.1}",
-                                s.coefficient_of_variation * 100.0,
-                                s.mean_ns,
-                                s.stddev_ns
-                            ),
-                            rate,
-                            s.worker_medians_ns
-                                .iter()
-                                .map(|(w, n)| format!("{w}:{n}"))
-                                .collect::<Vec<_>>()
-                                .join(", "),
-                        ]
-                    })
-                    .collect(),
-            );
-            out.push_str("</details>\n\n");
-            if category != "operation" {
-                diagnostics(out, r, &prefix);
-            }
-        }
-    }
-}
-fn mean(values: &[f64]) -> f64 {
-    values.iter().sum::<f64>() / values.len() as f64
-}
-fn flatten(prefix: &str, v: &Value, fields: &mut BTreeMap<String, Vec<Value>>) {
-    match v {
-        Value::Object(m) => {
-            for (key, value) in m {
-                if matches!(
-                    key.as_str(),
-                    "block_timeline" | "program_digest" | "sequence_digest" | "sha256" | "stages"
-                ) {
-                    continue;
-                }
-                flatten(
-                    &if prefix.is_empty() {
-                        key.clone()
-                    } else {
-                        format!("{prefix} / {}", title(key))
-                    },
-                    value,
-                    fields,
-                );
-            }
-        }
-        Value::Array(xs) if xs.iter().all(|x| !x.is_array() && !x.is_object()) => {
-            fields.entry(prefix.into()).or_default().push(v.clone());
-        }
-        Value::Array(xs) => {
-            for (i, x) in xs.iter().enumerate() {
-                flatten(&format!("{prefix} / item {}", i + 1), x, fields);
-            }
-        }
-        Value::Null => {}
-        _ => fields.entry(prefix.into()).or_default().push(v.clone()),
-    }
-}
-fn diagnostics(out: &mut String, r: &Record, prefix: &str) {
-    let mut cases = BTreeMap::<String, BTreeMap<String, Vec<Value>>>::new();
-    for d in &r.diagnostics {
-        let case = d["case"].as_str().unwrap_or("");
-        if group(case) != prefix {
-            continue;
-        }
-        let fields = cases.entry(case.into()).or_default();
-        fields
-            .entry("Instrumented elapsed ns".into())
-            .or_default()
-            .push(d["elapsed_ns"].clone());
-        flatten("Work", &d["observation"], fields);
-        flatten("Allocator", &d["resources"], fields);
-        let stages = &d["observation"]["stages"];
-        if let Some(exclusive) = stages["exclusive_ns"].as_object() {
-            let mut sum = 0.0;
-            for (name, value) in exclusive {
-                sum += value.as_f64().unwrap_or(0.0);
-                fields
-                    .entry(format!("Stage / {} ns", title(name)))
-                    .or_default()
-                    .push(value.clone());
-            }
-            for name in ["total_ns", "unattributed_ns"] {
-                fields
-                    .entry(format!("Stage / {}", title(name)))
-                    .or_default()
-                    .push(stages[name].clone());
-            }
-            let residual = stages["total_ns"].as_f64().unwrap_or(0.0)
-                - sum
-                - stages["unattributed_ns"].as_f64().unwrap_or(0.0);
-            fields
-                .entry("Stage / partition residual ns".into())
-                .or_default()
-                .push(Value::from(residual));
-        }
-        if let Some(blocks) = d["observation"]["block_timeline"].as_array() {
-            for (index, block) in blocks.iter().enumerate() {
-                for (label, start, end) in [
-                    (
-                        "start to ready",
-                        block["start_ns"].as_f64(),
-                        block["output_ready_ns"].as_f64(),
-                    ),
-                    (
-                        "ready to release",
-                        block["output_ready_ns"].as_f64(),
-                        block["release_boundary_ns"].as_f64(),
-                    ),
-                    (
-                        "previous release to start",
-                        index
-                            .checked_sub(1)
-                            .and_then(|i| blocks[i]["release_boundary_ns"].as_f64()),
-                        block["start_ns"].as_f64(),
-                    ),
-                ] {
-                    if let (Some(start), Some(end)) = (start, end) {
-                        fields
-                            .entry(format!(
-                                "Continuity / worker {} / {label} ns",
-                                string(&d["worker"])
-                            ))
-                            .or_default()
-                            .push(Value::from(end - start));
-                    }
-                }
-            }
-        }
-    }
-    if cases.is_empty() {
-        return;
-    }
-    out.push_str("<details>\n<summary>Stage, work and resource details</summary>\n\nNumeric cells: mean [min–max; n]; a single number means all n observations agree. Stage partition residual must be zero before rounding. Continuity intervals are local to each worker.\n\n");
-    fn metric(values: &[Value]) -> String {
-        if let Some(numbers) = values.iter().map(Value::as_f64).collect::<Option<Vec<_>>>() {
-            let min = numbers.iter().copied().reduce(f64::min).unwrap_or(0.0);
-            let max = numbers.iter().copied().reduce(f64::max).unwrap_or(0.0);
-            if min == max {
-                format!("{min:.1} (n={})", numbers.len())
-            } else {
-                format!(
-                    "{:.1} [{min:.1}–{max:.1}; n={}]",
-                    mean(&numbers),
-                    numbers.len()
-                )
-            }
-        } else {
-            let mut text: Vec<_> = values.iter().map(string).collect();
-            text.sort();
-            text.dedup();
-            text.join("; ")
-        }
-    }
-    let names: std::collections::BTreeSet<_> =
-        cases.values().flat_map(|f| f.keys().cloned()).collect();
-    let mut shared = Vec::new();
-    let mut varying = Vec::new();
-    for name in names {
-        let values: Vec<_> = cases
-            .values()
-            .map(|f| {
-                f.get(&name)
-                    .map(|v| metric(v))
-                    .unwrap_or_else(|| "Not observed".into())
-            })
-            .collect();
-        if values.iter().all(|v| *v == values[0]) {
-            shared.push(vec![name, values[0].clone()]);
-        } else {
-            varying.push(name);
-        }
-    }
-    if !shared.is_empty() {
-        out.push_str("Shared by every case in this group:\n");
-        table(out, &["Metric", "Value"], shared);
-    }
-    for names in varying.chunks(4) {
-        let mut headers = vec!["Case suffix"];
-        headers.extend(names.iter().map(String::as_str));
-        table(
-            out,
-            &headers,
-            cases
-                .iter()
-                .map(|(case, fields)| {
-                    let mut row = vec![short_case(case, prefix)];
-                    row.extend(names.iter().map(|name| {
-                        fields
-                            .get(name)
-                            .map(|v| metric(v))
-                            .unwrap_or_else(|| "Not observed".into())
-                    }));
-                    row
-                })
-                .collect(),
-        );
-    }
-    out.push_str("</details>\n\n");
-}
 
-fn coverage(out: &mut String, r: &Record) {
-    let coverage = crate::coverage::report(r);
-    let Some(rows) = coverage["cases"].as_array().filter(|rows| !rows.is_empty()) else {
-        out.push_str("The test plan was not resolved. No cases are reported as passed or skipped; see the execution error.\n\n");
-        return;
-    };
-    for (category, label) in CATEGORIES {
-        let _ = writeln!(out, "**{label}**\n");
-        let cases: Vec<_> = rows.iter().filter(|v| v["category"] == category).collect();
-        let mut totals = BTreeMap::<(String, String), usize>::new();
-        for row in &cases {
-            for phase in ["validation", "measurement", "diagnostics"] {
-                *totals
-                    .entry((phase.into(), string(&row[phase]["status"])))
-                    .or_default() += 1;
-            }
-        }
-        table(
-            out,
-            &["Phase", "Status", "Cases"],
-            totals
-                .into_iter()
-                .map(|((phase, status), n)| vec![phase, status, n.to_string()])
-                .collect(),
-        );
-        let mut gaps = BTreeMap::<(String, String, String, String), usize>::new();
-        for row in cases {
-            for phase in ["validation", "measurement", "diagnostics"] {
-                let status = row[phase]["status"].as_str().unwrap_or("");
-                if matches!(status, "skipped" | "not_executed" | "incomplete") {
-                    let reason = &row[phase]["reason"];
-                    let message = reason["reason"]
-                        .as_str()
-                        .or_else(|| reason.as_str())
-                        .unwrap_or(
-                            "Expected observations were not completed; see execution outcome",
-                        );
-                    *gaps
-                        .entry((
-                            string(&row["family"]),
-                            phase.into(),
-                            status.into(),
-                            message.into(),
-                        ))
-                        .or_default() += 1;
-                }
-            }
-        }
-        if !gaps.is_empty() {
-            table(
-                out,
-                &["Test family", "Phase", "Status", "Cases", "Reason"],
-                gaps.into_iter()
-                    .map(|((family, phase, status, reason), n)| {
-                        vec![family, phase, status, n.to_string(), reason]
-                    })
-                    .collect(),
-            );
-        }
-    }
-}
-fn provenance(out: &mut String, id: u32, r: &Record, shared_environment: Option<u32>) {
-    let _ = writeln!(
-        out,
-        "### C{id}: inputs, identity and host\n\nEngine request: {}.\n\nOperator request: {}.\n\nScheme: **{}**, mode **{}**.\n",
-        cell(&reference(r, "engine")),
-        cell(&reference(r, "operator")),
-        cell(&r.request.scheme.name),
-        cell(&r.request.scheme.mode)
-    );
-    table(
-        out,
-        &["Execution phase", "Wall time"],
-        r.timing
-            .phases_ns
-            .iter()
-            .map(|(k, v)| vec![title(k), seconds(*v)])
-            .collect(),
-    );
-    let Some(q) = &r.quadruple else {
-        out.push_str("No complete (C,I,T,E) identity: this invocation ended before all identity inputs were available.\n\n");
-        return;
-    };
-    table(
-        out,
-        &["Identity", "Version / value", "Content digest"],
-        vec![
-            vec!["I".into(), q.i.id.clone(), q.i.digest.clone()],
-            vec!["T".into(), q.t.id.clone(), q.t.digest.clone()],
-            vec![
-                "E".into(),
-                "Recorded common experiment conditions".into(),
-                q.e.digest.clone(),
-            ],
-        ],
-    );
-    for role in ["engine", "operator", "scheme"] {
-        let c = &q.c[role];
-        if c.is_object() {
-            let _ = writeln!(
-                out,
-                "- {}: {} {}; source SHA-256 {}; revision {}.\n",
-                title(role),
-                cell(&string(&c["package"])),
-                cell(&string(&c["version"])),
-                cell(&string(&c["source_digest"])),
-                cell(&string(&c["origin"]["revision"]))
-            );
-        }
-    }
-    if let Some(other) = shared_environment {
-        let _ = writeln!(
-            out,
-            "Environment: identical to C{other}; see that component's conditions.\n"
-        );
-        return;
-    }
-    let mut fields = BTreeMap::new();
-    flatten("Environment", &q.e.conditions, &mut fields);
-    table(
-        out,
-        &["Condition", "Recorded value"],
-        fields
-            .into_iter()
-            .map(|(k, v)| {
-                vec![
-                    title(&k),
-                    v.iter().map(string).collect::<Vec<_>>().join("; "),
-                ]
-            })
-            .collect(),
-    );
-}
 pub fn comparison(value: &Value) -> String {
     let mut out = format!(
-        "# Fountain comparison\n\nBaseline: **{}**. Candidate: **{}**. Status: **{}**. Attribution: **{}**.\n\n",
+        "# Fountain comparison\n\nBaseline: {} · Candidate: {} · {}\n\n{}\n\n",
         cell(&string(&value["left"])),
         cell(&string(&value["right"])),
         cell(&string(&value["status"])),
         cell(&string(&value["attribution"]))
     );
-    out.push_str("Only common measured cases are compared after T/E/I validation. Negative time change means the candidate is faster. Warnings remain eligible for comparison. Different amounts of work, allocation scopes and interfaces require joint interpretation; this report does not assign a causal speedup to one internal optimization.\n\n");
     let rows = value["rows"].as_array().cloned().unwrap_or_default();
-    let improved = rows
-        .iter()
-        .filter(|v| v["right_median_ns"].as_f64() < v["left_median_ns"].as_f64())
-        .count();
-    let regressed = rows
-        .iter()
-        .filter(|v| v["right_median_ns"].as_f64() > v["left_median_ns"].as_f64())
-        .count();
-    let _ = writeln!(
-        out,
-        "Measured directions: {improved} lower candidate medians, {regressed} higher, {} equal. These counts are descriptive; no statistical significance or global ranking is implied.\n",
-        rows.len() - improved - regressed
-    );
+    let shown: std::collections::BTreeSet<_> = crate::content::cases()
+        .into_iter()
+        .filter(important)
+        .map(|c| c.id)
+        .collect();
+    out.push_str("Negative time change means a lower candidate median. The tables cover the fixed headline workloads from the run report.\n\n");
     for (category, label) in CATEGORIES.iter().skip(1) {
         let _ = writeln!(out, "## {label}\n");
-        let mut groups = BTreeMap::<String, Vec<&Value>>::new();
-        for r in &rows {
-            let case = r["case"].as_str().unwrap_or("");
-            if case.starts_with(category) {
-                groups.entry(group(case)).or_default().push(r);
-            }
+        let selected: Vec<_> = rows
+            .iter()
+            .filter(|v| {
+                v["case"]
+                    .as_str()
+                    .is_some_and(|s| s.starts_with(category) && shown.contains(s))
+            })
+            .collect();
+        if selected.is_empty() {
+            out.push_str("No common headline measurements.\n\n");
+            continue;
         }
-        if groups.is_empty() {
-            out.push_str("No common measured cases in this category.\n\n");
-        }
-        for (prefix, rows) in groups {
-            let _ = writeln!(
-                out,
-                "### {}\n\nCase prefix: `{}`. CV columns are percentages.\n",
-                title(prefix.split('/').nth(1).unwrap_or("")),
-                cell(&prefix)
-            );
-            for chunk in rows.chunks(PAGE) {
-                table(
-                    &mut out,
-                    &[
-                        "Case suffix",
-                        "Baseline ns",
-                        "Candidate ns",
-                        "Time change",
-                        "CV baseline/candidate %",
-                    ],
-                    chunk
-                        .iter()
-                        .map(|v| {
-                            let a = v["left_median_ns"].as_f64().unwrap();
-                            let b = v["right_median_ns"].as_f64().unwrap();
-                            vec![
-                                short_case(v["case"].as_str().unwrap(), &prefix),
-                                format!("{a:.0}"),
-                                format!("{b:.0}"),
-                                format!("{:+.2}%", (b / a - 1.0) * 100.0),
-                                format!(
-                                    "{:.2}/{:.2}",
-                                    v["left_cv"].as_f64().unwrap() * 100.0,
-                                    v["right_cv"].as_f64().unwrap() * 100.0
-                                ),
-                            ]
-                        })
-                        .collect(),
-                );
-                table(
-                    &mut out,
-                    &[
-                        "Case suffix",
-                        "Source Gbit/s baseline/candidate",
-                        "Calls/s baseline/candidate",
-                        "Completed baseline/candidate",
-                        "Warnings baseline/candidate",
-                    ],
-                    chunk
-                        .iter()
-                        .map(|v| {
-                            vec![
-                                short_case(v["case"].as_str().unwrap(), &prefix),
-                                format!(
-                                    "{}/{}",
-                                    number(v["left_source_payload_gbps"].as_f64()),
-                                    number(v["right_source_payload_gbps"].as_f64())
-                                ),
-                                format!(
-                                    "{}/{}",
-                                    number(v["left_operations_per_second"].as_f64()),
-                                    number(v["right_operations_per_second"].as_f64())
-                                ),
-                                format!("{}/{}", v["left_completed"], v["right_completed"]),
-                                format!(
-                                    "{}/{}",
-                                    v["left_warnings"].as_array().map_or(0, Vec::len),
-                                    v["right_warnings"].as_array().map_or(0, Vec::len)
-                                ),
-                            ]
-                        })
-                        .collect(),
-                );
-            }
-        }
+        let unit = match *category {
+            "operation" => "ns/call",
+            "workflow" => "Gbit/s",
+            _ => "ms",
+        };
+        let side = |row: &Value, side: &str| -> String {
+            let value = match *category {
+                "operation" => row[format!("{side}_operations_per_second")]
+                    .as_f64()
+                    .filter(|n| *n > 0.0)
+                    .map(|rate| 1e9 / rate),
+                "workflow" => row[format!("{side}_source_payload_gbps")].as_f64(),
+                _ => row[format!("{side}_median_ns")].as_f64().map(|ns| ns / 1e6),
+            };
+            value.map_or_else(|| "Unavailable".into(), |n| format!("{n:.3}"))
+        };
+        table(
+            &mut out,
+            &[
+                "Case",
+                &format!("Baseline {unit}"),
+                &format!("Candidate {unit}"),
+                "Time change",
+                "CV % (base / new)",
+            ],
+            selected
+                .into_iter()
+                .map(|row| {
+                    let ratio = row["left_over_right_time"]
+                        .as_f64()
+                        .expect("validated comparison");
+                    vec![
+                        string(&row["case"]),
+                        side(row, "left"),
+                        side(row, "right"),
+                        format!("{:+.2}%", (1.0 / ratio - 1.0) * 100.0),
+                        format!(
+                            "{:.1} / {:.1}",
+                            row["left_cv"].as_f64().unwrap_or_default() * 100.0,
+                            row["right_cv"].as_f64().unwrap_or_default() * 100.0
+                        ),
+                    ]
+                })
+                .collect(),
+        );
     }
-    out.push_str("## Coverage and semantic warnings\n");
+    let _ = writeln!(
+        out,
+        "Comparison validated {} common cases. Use `feval compare LEFT RIGHT --json` for every validated comparison row.\n",
+        rows.len()
+    );
     for side in ["left", "right"] {
         let _ = writeln!(
             out,
-            "### {}\n",
+            "{}: {} semantic warnings; {} skipped checks.\n",
             if side == "left" {
                 "Baseline"
             } else {
                 "Candidate"
-            }
+            },
+            value["correctness"][side]["warnings"]
+                .as_array()
+                .map_or(0, Vec::len),
+            value["coverage"][side]["skipped_validation"]
         );
-        let c = &value["coverage"][side];
-        let _ = writeln!(
-            out,
-            "Registered cases: {}; skipped validation: {}; skipped measurement: {}.\n",
-            c["registered_cases"], c["skipped_validation"], c["skipped_measurement"]
-        );
-        if let Some(rows) = c["cases"].as_array() {
-            let mut reasons = BTreeMap::<(String, String, String), usize>::new();
-            for r in rows {
-                for phase in ["validation", "measurement"] {
-                    if r[phase]["status"] == "skipped" {
-                        *reasons
-                            .entry((
-                                string(&r["family"]),
-                                phase.into(),
-                                string(&r[phase]["reason"]["reason"]),
-                            ))
-                            .or_default() += 1;
-                    }
-                }
-            }
-            table(
-                &mut out,
-                &["Family", "Phase", "Skipped cases", "Reason"],
-                reasons
-                    .into_iter()
-                    .map(|((f, p, reason), n)| vec![f, p, n.to_string(), reason])
-                    .collect(),
-            );
-        }
-        if let Some(warnings) = value["correctness"][side]["warnings"].as_array() {
-            table(
-                &mut out,
-                &["Warning case", "Expected versus observed"],
-                warnings
-                    .iter()
-                    .map(|w| vec![string(&w["case"]), difference(&w["expected"], &w["actual"])])
-                    .collect(),
-            );
-        }
     }
-    out.push_str("\nRead each run's chain and workflow observations for operation counts, received symbols, stage shares and allocation domains. A stage shift is an investigation lead; ordinary performance and diagnostic timings are separate measurements.\n");
     out
-}
-
-/// Compiler/host diagnostics remain readable after temporary logs are removed.
-pub fn failure_logs(out: &mut String, saved: &crate::artifact::Snapshot) {
-    for c in &saved.components {
-        if c.failure_details.is_empty() && c.aggregation_error.is_none() {
-            continue;
-        }
-        let _ = writeln!(
-            out,
-            "<details>\n<summary>C{}: failure diagnostics</summary>\n",
-            c.component_id
-        );
-        if let Some(error) = &c.aggregation_error {
-            let _ = writeln!(
-                out,
-                "Partial samples could not be aggregated: {}. Counts and failed coverage are retained.\n",
-                cell(error)
-            );
-        }
-        for text in &c.failure_details {
-            for line in text.lines() {
-                let _ = writeln!(out, "> {}", cell(line));
-            }
-            out.push('\n');
-        }
-        out.push_str("</details>\n\n");
-    }
 }

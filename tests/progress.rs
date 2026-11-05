@@ -74,6 +74,11 @@ fn sampling_aggregates_across_workers_without_printing_cases_or_rates() {
         let text = p.heartbeat();
         let total = r.recipe.as_ref().unwrap().cases.len() * content::REPETITIONS;
         assert!(text.contains(&format!("{}/{total} samples observed", (worker + 1) * 5)));
+        assert!(
+            text.contains("Encoding plans")
+                && text.contains(&format!("worker {}/3", worker + 1))
+                && text.contains('%')
+        );
         assert!(!text.contains(case) && !text.contains("median") && !text.contains("Gbit/s"));
         drop(p);
         r.samples.extend(

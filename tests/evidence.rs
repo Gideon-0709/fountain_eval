@@ -332,7 +332,7 @@ fn fatal_failure_details_are_visible_in_markdown() {
     r.summary.clear();
     r.correctness.fatal_failures.push(serde_json::json!({"case":"correctness/arithmetic", "severity":"fatal", "status":"failed", "message":"MulAdd scalar: 0 <invalid>"}));
     let markdown = fountain_eval::report::markdown(&r);
-    assert!(markdown.contains("Fatal correctness failures"));
+    assert!(markdown.contains("**Fatal**"));
     assert!(markdown.contains("MulAdd scalar: 0 &lt;invalid&gt;"));
     assert!(!markdown.contains("```json"));
 }

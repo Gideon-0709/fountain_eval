@@ -8,19 +8,18 @@ fn report_is_self_contained_grouped_and_bounds_every_table() {
     r.correctness = validation::report(&r);
     let md = report::markdown(&r);
     for section in [
-        "## 2. Correctness",
-        "## 3. Individual",
-        "## 4. Execution chains",
-        "## 5. Integrated",
-        "## 6. Coverage",
-        "## 7. Execution",
+        "## Correctness and warnings",
+        "## Codec throughput",
+        "## Individual operations",
+        "## Encoding plans",
+        "## Coverage and measurement context",
     ] {
         assert!(md.contains(section), "{section}");
     }
-    assert!(md.contains("chain/plan-build"));
-    assert!(md.contains("operation/xor-one"));
-    assert!(md.contains("Stage / partition residual ns | 0.0 (n=3)"));
-    assert!(md.find("## Key findings").unwrap() < md.find("## 2. Correctness").unwrap());
+    assert!(
+        md.contains("Build plan ms") && md.contains("| xor one |") && md.contains("Decode Gbit/s")
+    );
+    assert!(md.lines().count() < 150 && !md.contains("<details>"));
     assert!(!md.contains("```json") && !md.contains("report.html"));
     let mut rows = 0;
     for line in md.lines() {
@@ -47,9 +46,8 @@ fn fatal_report_explains_defined_gf_contract_and_exact_difference() {
     }));
     let md = report::markdown(&r);
     assert!(md.contains("destination must stay unchanged"));
-    assert!(md.contains("| 8 | &#91;255&#93; | &#91;0&#93; |"));
-    assert!(md.contains("symbol width 1 bytes"));
-    assert!(md.contains("No accepted performance summary"));
+    assert!(md.contains("Symbol 8 expected [255], observed [0]"));
+    assert!(md.contains("Not measured"));
     assert!(!md.contains("```json"));
 }
 

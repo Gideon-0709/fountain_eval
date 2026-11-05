@@ -36,7 +36,10 @@ fn independent_failures_continue_and_automatic_reports_retain_each_c() {
         .output()
         .unwrap();
     assert!(output.status.success());
-    assert_eq!(String::from_utf8(output.stdout).unwrap(), report);
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        artifact::visible_text(&report).unwrap()
+    );
     assert!(artifact::load(&path).is_ok());
     std::fs::write(&path, report.replace("Key findings", "Changed findings")).unwrap();
     assert!(artifact::load(&path).is_err());

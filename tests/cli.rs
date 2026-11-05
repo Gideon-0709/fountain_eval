@@ -109,9 +109,11 @@ fn human_progress_is_default_and_json_stdout_remains_machine_readable() {
     assert!(stderr.contains("C0 [1/2]") && stderr.contains("C1 [2/2]"));
     assert!(stderr.contains("C0 FAILED") && stderr.contains("REPORT  "));
     assert!(
-        stderr.lines().count() < 30,
+        stderr.lines().count() < 40,
         "Two early failures need only a compact stage summary"
     );
+    assert!(stderr.contains("[1/4] Preparation") && stderr.contains("Resolve and freeze sources"));
+    assert!(!stderr.contains('\x1b') && !stderr.contains('\r'));
     assert!(!stderr.contains("[VALIDATE") && !stderr.contains("[MEASURE"));
     let machine = cli(&t.0, &["run", "--json"]);
     assert_eq!(machine.status.code(), Some(4));
