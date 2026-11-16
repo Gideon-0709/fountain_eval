@@ -52,6 +52,20 @@ fn fatal_report_explains_defined_gf_contract_and_exact_difference() {
 }
 
 #[test]
+fn equivalence_failure_labels_both_paths_without_inventing_an_oracle() {
+    let mut r = support::record("native-2", "rq");
+    r.status = "failed".into();
+    r.correctness.fatal_failures.push(json!({
+        "case":"correctness/dispatch-equivalence/b1",
+        "message":"assertion `left == right` failed: V05 direct versus execute: MulAdd { src: 0, scalar: 0, dst: 8 }\n  left: {8: [255]}\n right: {8: [0]}"
+    }));
+    let md = report::markdown(&r);
+    assert!(md.contains("neither side is an independent scalar reference"));
+    assert!(md.contains("Symbol 8, byte 0: direct = 255, execute = 0"));
+    assert!(!md.contains("expected [0]") && !md.contains("observed [255]"));
+}
+
+#[test]
 fn publishing_refuses_empty_reports_and_never_overwrites() {
     let t = support::Temp::new();
     let directory = report::reserve(&t.0, "test-run").unwrap();

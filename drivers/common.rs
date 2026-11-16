@@ -2,6 +2,7 @@
 mod api;
 mod config;
 mod content;
+mod contracts;
 mod operator;
 mod reference;
 mod telemetry;

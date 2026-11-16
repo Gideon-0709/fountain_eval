@@ -571,37 +571,81 @@ fn dominant(c: &crate::artifact::Component, id: &str) -> Option<String> {
             .join("; "),
     )
 }
+fn diagnostic_state(message: &str, key: &str) -> Option<BTreeMap<usize, Vec<u8>>> {
+    let line = message.lines().find(|s| s.trim_start().starts_with(key))?;
+    let body = line
+        .split_once(':')?
+        .1
+        .trim()
+        .strip_prefix('{')?
+        .strip_suffix('}')?;
+    body.split("],")
+        .map(|piece| {
+            let (id, bytes) = piece.trim().split_once(':')?;
+            let bytes = bytes.trim().trim_end_matches(']');
+            Some((
+                id.parse().ok()?,
+                serde_json::from_str(&format!("{bytes}]")).ok()?,
+            ))
+        })
+        .collect()
+}
 fn findings(out: &mut String, c: &crate::artifact::Component) {
     let _ = writeln!(out, "**C{} — {}.**\n", c.component_id, outcome(c));
     for f in &c.correctness.fatal_failures {
         let case = f["case"].as_str().unwrap_or("execution integrity");
         let message = f["message"].as_str().unwrap_or("No diagnostic message");
         let _ = writeln!(out, "**Fatal** · `{}`", cell(case));
+        if message.contains("V05 direct versus execute")
+            || message.contains("V05 batch versus elementary direct calls")
+        {
+            let context = message.lines().find(|line| line.contains("V05 ")).unwrap();
+            let _ = writeln!(out, "\n{}\n", cell(&brief(context, 500)));
+            out.push_str("The compared paths produced different states. This is an equivalence failure; neither side is an independent scalar reference.\n\n");
+            if let (Some(left), Some(right)) = (
+                diagnostic_state(message, "left:"),
+                diagnostic_state(message, "right:"),
+            ) {
+                let labels = if message.contains("V05 direct versus execute") {
+                    ("direct", "execute")
+                } else {
+                    ("batch", "elementary calls")
+                };
+                if let Some((id, a, b)) = left
+                    .iter()
+                    .filter_map(|(id, a)| right.get(id).filter(|b| *b != a).map(|b| (id, a, b)))
+                    .next()
+                {
+                    let offset = a
+                        .iter()
+                        .zip(b)
+                        .position(|(x, y)| x != y)
+                        .unwrap_or(a.len().min(b.len()));
+                    let value = |bytes: &[u8]| {
+                        bytes
+                            .get(offset)
+                            .map_or_else(|| "missing".into(), u8::to_string)
+                    };
+                    let _ = writeln!(
+                        out,
+                        "Symbol {id}, byte {offset}: {} = {}, {} = {}.\n",
+                        labels.0,
+                        value(a),
+                        labels.1,
+                        value(b)
+                    );
+                }
+            }
+            continue;
+        }
         if message.contains("MulAdd { src: 0, scalar: 0, dst: 8 }") {
             out.push_str(
                 "\nFor GF multiply-add with scalar 0, the destination must stay unchanged.",
             );
-            let parse_state = |key: &str| -> Option<BTreeMap<usize, Vec<u8>>> {
-                let line = message.lines().find(|s| s.trim_start().starts_with(key))?;
-                let body = line
-                    .split_once(':')?
-                    .1
-                    .trim()
-                    .strip_prefix('{')?
-                    .strip_suffix('}')?;
-                body.split("],")
-                    .map(|piece| {
-                        let (id, bytes) = piece.trim().split_once(':')?;
-                        let bytes = bytes.trim().trim_end_matches(']');
-                        Some((
-                            id.parse().ok()?,
-                            serde_json::from_str(&format!("{bytes}]")).ok()?,
-                        ))
-                    })
-                    .collect()
-            };
-            if let (Some(actual), Some(expected)) = (parse_state("left:"), parse_state("right:"))
-                && let (Some(left), Some(right)) = (actual.get(&8), expected.get(&8))
+            if let (Some(actual), Some(expected)) = (
+                diagnostic_state(message, "left:"),
+                diagnostic_state(message, "right:"),
+            ) && let (Some(left), Some(right)) = (actual.get(&8), expected.get(&8))
             {
                 let _ = writeln!(out, " Symbol 8 expected {right:?}, observed {left:?}.\n");
                 continue;

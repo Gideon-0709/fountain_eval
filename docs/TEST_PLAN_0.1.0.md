@@ -52,17 +52,21 @@ Verify source identities, resolved dependency bindings, enabled native features,
 
 Wrong bindings, silent fallback and incorrect requested configuration are fatal. Product binary-side and callback-side provenance remain separate. A callback observation proves callback participation, not that all work inside the product library was delegated to it.
 
-### V02 — Arithmetic against an independent scalar reference
+### V02 — Independent arithmetic values
 
-Check zeroing, single/multiple-source XOR, broadcast XOR, multiplication by alpha, scalar multiplication and multiply-add. Cover scalar zero, scalar one and general nonzero values; the B=1 fixture exhausts all 256 byte values against all 256 scalars under polynomial 0x11d. The reference uses independently implemented field arithmetic rather than the tested operator's tables or kernels. The field polynomial must match the selected scheme's declared contract.
+V02 owns the numeric result of the elementary arithmetic calls. It runs **direct calls** for single-source XOR, multiplication by alpha, scalar multiplication and multiply-add. Scalars are 0, 1, 7 and 255. Each call starts from independent initialized storage using zero, 0xff and deterministic pseudorandom bytes at every correctness width. Sources and targets are distinct where the operation has both. The independently implemented GF(256) reference uses polynomial 0x11d, not the tested implementation's tables or kernels.
 
-Use distinct valid IDs for the core fatal cases. Check affected bytes and untouched symbols, including lengths around vectorization boundaries. A wrong result in this defined domain is fatal. In particular, distinct-ID `dst ^= scalar * src` must preserve `dst` when scalar is zero; clearing it is a fatal arithmetic error. Alias-related cases are handled separately so their warning policy does not weaken ordinary arithmetic checks.
+Compare every expected live symbol byte-for-byte, including untouched sources and neighbors. Any mismatch is fatal. For `dst ^= scalar * src`, scalar zero must preserve the destination. At B=1, direct scalar multiplication additionally exhausts all 256 byte values against all 256 scalars. Successful evidence names the checked operations, data patterns and ordinary/exhaustive check counts.
+
+Zero initialization and storage belong to V03. Multiple-source XOR, broadcast and range operations are established through elementary-call composition in V05. V05 also covers `execute`, so V02 does not repeat the full oracle through both entry points. V06 retains ambiguous alias/overlap cases and its warning policy.
 
 ### V03 — Storage, copying, moving and ownership
 
-Check insertion at a new ID, replacement at an existing ID, reading, zero initialization, copying, moving, removal and subsequent ID reuse. A copy must preserve its source and provide the independence promised by the API. A move must preserve destination data and invalidate the source according to the documented contract. Tests must not dereference an invalid source merely to provoke undefined behavior.
+V03 owns **direct-call storage behavior**: insertion at a new ID, replacement at an existing ID, reading, single-symbol zeroing, single-symbol copy/move, removal and informational association. It uses the same correctness widths and three data patterns as V02. Each operation starts from independent initialized storage; required values and untouched live symbols are checked against the state model.
 
-When sharing is supported, verify the reported outcome of the share request and the required isolation after either ID is written. An implementation may implement this with copy-on-write or another valid mechanism. Unsupported sharing is distinct from an implementation returning success but corrupting the other symbol. Ownership and payload violations are fatal.
+A copy is followed by an in-place zero write and replacement of its destination, then an in-place zero write and replacement of its source. The zero-write probes use scalar multiplication by 0 and require stored zeros while all other symbols remain unchanged. This checks writing the copied storage, including deferred copy behavior, without repeating V02's GF value matrix. Replacement checks the new stored bytes as well as isolation. After move or removal, insert a new payload under the former source/removed ID and verify that the destination and other live symbols remain correct. Payload, isolation and reuse violations are fatal.
+
+The native trait has no safe membership query. The check does not read a removed/moved ID before reinsertion and does not claim to prove its absence. The informational association has no query API either; only preservation of symbol bytes is observable. Both limits are explicit in successful evidence. Explicit sharing and first-write checks remain in the applicable O08 premeasurement checks. Batch storage and alternate dispatch belong to V05; process/resource destruction belongs to V11.
 
 ### V04 — Mixed operation sequences
 
@@ -70,11 +74,23 @@ Run a fixed representative sequence and bounded, fixed-seed generated sequences 
 
 Sequence generation preserves operation preconditions except in separately registered boundary tests. The report identifies the seed, operation index, operands and first incorrect state. Defined-domain divergence is fatal. This check links individual primitives to the sequences used in real plans.
 
-### V05 — Dispatch and batch equivalence
+### V05 — Dispatch and batch composition equivalence
 
-For supported APIs, apply the same semantic operation through direct methods and `execute`. Compare batch copy/move/zero operations with the corresponding valid individual-operation result. Different instructions and different internal implementations are permitted; required final behavior is the oracle.
+V05 owns relationships between equivalent public calls. It compares observed states directly and does not recompute scalar reference values. Each pair starts from identical independent states at every correctness width and each of the three data patterns.
 
-Record whether a direct method is an override or uses its default dispatch behavior when that can be established. Do not assume that calling a direct method guarantees a fast path. An absent API is an applicability limitation. A defined-domain discrepancy between supported paths is fatal.
+| Relation | Calls being compared | Fatal condition |
+| --- | --- | --- |
+| Dispatch | A direct method versus `execute` for every registered operation with an instruction-enum equivalent. | Any expected live symbol differs after the call or the storage follow-up probes. |
+| Zero composition | List/range zeroing versus successive direct single-symbol zero calls. | Different live symbol bytes. |
+| XOR composition | Two-, three- and general multiple-source XOR versus successive direct single-source XOR calls. | Different live symbol bytes. |
+| Broadcast composition | One broadcast versus direct single-source XOR into each destination. | Different live symbol bytes. |
+| Copy/move composition | A disjoint range call versus successive direct single-symbol copy/move calls. | Different bytes immediately, after copy-isolation probes, or after source-ID reuse. |
+
+Insertion, lookup and explicit sharing have no instruction-enum counterpart and therefore do not create dispatch pairs. The inputs use distinct XOR operands, unique broadcast destinations and disjoint copy/move ranges. V06 owns ambiguous boundaries. Copy probes modify both sides in place and by replacement; move/removal probes reinsert former IDs on both sides. Observation uses known-live IDs without probing invalid ones.
+
+Successful evidence records the number and kind of comparisons and the observation limits. A direct method may delegate to `execute`; agreement still checks the exposed contract, not whether a fast override exists. Two identically wrong primitive implementations can agree here: V02/V03 provide their independent value/ownership checks. Conversely, a batch defect shared by direct and `execute` is detected by comparison with the elementary sequence.
+
+The dependency is explicit: **V02 establishes arithmetic primitives; V03 establishes storage primitives; V05 establishes their alternate entry points and compositions.** These are different assertions, even when a comparison must execute a primitive again. The previous shared full-oracle loop under all three family names has been removed. Family numbering does not prescribe execution order; any fatal prevents successful measurement for that C.
 
 ### V06 — Ambiguous boundary semantics
 

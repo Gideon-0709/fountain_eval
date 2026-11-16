@@ -169,6 +169,7 @@ Linux/macOS CI checks the framework and publicly accessible native combinations.
 | `src/main.rs` | CLI parsing, report destinations and exit codes |
 | `drivers/common.rs` | Embedded process protocol, worker dispatch and event emission |
 | `drivers/workloads.rs` | T-owned correctness, operation, chain and workflow execution |
+| `drivers/contracts.rs` | T-owned independent arithmetic/storage contracts and dispatch/composition relations; shared by native drivers and fault-injection tests |
 | `drivers/reference.rs` | Independent scalar GF/state model and small Gauss-Jordan oracle |
 | `drivers/telemetry.rs` | Diagnostic-only allocation accounting with explicit observation scope |
 | `drivers/operator.rs` | I-owned operator binding and untimed participation wrapper |

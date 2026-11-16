@@ -7,6 +7,26 @@ pub fn raw(width: usize) -> Selected {
     Selected::new(width)
 }
 pub struct Operator(pub Selected);
+impl crate::contracts::Subject for Operator {
+    fn from_state(width: usize, state: &reference::State) -> Self {
+        let mut op = Self::new(width);
+        for (id, bytes) in state {
+            op.0.insert_vector(bytes, *id);
+        }
+        op
+    }
+    fn apply(&mut self, action: &Action, width: usize, seed: u64, direct: bool) {
+        self.run(&Program::new(
+            std::slice::from_ref(action),
+            direct,
+            width,
+            seed,
+        ));
+    }
+    fn observe(&self, live: &reference::State) -> reference::State {
+        self.snapshot(live)
+    }
+}
 pub struct Program {
     actions: Vec<Action>,
     operations: Vec<Option<Operation>>,

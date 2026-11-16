@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 pub const CONTENT: &str = include_str!("content.rs");
 pub const REFERENCE: &str = include_str!("../drivers/reference.rs");
 pub const WORKLOADS: &str = include_str!("../drivers/workloads.rs");
+pub const CONTRACTS: &str = include_str!("../drivers/contracts.rs");
 pub const TELEMETRY: &str = include_str!("../drivers/telemetry.rs");
 pub const COMMON: &str = include_str!("../drivers/common.rs");
 pub const OPERATOR: &str = include_str!("../drivers/operator.rs");
@@ -87,6 +88,7 @@ pub fn recipe(test: &TestReference) -> Result<Recipe> {
         COMMON,
         REFERENCE,
         WORKLOADS,
+        CONTRACTS,
         TELEMETRY,
         include_str!("measurement.rs"),
     ));

@@ -117,112 +117,53 @@ fn apply_checked(op: &mut Operator, state: &mut State, action: &Action, c: &Case
     ));
     checked_state(op, state, &format!("{} {action:?}", c.id));
 }
-fn core(c: &Case) -> Value {
-    if c.workload == "mixed-sequence" {
-        let mut random = c.seed;
-        let mut state = reference::initial(c.width, c.seed);
-        let mut op = Operator::preload(c.width, c.seed);
-        for index in 0..256 {
-            let a = (reference::next(&mut random) % 8) as usize;
-            let b = 8 + (reference::next(&mut random) % 8) as usize;
-            let action = match index % 8 {
-                0 => Action::Xor { src: a, dst: b },
-                1 => Action::Scale {
-                    id: b,
-                    scalar: reference::next(&mut random) as u8,
-                },
-                2 => Action::Copy { src: a, dst: b },
-                3 => Action::MulAdd {
-                    src: a,
-                    scalar: 7,
-                    dst: b,
-                },
-                4 => Action::Move { src: b, dst: 32 },
-                5 => Action::Copy { src: 32, dst: b },
-                6 => Action::Remove { id: 32 },
-                _ => Action::Zero { id: b },
-            };
-            // The moved destination is restored immediately before any generated use.
-            if index % 8 == 5 {
-                let action = Action::Copy { src: 32, dst: 8 };
-                apply_checked(&mut op, &mut state, &action, c, true);
-            }
-            if let Action::Move { src, .. } = &action {
-                if !state.contains_key(src) {
-                    let restore = Action::Copy { src: 0, dst: *src };
-                    apply_checked(&mut op, &mut state, &restore, c, true);
-                }
-            }
-            if let Action::Xor { dst, .. }
-            | Action::Scale { id: dst, .. }
-            | Action::MulAdd { dst, .. } = &action
-            {
-                if !state.contains_key(dst) {
-                    let restore = Action::Copy { src: 0, dst: *dst };
-                    apply_checked(&mut op, &mut state, &restore, c, true);
-                }
-            }
-            apply_checked(&mut op, &mut state, &action, c, index % 2 == 0);
+fn mixed_sequence(c: &Case) -> Value {
+    let mut random = c.seed;
+    let mut state = reference::initial(c.width, c.seed);
+    let mut op = Operator::preload(c.width, c.seed);
+    for index in 0..256 {
+        let a = (reference::next(&mut random) % 8) as usize;
+        let b = 8 + (reference::next(&mut random) % 8) as usize;
+        let action = match index % 8 {
+            0 => Action::Xor { src: a, dst: b },
+            1 => Action::Scale {
+                id: b,
+                scalar: reference::next(&mut random) as u8,
+            },
+            2 => Action::Copy { src: a, dst: b },
+            3 => Action::MulAdd {
+                src: a,
+                scalar: 7,
+                dst: b,
+            },
+            4 => Action::Move { src: b, dst: 32 },
+            5 => Action::Copy { src: 32, dst: b },
+            6 => Action::Remove { id: 32 },
+            _ => Action::Zero { id: b },
+        };
+        // The moved destination is restored immediately before any generated use.
+        if index % 8 == 5 {
+            let action = Action::Copy { src: 32, dst: 8 };
+            apply_checked(&mut op, &mut state, &action, c, true);
         }
-        return json!({"seed":c.seed,"checked_prefixes":256,"state":reference::compact(&state)});
+        if let Action::Move { src, .. } = &action {
+            if !state.contains_key(src) {
+                let restore = Action::Copy { src: 0, dst: *src };
+                apply_checked(&mut op, &mut state, &restore, c, true);
+            }
+        }
+        if let Action::Xor { dst, .. }
+        | Action::Scale { id: dst, .. }
+        | Action::MulAdd { dst, .. } = &action
+        {
+            if !state.contains_key(dst) {
+                let restore = Action::Copy { src: 0, dst: *dst };
+                apply_checked(&mut op, &mut state, &restore, c, true);
+            }
+        }
+        apply_checked(&mut op, &mut state, &action, c, index % 2 == 0);
     }
-    let mut checked = 0;
-    for (_, _, action) in content::operations() {
-        if matches!(action, Action::Alias { .. } | Action::SharedWrite { .. }) {
-            continue;
-        }
-        for direct in [false, true] {
-            if !direct && matches!(action, Action::Insert { .. } | Action::Read { .. }) {
-                continue;
-            }
-            for pattern in [0, 1, 2] {
-                let mut state = reference::initial(c.width, c.seed);
-                if pattern < 2 {
-                    for v in state.values_mut() {
-                        v.fill(if pattern == 0 { 0 } else { 0xff });
-                    }
-                }
-                let mut op = Operator::new(c.width);
-                use fountain_engine::traits::DataOperator;
-                for (id, v) in &state {
-                    op.0.insert_vector(v, *id);
-                }
-                apply_checked(&mut op, &mut state, &action, c, direct);
-                checked += 1;
-                if let Action::Copy { src, dst } = &action {
-                    apply_checked(
-                        &mut op,
-                        &mut state,
-                        &Action::Scale {
-                            id: *dst,
-                            scalar: 0,
-                        },
-                        c,
-                        direct,
-                    );
-                    assert_eq!(op.0.get_vector(*src), state[src]);
-                }
-                if let Action::Remove { id } = &action {
-                    apply_checked(&mut op, &mut state, &Action::Insert { id: *id }, c, true);
-                }
-                if let Action::Move { src, .. } = &action {
-                    apply_checked(&mut op, &mut state, &Action::Insert { id: *src }, c, true);
-                }
-            }
-        }
-    }
-    if c.width == 1 && c.family == "V02" {
-        for scalar in 0..=255 {
-            for byte in 0..=255 {
-                let mut op = Operator::new(1);
-                use fountain_engine::traits::DataOperator;
-                op.0.insert_vector(&[byte], 0);
-                op.0.multiply_scalar(scalar, 0);
-                assert_eq!(op.0.get_vector(0), [reference::multiply(byte, scalar)]);
-            }
-        }
-    }
-    json!({"checks":checked,"patterns":["zero","ff","splitmix64"],"dispatch":["direct","execute"],"reference":"independent GF polynomial arithmetic"})
+    json!({"seed":c.seed,"checked_prefixes":256,"state":reference::compact(&state)})
 }
 fn linear_reference(c: &Case) -> Value {
     let k = c.k;
@@ -358,8 +299,10 @@ pub fn validate(c: &Case) -> Validation {
     if c.category == "correctness" && !c.warning {
         let details = if c.scheme.is_some() {
             codec_contract(c)
+        } else if c.workload == "mixed-sequence" {
+            mixed_sequence(c)
         } else {
-            core(c)
+            crate::contracts::validate::<Operator>(c)
         };
         return Validation {
             witness: digest(c.id.as_bytes()),

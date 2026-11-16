@@ -644,6 +644,7 @@ pub fn prepare(
         ("content.rs", catalog::CONTENT),
         ("reference.rs", catalog::REFERENCE),
         ("workloads.rs", catalog::WORKLOADS),
+        ("contracts.rs", catalog::CONTRACTS),
         ("telemetry.rs", catalog::TELEMETRY),
     ] {
         fs::write(directory.join("src").join(name), contents).map_err(|e| e.to_string())?;
@@ -771,6 +772,7 @@ pub fn prepare(
         "src/content.rs",
         "src/reference.rs",
         "src/workloads.rs",
+        "src/contracts.rs",
         "src/telemetry.rs",
     ] {
         artifacts.insert(PathBuf::from(rel), util::file_hash(&directory.join(rel))?);
