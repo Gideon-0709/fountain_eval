@@ -2,7 +2,7 @@
 
 `feval` freezes Fountain components, generates isolated native builds, executes every applicable check, records measurements and compares results. The `fountain-eval` Cargo package provides the `fountain_eval` library and the `feval` CLI. Component source remains in its own repository.
 
-The project is an unreleased internal **0.1.0** candidate. Its formal content covers correctness, individual operations, execution chains and integrated workflows. Encoding-plan construction/export and recorded execution belong to chain testing; plan reuse across blocks belongs to integrated testing. See the [test guide](docs/TEST_PLAN_0.1.0.md) for contracts and interpretation and the automatically generated reports for executed coverage and limitations. No release or performance ranking is implied.
+The project is an unreleased internal **0.1.0** candidate. Its formal content covers correctness, individual operations, execution chains and integrated workflows. Encoding-plan construction/export and recorded execution belong to chain testing; plan reuse across blocks belongs to integrated testing. See the [test guide](docs/TEST.md) for contracts and interpretation and the automatically generated reports for executed coverage and limitations. No release or performance ranking is implied.
 
 ## Install and run
 
@@ -167,7 +167,7 @@ The pending workspace is single-use: after the run publishes its report, both th
 
 ## What the formal content runs
 
-`feval list` expands the complete 2,182-case candidate. The selected scheme and verified interface determine applicability; users cannot suppress cases.
+`feval list` expands the complete 2,467-case candidate. The selected scheme and verified interface determine applicability; users cannot suppress cases.
 
 | Category | Coverage | Measurement |
 |---|---|---|
@@ -210,7 +210,7 @@ feval report /path/to/runs/run-id --output ./reports
 feval report /path/to/runs/run-id --output ./reports --replace
 ```
 
-The report opens with component outcomes, fatal errors and grouped semantic warnings. Its performance tables show source-equivalent codec throughput at K=512/5008 and T=128/1016, plan construction/export time, dominant diagnostic stages and seven core operations in ns/call. A dagger flags a displayed median with CV above 10%. Coverage counts explain skipped and unfinished work.
+The report opens with component outcomes, fatal errors and grouped semantic warnings. Its performance tables show source-equivalent codec throughput at K=512/5008 and B=128/1016, plan construction/export time, dominant diagnostic stages and seven core operations in ns/call. A dagger flags a displayed median with CV above 10%. Coverage counts explain skipped and unfinished work.
 
 `feval report REPORT.md` prints the readable summary. To refresh an older report in place, run `feval report REPORT.md --output REPORT_ROOT --replace`. The renderer reads the verified result index, so refreshing the layout also works after cache cleanup. `feval report REPORT.md --json` returns every case and diagnostic, and `feval compare LEFT RIGHT --json` returns all validated comparison rows.
 
@@ -236,4 +236,4 @@ Start failures with the report outcome, fatal findings and the diagnostic excerp
 
 ## Maintainer references
 
-See the [0.1.0 test guide](docs/TEST_PLAN_0.1.0.md), [DESIGN and implementation map](docs/DESIGN.md), [CONTRIBUTING](CONTRIBUTING.md) and [artifact contracts](specs/README.md). Reports are produced by the CLI; historical construction summaries are not the source of component results.
+See the [0.1.0 test guide](docs/TEST.md), [DESIGN and implementation map](docs/DESIGN.md), [CONTRIBUTING](CONTRIBUTING.md) and [artifact contracts](specs/README.md). Reports are produced by the CLI; historical construction summaries are not the source of component results.

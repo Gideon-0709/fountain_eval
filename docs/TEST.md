@@ -1,10 +1,10 @@
-# Fountain evaluation 0.1.0: tests and report interpretation
+# Fountain evaluation tests
 
 This guide describes the implemented, unreleased **0.1.0** test content. It explains the fixtures, correctness expectations, measurement boundaries and relationships between results. Configuration, component selection, integration and evidence lifecycle are defined in [DESIGN](DESIGN.md); commands and batch reports are documented in the [README](../README.md).
 
-The full catalog contains 2,182 concrete cases across RQ and R10. Each selected C receives the same catalog with explicit applicability. The configured scheme and available component surfaces determine which cases execute. Engine-only C executes standalone plan construction/export; operator-only C executes the pure-operator surface. Missing components, unavailable capabilities and the R10 K<4 domain are reported as skips. Applicable cases blocked by a fatal failure remain unexecuted.
+The full catalog contains 2,467 concrete cases across RQ and R10. Each selected C receives the same catalog with explicit applicability. The configured scheme and available component surfaces determine which cases execute. Engine-only C executes standalone plan construction/export; operator-only C executes the pure-operator surface. Missing components, unavailable capabilities and the R10 K<4 domain are reported as skips. Applicable cases blocked by a fatal failure remain unexecuted.
 
-## Four categories and their relationships
+## Test categories and notation
 
 | Category | Question | Main evidence |
 | --- | --- | --- |
@@ -12,6 +12,8 @@ The full catalog contains 2,182 concrete cases across RQ and R10. Each selected 
 | Individual operations | How expensive is one public operation under a specified state and working set? | Time per call, calls per second and explicitly defined logical-byte rates. |
 | Execution chains | Where is time and work spent along an actual coding path? | Stage durations, operation composition, plan construction/replay and resource diagnostics. |
 | Integrated workflows | How fast does the component combination complete a useful coding task? | Output-ready and lifecycle durations, throughput, first-use cost and sustained behavior. |
+
+**C** is one selected engine/operator combination or a single component. **I** identifies the calling interface, **T** the test content, and **E** the common experiment conditions. In workload notation, **B** is bytes per symbol, **K** the application source-symbol count, **K'** an internal padded source count, **R** generated repairs and **M** omitted sources. Symbol width always uses B, avoiding confusion with T. A case is one concrete parameter and capability expansion of a test family.
 
 The categories share deterministic inputs and correctness rules, but measure different boundaries. A scalar reference validates operations. Recorded real operation sequences connect those operations to coding chains. Chain observations explain integrated performance. Integrated performance remains the directly measured outcome rather than a sum of separate microbenchmarks.
 
@@ -35,14 +37,13 @@ The labels V01, O01, L01 and W01 below are family references. V stands for valid
 
 ## Fatal and warning expectations
 
-
 Fatal rules cover wrong output under a defined contract, cross-object data corruption, false completion, invalid resource ownership, crashes on valid inputs, timeouts and malformed or missing required evidence. Warning rules cover explicitly registered ambiguous boundary semantics, including same-ID XOR and repeated-source XOR.
 
 A warning cannot be promoted to fatal merely because two operators disagree. It cannot be downgraded or hidden to make an operator appear clean. Conversely, an end-to-end wrong decoded payload is fatal even if a separate boundary test classified the triggering primitive's ambiguity as warning.
 
 Reference-matching and reference-deviating implementations are both timed. The framework does not equalize their internal work, suppress a fast no-op result, or reject a comparison solely because warning observations differ.
 
-A fatal validation stops successful measurement for the run. Already produced evidence remains, and unfinished cases are marked accordingly. No automatic retry, enlarged repair budget or relaxed timeout turns that attempt into a pass.
+A fatal validation stops measurement for the affected C; other configured C entries still execute. Completed checks and unfinished cases remain visible in the final report index. Temporary evidence and the invocation-owned cache are cleaned after verified report publication. No automatic retry, enlarged repair budget or relaxed timeout turns that attempt into a pass.
 
 ## Correctness checks
 
@@ -68,11 +69,24 @@ A copy is followed by an in-place zero write and replacement of its destination,
 
 The native trait has no safe membership query. The check does not read a removed/moved ID before reinsertion and does not claim to prove its absence. The informational association has no query API either; only preservation of symbol bytes is observable. Both limits are explicit in successful evidence. Explicit sharing and first-write checks remain in the applicable O08 premeasurement checks. Batch storage and alternate dispatch belong to V05; process/resource destruction belongs to V11.
 
-### V04 — Mixed operation sequences
+### V04 — State histories across mixed operations
 
-Run a fixed representative sequence and bounded, fixed-seed generated sequences over a controlled ID space. Include allocation, arithmetic, copy/move, removal and reuse. Compare state after each meaningful prefix to locate the first divergence rather than reporting only the final block checksum.
+V04 checks interactions caused by preceding operations. It applies a complete, predetermined trace to an independent scalar state model and the selected operator, comparing every known-live symbol byte after **every public call**. No implicit state-restoration calls occur between trace steps. The histories use defined-domain operations; ambiguous aliases and overlapping ranges belong to V06.
 
-Sequence generation preserves operation preconditions except in separately registered boundary tests. The report identifies the seed, operation index, operands and first incorrect state. Defined-domain divergence is fatal. This check links individual primitives to the sequences used in real plans.
+| Scenario | History and coverage | Calls per trace |
+| --- | --- | --- |
+| `copy-chain` | Eight rounds of chained copies, writes to source/destination, XOR/GF arithmetic, movement, replacement, deletion and reuse. Exercises deferred copies and later mutations. | 144 |
+| `move-reuse` | Sixteen rounds move a live symbol, reuse its former ID, remove/recreate the destination, copy and modify it, then move over an existing destination. | 208 |
+| `sparse-churn` | Grow from 16 to 80 live symbols using dense and sparse IDs, remove half of the added symbols, reinsert them in reverse order, then churn sparse IDs through temporary ID 2048. | 352 |
+| `seeded` | Generate 256 operations using current ID liveness. Includes insertion, zeroing, copy/move/removal, read, alpha/scalar multiplication, multiply-add, single/two/multiple-source XOR and broadcast. Arithmetic operands are distinct, broadcast targets are unique, and removed IDs are not read. | 256 |
+
+Each trace runs from fresh identical initial bytes through three routes: direct methods, `execute`, and alternating direct/`execute`. Insertion and lookup have no instruction-enum equivalent and always use their sole public entry. Each route is checked against the independent state model, not merely against another route. Trace digests exclude the route, allowing identical inputs to be verified across routes.
+
+All 19 correctness widths apply. Directed histories use seed `0x1971`; the generated history uses all three registered seeds. This produces `(3 + 3) × 3 × 19 = 342` cases. Each step has its own deterministic input seed for replacement bytes. The generator runs before component execution and has no dependency on observed component behavior. These are synthetic state histories, not real engine plans; L11/L12 own real operation replay.
+
+Any defined-domain mismatch, unreadable expected-live symbol or component panic is fatal. Failure evidence records scenario, B, seed, route, one-based step and total calls, actual dispatch, action/operands, per-step input seed, trace and pre-state digests, the preceding eight actions, and the first differing symbol/byte with expected/actual values and lengths. The visible report shows the first failure and replay identity; its result index retains the bounded preceding trace. A panic retains the same step context. Success records exact checked-prefix/call counts, direct/execute counts, peak live-symbol count and maximum ID.
+
+The histories exercise logical growth and reuse. They do not prove physical reclamation or absence of deleted IDs: the current safe interface has no membership query. Counts describe this bounded workload, not exhaustive state-machine coverage.
 
 ### V05 — Dispatch and batch composition equivalence
 
@@ -90,13 +104,33 @@ Insertion, lookup and explicit sharing have no instruction-enum counterpart and 
 
 Successful evidence records the number and kind of comparisons and the observation limits. A direct method may delegate to `execute`; agreement still checks the exposed contract, not whether a fast override exists. Two identically wrong primitive implementations can agree here: V02/V03 provide their independent value/ownership checks. Conversely, a batch defect shared by direct and `execute` is detected by comparison with the elementary sequence.
 
-The dependency is explicit: **V02 establishes arithmetic primitives; V03 establishes storage primitives; V05 establishes their alternate entry points and compositions.** These are different assertions, even when a comparison must execute a primitive again. The previous shared full-oracle loop under all three family names has been removed. Family numbering does not prescribe execution order; any fatal prevents successful measurement for that C.
+The dependency is explicit: **V02 establishes arithmetic primitives; V03 establishes storage primitives; V05 establishes their alternate entry points and compositions.** These are different assertions, even when a comparison must execute a primitive again. Family numbering does not prescribe execution order; any fatal prevents successful measurement for that C.
 
-### V06 — Ambiguous boundary semantics
+### V06 — Boundary contracts and semantic observations
 
-Observe same-ID XOR, repeated source IDs, a destination occurring among sources, overlapping batch ranges, empty operand lists and self-copy/self-move where the API permits invocation. Each concrete case must state whether the public contract defines its outcome or leaves it ambiguous. The existing same-ID and repeated-source XOR cases remain warning-level.
+Each registered boundary carries its expectation, contract basis, permitted affected IDs and severity policy. The same definition drives correctness and performance prechecks. Definitions are based on the registered public engine 2.1 and development engine 3 `DataOperator`/`Operation` surfaces. Explicit API requirements, T-derived arithmetic rules and unresolved semantics are distinguished below; observed agreement between implementations is not a contract source.
 
-Record the operation, pre-state, reference expectation, actual post-state, dispatch path and timing observations. For example, same-ID XOR may leave the original bytes instead of producing zeros; both the deviation and its measured cost remain visible. There is no blanket rule that every aliasing problem is only a warning: explicit copy-isolation violations remain fatal under V03.
+In this table, X and Y denote original symbol contents. All inputs are live, initialized symbols.
+
+| Case | Required result or observational reference | Contract basis and deviation severity |
+| --- | --- | --- |
+| `self-xor` | `X ^= X` produces zero. | Same-ID alias behavior is unspecified; the agreed T policy retains **warning**. |
+| `duplicate-source-xor` | `Y ^= X ^ X` leaves Y unchanged. | Duplicate-source handling is unspecified; the agreed T policy retains **warning**. |
+| `target-in-sources` | `Y ^= X ^ Y` produces the original X using pre-call sources. | Source/target snapshot order is unspecified: **warning**. |
+| `duplicate-broadcast-target` | Two XOR writes to the same target cancel. | List occurrences versus deduplicated destinations are unspecified: **warning**. |
+| `self-copy` | The symbol stays readable and byte-identical. | `Operation::CopyTo` requires keeping the source intact; coincident IDs do not conflict with this requirement: **fatal**. |
+| `self-move` | Preserve the symbol. | `MoveTo` invalidates its source; precedence for coincident IDs is unspecified: **warning**. |
+| `empty-xor` | The existing target stays readable and byte-identical. | T derives the empty XOR fold as adding zero. This is a test contract, not an explicit upstream empty-list guarantee: **fatal**. |
+| `overlapping-copy` | Snapshot IDs 0..2, then write their original bytes to IDs 1..3. | `CopyToN` does not define overlap order or snapshot behavior: **warning**. |
+| `overlapping-move` | Snapshot IDs 0..2, remove that range, then write IDs 1..3. | `MoveToN` does not define overlap order: **warning**. Source absence is not observable. |
+
+The correctness matrix contains `9 × 19 widths × 2 routes = 342` cases: 76 defined-contract and 266 ambiguous-contract checks. The performance matrix additionally contains `9 × 8 widths × 2 routes × 2 working sets = 288` cases with the same policy. A boundary that matches its reference passes; only a deviation creates a warning. Direct and `execute` differences remain under that boundary's policy rather than becoming a V05 equivalence failure.
+
+**Scope protection is always fatal.** A warning permits different behavior only at the registered affected IDs. Every other initialized symbol must remain readable and byte-identical, including after a caught boundary-call panic. Protected symbols are checked outside timing on validation and on every measured instance. Thus a no-op, snapshot difference or ambiguous-target rejection can be a warning, while corruption of an unrelated symbol cannot be hidden as one. Copy-source ID 0 remains protected in overlapping-copy; overlapping-move permits differences at IDs 0..3.
+
+For defined cases, wrong bytes, unreadable output and call rejection are fatal. For ambiguous cases, a caught panic is recorded as `rejected_by_panic`; unreadable affected output is `output_unreadable_after_boundary_call`. Unrecoverable process failure and timeout remain execution failures. Boundary timing includes the common panic-catching and rejection-flag bookkeeping wrapper; state comparison and reporting are outside the timer. A rejected call reports rejection latency, not successful operation throughput. Nominal calls are still counted without normalizing away a fast return.
+
+Warnings retain expected/actual observations and the per-case contract basis. They do not block measurement or comparison solely because components differ. Incorrect end-to-end recovered bytes remain fatal. V03 continues to own defined copy-isolation requirements.
 
 ### V07 — Scheme, source count and padding
 
@@ -124,9 +158,11 @@ Verify that valid reordering does not corrupt output, duplicates do not create f
 
 ### V11 — Errors and resource lifecycle
 
-Exercise documented invalid arguments through safe callable interfaces, callback errors where supported, constructor failure, normal completion and consecutive block processing. Verify error propagation, handle ownership and release on both normal and supported failure paths. Invalid-input tests respect unsafe API preconditions; arbitrary invalid pointers are not part of the standard workload.
+Native checks count normal destruction of encoder/decoder/operator instances and verify bytes across repeated instances. Native traits expose no recoverable invalid-input error contract, so deliberately invalid IDs and vector lengths are not submitted; that limitation is reported explicitly.
 
-Track live component-owned resources or allocator events in diagnostic runs. RSS remaining above its initial value is not, by itself, proof of a leak because allocators may retain reusable memory. Confirmed unreleased ownership, double release, stale state affecting another block, swallowed required errors and crashes on valid input are fatal. Allocator retention and unexplained memory trends are reported as resource observations pending stronger evidence.
+The product API additionally injects a failing symbol-write callback during encoder construction, requires an error, and checks that the partially constructed callback owner is released once. It checks rejection of short replacement source data and short decoder symbols; R10 also checks rejection of K=1. Arbitrary invalid pointers and exhaustive allocation-failure injection are outside this catalog.
+
+Missing required errors, ownership-count violations and wrong surviving payloads are fatal. Allocation counts and retained bytes belong to separate resource diagnostics. The catalog does not measure RSS or establish allocator-retention leaks from a high watermark alone.
 
 ## Individual-operation performance
 
@@ -150,9 +186,9 @@ Use independently initialized states where repetition would alter the operation 
 | O08 | Establish sharing; first write after sharing. | Separate rows expose cheap alias creation and any deferred copy cost. Applicable only where the contract supports sharing. |
 | O09 | Remove a live symbol; informational ID association. | Removal or metadata-call cost. These are distinct case rows, not one aggregated benchmark. |
 
-Each applicable O03–O09 operation is exercised through direct and `execute` paths when both exist. Unsupported paths are explicit skips. An interface may return a legitimate unsupported-share result; that does not establish a successful zero-copy implementation.
+Operations with instruction-enum counterparts use both direct and `execute` paths. Insert, lookup and explicit sharing have one public entry and therefore no alternate-path case. A missing required operator surface produces explicit applicability skips. An interface may return a legitimate unsupported-share result; that does not establish a successful zero-copy implementation.
 
-Working-set variants distinguish repeated access to a small fixed set from cycling through a larger T-defined set. They are described by bytes and access order, not an unverified assertion that data resides in a particular cache level. Internal alignment is a component property; caller-controlled input offsets and non-aligned lengths are recorded when applicable.
+Working-set variants use batches of independently initialized operator instances: up to 64 for the small set and 512 for the large set, capped at 64 MiB of initial symbol bytes. Each instance receives one measured call. Width-tail cases exercise non-aligned lengths; this catalog does not vary caller buffer offsets or claim a particular cache residency. Internal alignment is a component property.
 
 O04 and O06 indicate primitive arithmetic cost. O01/O02/O07/O08/O09 explain why a fast arithmetic kernel may still produce a slow operator or codec. No arithmetic-kernel-only result substitutes for the public-operation measurement.
 
@@ -218,7 +254,7 @@ W07 measures useful-block continuity as well as isolated task latency. A lower o
 
 ## Workload matrix
 
-Use **B** for symbol bytes so that it cannot be confused with the T identity of test content. Use K for application source symbols, K' for an internal padded source count when applicable, R for generated repair symbols and M for omitted source symbols.
+The following dimensions expand only the families that consume them; they are not a Cartesian product across all tests.
 
 | Dimension | Values or expansion rule |
 | --- | --- |
@@ -229,9 +265,9 @@ Use **B** for symbol bytes so that it cannot be confused with the T identity of 
 | Repair generation | R = 1, 8, ceil(0.1K), deduplicated; source-output materialization is a separate case. |
 | Main decode omissions | M = 0, 1, ceil(0.01K), ceil(0.1K), deduplicated. |
 | Main reception order | Remaining sources followed by repairs; fixed shuffled mixture of sources and repairs. |
-| Additional correctness reception | Contiguous missing ranges, duplicate IDs, repairs first, repair-only recovery and insufficient-information prefixes. |
-| Payload patterns | All zero, fixed byte patterns and deterministic pseudorandom bytes. |
-| Workload randomness | `0x1971`, `0x2003`, `0x5008`; SplitMix64 payload bytes and deterministic Fisher–Yates order. Preserve each seed separately. |
+| V10 reception | Missing first eight sources, duplicate source IDs, repairs first, repair-only recovery and incomplete prefixes; duplicate repairs and post-completion calls are not covered. |
+| Payload patterns | V02/V03/V05 use zero, 0xff and pseudorandom bytes; V04/V06 and codec workloads use deterministic pseudorandom inputs. |
+| Workload randomness | Seeds `0x1971`, `0x2003`, `0x5008`; SplitMix64 bytes and Fisher–Yates order. Three seeds apply to generated V04 histories, V01/V08–V11 and W04/W05. Other cases use the first seed. |
 | Consecutive-block count | 32 different payload blocks per registered continuity case. |
 | Repair budget | max(128, 2M + 64), bounded by the registered legal repair-ID domain. Record the effective budget and reason for any applicability restriction. |
 
@@ -278,7 +314,7 @@ The candidate uses deterministic fixed batches: up to 64 independent instances f
 
 Keep worker/process grouping, repetition index and workload seed. Three seeds measure different inputs; repeats of one seed measure execution variability for that input. Fifteen samples are not 15 independent machines, nor a basis for precise tail-percentile or production-stability claims.
 
-Retain every recorded sample. Report median, minimum, maximum and dispersion, together with the sample count and process grouping. Do not delete slow observations automatically. Record case order and host observations. When orchestrating a baseline/candidate study, use a prescribed balanced order; comparing already existing files cannot retroactively remove order drift.
+Use every recorded sample when calculating the median, minimum, maximum and dispersion, retaining sample counts and worker grouping in the report index. Do not filter slow observations. Individual samples are temporary execution evidence and are cleaned after the verified Markdown report is published. Record case order and host observations. When orchestrating a baseline/candidate study, use a prescribed balanced order; comparing already existing files cannot retroactively remove order drift.
 
 ### Resource scope
 
@@ -314,11 +350,11 @@ Warnings do not change denominators. A boundary call that returns immediately st
 
 The framework automatically produces one Markdown report for the entire configured batch. It embeds every C, groups results by test category, and separates execution wall time from benchmark time. The retained report index preserves validated aggregate results and exact per-case coverage; temporary observations are cleaned after publication. The report is derived from that evidence and is readable locally without uploading component information or results.
 
-The [artifact contracts](../specs/README.md) define `result.json`, configuration, correctness, coverage, raw samples, separate diagnostics and rendered views. The views derive from the same sealed evidence; framework checks verify missing observations, inconsistent work counts and diagnostic accounting.
+The [artifact contracts](../specs/README.md) define temporary execution evidence and the retained Markdown result index. `result.json`, raw samples, logs and build cache are working files, not additional final reports. Framework checks detect missing observations, inconsistent work counts and invalid diagnostic accounting before cleanup.
 
 ### Read the report
 
-Start with each component’s outcome and the first failed check or semantic warning group. Read codec throughput at K=512/5008 and widths 128/1016, independent encoding-plan timings, the largest instrumented lifecycle stages and the direct/execute ns per core operation. Coverage distinguishes skipped cases from checks left unfinished. The result index contains timings for the entire matrix, including other widths and seeds, continuity/reuse workloads, allocation metrics and all stage observations. Read it with `feval report REPORT.md --json`.
+Start with each component’s outcome and the first failed check or semantic warning group. Read codec throughput at K=512/5008 and widths 128/1016, separately measured encoding-plan timings (L02/L03), the largest instrumented lifecycle stages and the direct/execute ns per core operation. Coverage distinguishes skipped cases from checks left unfinished. The result index contains timings for the entire matrix, including other widths and seeds, continuity/reuse workloads, allocation metrics and all stage observations. Read it with `feval report REPORT.md --json`.
 
 ### How to interpret common patterns
 
@@ -333,6 +369,5 @@ Start with each component’s outcome and the first failed check or semantic war
 | Diagnostic timing differs materially from ordinary timing. | Instrumentation or execution conditions affect the observation. | Same-work comparisons and explicit overhead evidence before attributing the diagnostic split. |
 
 An optimization opportunity is a supported location to investigate, not a promised speedup. A measured serial fraction can support a qualified theoretical upper bound, but actual gains depend on interactions, changed work and cache/resource behavior. Avoid automatic causal claims from a single percentage change.
-
 
 Ordinary workers have a 600-second deadline; fresh-process cases have 60 seconds. Three separate diagnostic workers observe the same ordinary cases. These bounds do not automatically expand after failure. The defined samples characterize these fixed inputs and this host, not production stability.

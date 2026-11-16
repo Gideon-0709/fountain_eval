@@ -107,64 +107,6 @@ pub fn prepare(c: &Case) -> Prepared {
 fn checked_state(op: &Operator, expected: &State, context: &str) {
     assert_eq!(op.snapshot(expected), *expected, "{context}");
 }
-fn apply_checked(op: &mut Operator, state: &mut State, action: &Action, c: &Case, direct: bool) {
-    reference::apply(state, action, c.width, c.seed);
-    op.run(&Program::new(
-        std::slice::from_ref(action),
-        direct,
-        c.width,
-        c.seed,
-    ));
-    checked_state(op, state, &format!("{} {action:?}", c.id));
-}
-fn mixed_sequence(c: &Case) -> Value {
-    let mut random = c.seed;
-    let mut state = reference::initial(c.width, c.seed);
-    let mut op = Operator::preload(c.width, c.seed);
-    for index in 0..256 {
-        let a = (reference::next(&mut random) % 8) as usize;
-        let b = 8 + (reference::next(&mut random) % 8) as usize;
-        let action = match index % 8 {
-            0 => Action::Xor { src: a, dst: b },
-            1 => Action::Scale {
-                id: b,
-                scalar: reference::next(&mut random) as u8,
-            },
-            2 => Action::Copy { src: a, dst: b },
-            3 => Action::MulAdd {
-                src: a,
-                scalar: 7,
-                dst: b,
-            },
-            4 => Action::Move { src: b, dst: 32 },
-            5 => Action::Copy { src: 32, dst: b },
-            6 => Action::Remove { id: 32 },
-            _ => Action::Zero { id: b },
-        };
-        // The moved destination is restored immediately before any generated use.
-        if index % 8 == 5 {
-            let action = Action::Copy { src: 32, dst: 8 };
-            apply_checked(&mut op, &mut state, &action, c, true);
-        }
-        if let Action::Move { src, .. } = &action {
-            if !state.contains_key(src) {
-                let restore = Action::Copy { src: 0, dst: *src };
-                apply_checked(&mut op, &mut state, &restore, c, true);
-            }
-        }
-        if let Action::Xor { dst, .. }
-        | Action::Scale { id: dst, .. }
-        | Action::MulAdd { dst, .. } = &action
-        {
-            if !state.contains_key(dst) {
-                let restore = Action::Copy { src: 0, dst: *dst };
-                apply_checked(&mut op, &mut state, &restore, c, true);
-            }
-        }
-        apply_checked(&mut op, &mut state, &action, c, index % 2 == 0);
-    }
-    json!({"seed":c.seed,"checked_prefixes":256,"state":reference::compact(&state)})
-}
 fn linear_reference(c: &Case) -> Value {
     let k = c.k;
     let width = c.width;
@@ -296,11 +238,9 @@ fn codec_contract(c: &Case) -> Value {
     json!({"probe":counters,"source_symbols":c.k,"first_repair_id":base,"scenarios":scenarios.len(),"output_bytes":bytes.len(),"error_contract":if c.workload=="lifecycle-contract"{api::error_contract(scheme(c),c.k,c.width,&bytes)}else{Value::Null},"field_and_source_mapping":"selected binding verified during build; source bytes and padding checked here"})
 }
 pub fn validate(c: &Case) -> Validation {
-    if c.category == "correctness" && !c.warning {
+    if c.category == "correctness" && !c.warning && c.boundary.is_none() {
         let details = if c.scheme.is_some() {
             codec_contract(c)
-        } else if c.workload == "mixed-sequence" {
-            mixed_sequence(c)
         } else {
             crate::contracts::validate::<Operator>(c)
         };
@@ -350,15 +290,15 @@ fn primitive(c: &Case, p: &Prepared) -> Outcome {
             op
         })
         .collect();
-    let hook = c.warning.then(std::panic::take_hook);
-    if c.warning {
+    let hook = c.boundary.is_some().then(std::panic::take_hook);
+    if c.boundary.is_some() {
         std::panic::set_hook(Box::new(|_| {}));
     }
     let mut panics = Vec::with_capacity(instances);
     let before = telemetry::start();
     let start = Instant::now();
     for op in &mut operators {
-        if c.warning {
+        if c.boundary.is_some() {
             panics.push(
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     op.run(p.program.as_ref().unwrap())
@@ -371,31 +311,22 @@ fn primitive(c: &Case, p: &Prepared) -> Outcome {
     }
     let ns = elapsed(start);
     let resources = telemetry::finish(before);
+    if let Some(hook) = hook {
+        std::panic::set_hook(hook);
+    }
     let mut outcomes: BTreeMap<String, (u64, Value)> = BTreeMap::new();
     for (index, op) in operators.iter().enumerate() {
-        if !c.warning {
+        if c.boundary.is_none() && !c.warning {
             checked_state(op, &p.expected, &c.id);
             continue;
         }
-        let value = if c.warning && panics[index] {
-            json!({"status":"rejected_by_panic","scope":"boundary call rejection latency; no completed operation"})
-        } else if c.warning {
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                op.snapshot(&p.expected)
-            })) {
-                Ok(actual) => reference::compact(&actual),
-                Err(_) => json!({"status":"output_unreadable_after_boundary_call"}),
-            }
+        let value = if c.boundary.is_some() {
+            crate::contracts::boundary_observation(op, c, &p.initial, &p.expected, panics[index])
         } else {
-            let actual = op.snapshot(&p.expected);
-            assert_eq!(actual, p.expected, "primitive output mismatch: {}", c.id);
-            reference::compact(&actual)
+            unreachable!("non-boundary operations were checked above")
         };
         let key = digest(&serde_json::to_vec(&value).unwrap());
         outcomes.entry(key).or_insert((0, value)).0 += 1;
-    }
-    if let Some(hook) = hook {
-        std::panic::set_hook(hook);
     }
     let observation = json!({"calls":instances,"outcomes":outcomes.into_values().map(|(count,actual)|json!({"count":count,"actual":actual})).collect::<Vec<_>>()});
     let witness = if c.warning {
@@ -409,7 +340,7 @@ fn primitive(c: &Case, p: &Prepared) -> Outcome {
         resources,
         observation: c.warning.then_some(observation),
         status: "completed".into(),
-        details: json!({"public_calls":instances,"initial_symbol_bytes":instances*16*c.width,"dispatch":if c.direct{"direct"}else{"execute"},"operations":c.actions,"logical_byte_rate":"not physical memory bandwidth"}),
+        details: json!({"public_calls":instances,"initial_symbol_bytes":instances*16*c.width,"dispatch":if c.direct{"direct"}else{"execute"},"operations":c.actions,"boundary_contract":c.boundary,"logical_byte_rate":"not physical memory bandwidth"}),
     }
 }
 pub fn run(c: &Case, p: &Prepared, diagnostic: bool) -> Outcome {

@@ -105,3 +105,17 @@ fn unreadable_boundary_output_is_explained_without_dumping_the_state() {
     assert!(!md.contains("0/0 samples differ"));
     assert!(!md.contains("{\"symbols\""));
 }
+
+#[test]
+fn history_failure_keeps_the_first_difference_visible_after_long_replay_context() {
+    let mut r = support::record("native-2", "rq");
+    r.status = "failed".into();
+    r.correctness.fatal_failures.push(json!({
+        "case":"correctness/mixed-sequence/copy-chain/b31/s6513/mixed",
+        "message":format!("V04 copy-chain: width=31, seed=6513, route=mixed, step=73/144, dispatch=direct, action=Copy {{ src: 0, dst: 16 }}\nTrace SHA-256: trace; pre-state SHA-256: state.\nPrevious steps: {}\nFirst difference: symbol 0, byte 0; expected 7; actual 6; expected length 31; actual length 31.", "old operation; ".repeat(80))
+    }));
+    let md = report::markdown(&r);
+    assert!(md.contains("step=73/144") && md.contains("First difference: symbol 0, byte 0"));
+    assert!(md.contains("expected 7; actual 6") && md.contains("Trace SHA-256: trace"));
+    assert!(md.contains("preceding operations") && !md.contains("old operation;"));
+}

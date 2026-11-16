@@ -26,6 +26,9 @@ enum Fault {
     CopiedWriteIgnored,
     BatchCopyAliases,
     MoveReuse,
+    HistoryLate,
+    HistoryPanic,
+    HistoryReuse,
 }
 thread_local! { static FAULT: Cell<Fault> = const { Cell::new(Fault::None) }; }
 struct Fixture {
@@ -172,5 +175,248 @@ fn batch_defects_cannot_hide_behind_identical_dispatch_paths() {
         assert!(run("storage-ownership", fault).is_ok());
         let error = run("dispatch-equivalence", fault).unwrap_err();
         assert!(error.contains("V05 batch versus elementary direct calls"));
+    }
+}
+
+struct HistoryFixture {
+    inner: Fixture,
+    calls: usize,
+    removed: std::collections::BTreeSet<usize>,
+}
+impl Subject for HistoryFixture {
+    fn from_state(width: usize, state: &State) -> Self {
+        Self {
+            inner: Fixture::from_state(width, state),
+            calls: 0,
+            removed: Default::default(),
+        }
+    }
+    fn apply(&mut self, action: &Action, width: usize, seed: u64, direct: bool) {
+        self.calls += 1;
+        if self.inner.fault == Fault::HistoryPanic && self.calls == 73 {
+            panic!("injected delayed failure");
+        }
+        self.inner.apply(action, width, seed, direct);
+        if self.inner.fault == Fault::HistoryLate && self.calls == 73 {
+            self.inner.state.get_mut(&0).unwrap()[0] ^= 1;
+        }
+        if let Action::Remove { id } = action {
+            self.removed.insert(*id);
+        }
+        if self.inner.fault == Fault::HistoryReuse
+            && let Action::Insert { id } = action
+            && *id >= 128
+            && self.removed.contains(id)
+        {
+            self.inner.state.get_mut(id).unwrap()[0] ^= 1;
+        }
+    }
+    fn observe(&self, live: &State) -> State {
+        self.inner.observe(live)
+    }
+}
+fn history_case(scenario: &str, dispatch: content::SequenceDispatch) -> Case {
+    content::cases()
+        .into_iter()
+        .find(|c| {
+            c.width == 31
+                && c.sequence
+                    .as_ref()
+                    .is_some_and(|s| s.scenario == scenario && s.dispatch == dispatch)
+        })
+        .unwrap()
+}
+fn history(c: &Case, fault: Fault) -> Result<serde_json::Value, String> {
+    FAULT.set(fault);
+    let result = std::panic::catch_unwind(|| contracts::validate::<HistoryFixture>(c));
+    FAULT.set(Fault::None);
+    result.map_err(|e| e.downcast_ref::<String>().cloned().unwrap())
+}
+#[test]
+fn histories_are_reproducible_valid_and_identical_across_routes() {
+    use content::SequenceDispatch::*;
+    for scenario in ["copy-chain", "move-reuse", "sparse-churn", "seeded"] {
+        let mut fingerprint = None;
+        for dispatch in [Direct, Execute, Mixed] {
+            let c = history_case(scenario, dispatch);
+            let result = history(&c, Fault::None).unwrap();
+            let steps = contracts::sequence_steps(&c);
+            assert_eq!(result["checked_prefixes"], steps.len());
+            assert_eq!(result["public_calls"], steps.len());
+            assert_eq!(
+                result["direct_calls"].as_u64().unwrap()
+                    + result["execute_calls"].as_u64().unwrap(),
+                steps.len() as u64
+            );
+            if let Some(expected) = &fingerprint {
+                assert_eq!(expected, &result["trace_sha256"]);
+            }
+            fingerprint = Some(result["trace_sha256"].clone());
+            assert_eq!(
+                serde_json::to_value(&steps).unwrap(),
+                serde_json::to_value(contracts::sequence_steps(&c)).unwrap()
+            );
+            if scenario == "sparse-churn" {
+                assert_eq!(result["maximum_id"], 2048);
+                assert!(result["peak_live_symbols"].as_u64().unwrap() >= 80);
+            }
+        }
+    }
+    // Every registered generated seed reaches valid states with no removed-ID reads.
+    for c in content::cases()
+        .into_iter()
+        .filter(|c| c.width == 1 && c.sequence.is_some())
+    {
+        history(&c, Fault::None).unwrap();
+    }
+    let a = history_case("seeded", Direct);
+    let mut b = a.clone();
+    b.seed = content::SEEDS[1];
+    assert_ne!(
+        serde_json::to_value(contracts::sequence_steps(&a)).unwrap(),
+        serde_json::to_value(contracts::sequence_steps(&b)).unwrap()
+    );
+}
+#[test]
+fn sequence_failures_preserve_first_step_byte_and_replay_context() {
+    let c = history_case("copy-chain", content::SequenceDispatch::Mixed);
+    let error = history(&c, Fault::HistoryLate).unwrap_err();
+    for text in [
+        "V04 copy-chain",
+        "width=31",
+        "route=mixed",
+        "step=73/144",
+        "dispatch=direct",
+        "input_seed=",
+        "action=",
+        "Trace SHA-256",
+        "pre-state SHA-256",
+        "Previous steps:",
+        "First difference: symbol 0, byte 0",
+        "expected",
+        "actual",
+    ] {
+        assert!(error.contains(text), "missing {text}: {error}");
+    }
+    assert!(error.len() < 2500);
+    let error = history(&c, Fault::HistoryPanic).unwrap_err();
+    assert!(error.contains("step=73/144") && error.contains("injected delayed failure"));
+}
+#[test]
+fn histories_detect_sparse_reuse_and_route_specific_corruption() {
+    use content::SequenceDispatch::*;
+    let error = history(&history_case("sparse-churn", Direct), Fault::HistoryReuse).unwrap_err();
+    assert!(error.contains("V04 sparse-churn") && error.contains("action=Insert"));
+    assert!(history(&history_case("copy-chain", Direct), Fault::ExecuteOnly).is_ok());
+    for route in [Execute, Mixed] {
+        assert!(
+            history(&history_case("copy-chain", route), Fault::ExecuteOnly)
+                .unwrap_err()
+                .contains("dispatch=execute")
+        );
+    }
+}
+
+fn boundary_case(name: &str) -> Case {
+    content::cases()
+        .into_iter()
+        .find(|c| c.category == "correctness" && c.workload == name && c.width == 31 && c.direct)
+        .unwrap()
+}
+#[test]
+fn boundary_policy_is_explicit_and_shared_with_measurement_cases() {
+    let recipe = fountain_eval::catalog::recipe(&fountain_eval::protocol::TestReference {
+        version: "0.1.0".into(),
+    })
+    .unwrap();
+    let mut count = 0;
+    for check in recipe.checks.values().filter(|c| c.spec.family == "V06") {
+        let defined = matches!(check.spec.workload.as_str(), "self-copy" | "empty-xor");
+        let policy = check.spec.boundary.as_ref().unwrap();
+        assert_eq!(policy.defined, defined);
+        assert_eq!(check.spec.warning, !defined);
+        assert_eq!(
+            check.severity == fountain_eval::validation::Severity::Fatal,
+            defined
+        );
+        assert!(!policy.expectation.is_empty() && !policy.basis.is_empty());
+        count += 1;
+    }
+    assert_eq!(count, 9 * 19 * 2 + 9 * 8 * 2 * 2);
+}
+#[test]
+fn boundary_deviations_have_distinct_fatal_and_warning_outcomes() {
+    FAULT.set(Fault::None);
+    for b in content::boundaries() {
+        let c = boundary_case(b.name);
+        let initial = reference::initial(c.width, c.seed);
+        let mut expected = initial.clone();
+        reference::apply(&mut expected, &b.action, c.width, c.seed);
+        let good = Fixture::from_state(c.width, &expected);
+        assert_eq!(
+            contracts::boundary_observation(&good, &c, &initial, &expected, false),
+            reference::compact(&expected)
+        );
+        let mut bad = Fixture::from_state(c.width, &expected);
+        let id = *b
+            .contract
+            .affected_ids
+            .iter()
+            .find(|id| expected.contains_key(id))
+            .unwrap();
+        bad.state.get_mut(&id).unwrap()[0] ^= 1;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            contracts::boundary_observation(&bad, &c, &initial, &expected, false)
+        }));
+        if b.contract.defined {
+            assert!(result.is_err());
+        } else {
+            assert_ne!(result.unwrap(), reference::compact(&expected));
+        }
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            contracts::boundary_observation(&good, &c, &initial, &expected, true)
+        }));
+        if b.contract.defined {
+            assert!(result.is_err());
+        } else {
+            assert_eq!(result.unwrap()["status"], "rejected_by_panic");
+        }
+        bad.state.remove(&id);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            contracts::boundary_observation(&bad, &c, &initial, &expected, false)
+        }));
+        if b.contract.defined {
+            assert!(result.is_err());
+        } else {
+            assert_eq!(
+                result.unwrap()["status"],
+                "output_unreadable_after_boundary_call"
+            );
+        }
+    }
+}
+#[test]
+fn ambiguous_boundaries_never_excuse_unrelated_symbol_corruption() {
+    FAULT.set(Fault::None);
+    for b in content::boundaries()
+        .into_iter()
+        .filter(|b| !b.contract.defined)
+    {
+        let c = boundary_case(b.name);
+        let initial = reference::initial(c.width, c.seed);
+        let mut expected = initial.clone();
+        reference::apply(&mut expected, &b.action, c.width, c.seed);
+        for rejected in [false, true] {
+            let mut bad = Fixture::from_state(c.width, &expected);
+            bad.state.get_mut(&15).unwrap()[0] ^= 1;
+            let error = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                contracts::boundary_observation(&bad, &c, &initial, &expected, rejected)
+            }))
+            .unwrap_err();
+            let text = error.downcast_ref::<String>().unwrap();
+            assert!(
+                text.contains("Protected-symbol corruption") && text.contains("symbol 15, byte 0")
+            );
+        }
     }
 }

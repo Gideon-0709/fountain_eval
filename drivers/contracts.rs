@@ -332,6 +332,332 @@ pub fn validate<S: Subject>(c: &Case) -> Value {
         "operator-reference" => arithmetic::<S>(c),
         "storage-ownership" => storage::<S>(c),
         "dispatch-equivalence" => dispatch::<S>(c),
+        "mixed-sequence" => mixed_sequence::<S>(c),
         _ => panic!("unknown operator contract {}", c.workload),
+    }
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct SequenceStep {
+    pub action: Action,
+    pub seed: u64,
+}
+
+/// Build the complete trace before touching the component. No hidden repair calls.
+pub fn sequence_steps(c: &Case) -> Vec<SequenceStep> {
+    use Action::*;
+    let spec = c
+        .sequence
+        .as_ref()
+        .expect("V04 sequence specification missing");
+    let mut actions = Vec::new();
+    match spec.scenario.as_str() {
+        "copy-chain" => {
+            for _ in 0..8 {
+                actions.extend([
+                    Copy { src: 0, dst: 16 },
+                    Copy { src: 16, dst: 17 },
+                    Scale { id: 16, scalar: 7 },
+                    Xor { src: 17, dst: 1 },
+                    Scale { id: 0, scalar: 255 },
+                    Copy { src: 17, dst: 18 },
+                    MulAdd {
+                        src: 16,
+                        scalar: 7,
+                        dst: 18,
+                    },
+                    Move { src: 18, dst: 32 },
+                    Insert { id: 18 },
+                    Copy { src: 32, dst: 16 },
+                    Scale { id: 32, scalar: 0 },
+                    Remove { id: 17 },
+                    Insert { id: 17 },
+                    Move { src: 16, dst: 0 },
+                    Insert { id: 16 },
+                    Zero { id: 17 },
+                    Alpha { id: 0 },
+                    Read { id: 32 },
+                ]);
+            }
+        }
+        "move-reuse" => {
+            for round in 0..16 {
+                let src = 8 + round % 8;
+                let dst = 32 + round;
+                actions.extend([
+                    Insert { id: src },
+                    Move { src, dst },
+                    Insert { id: src },
+                    Xor { src: dst, dst: src },
+                    Remove { id: dst },
+                    Insert { id: dst },
+                    Copy { src, dst },
+                    Scale { id: dst, scalar: 7 },
+                    Remove { id: src },
+                    Insert { id: src },
+                    Move { src: dst, dst: src },
+                    Insert { id: dst },
+                    Remove { id: dst },
+                ]);
+            }
+        }
+        "sparse-churn" => {
+            let ids: Vec<_> = (16..48).chain((0..32).map(|i| 128 + 61 * i)).collect();
+            actions.extend(ids.iter().map(|&id| Insert { id }));
+            actions.extend(ids.iter().step_by(2).map(|&id| Remove { id }));
+            actions.extend(ids.iter().step_by(2).rev().map(|&id| Insert { id }));
+            for &id in &ids[32..] {
+                actions.extend([
+                    Copy { src: id, dst: 2048 },
+                    Remove { id },
+                    Insert { id },
+                    MulAdd {
+                        src: id,
+                        scalar: 7,
+                        dst: 2048,
+                    },
+                    Move { src: 2048, dst: id },
+                    Insert { id: 2048 },
+                    Remove { id: 2048 },
+                ]);
+            }
+        }
+        "seeded" => {
+            let mut random = c.seed;
+            let mut live = reference::initial(c.width, c.seed);
+            let pool: Vec<_> = (4..64).chain([127, 255, 511, 1023, 2047]).collect();
+            for index in 0..256 {
+                let choice = reference::next(&mut random) % 13;
+                let mut ids: Vec<_> = live.keys().copied().collect();
+                reference::shuffle(&mut ids, reference::next(&mut random));
+                let src = ids[0];
+                let dst = pool[(reference::next(&mut random) as usize) % pool.len()];
+                let other_dst = if dst == src {
+                    pool.iter().copied().find(|&i| i != src).unwrap()
+                } else {
+                    dst
+                };
+                let mutable = ids.iter().copied().find(|&i| i >= 4);
+                let scalar = [0, 1, 7, 255][(reference::next(&mut random) % 4) as usize];
+                let action = match choice {
+                    0 => Insert { id: dst },
+                    1 => Zero { id: dst },
+                    2 => Copy {
+                        src,
+                        dst: other_dst,
+                    },
+                    3 => match mutable {
+                        Some(src) => Move {
+                            src,
+                            dst: if dst == src { 4 + (src + 1) % 60 } else { dst },
+                        },
+                        None => Insert { id: dst },
+                    },
+                    4 => mutable.map_or(Insert { id: dst }, |id| Remove { id }),
+                    5 => Scale { id: src, scalar },
+                    6 => Alpha { id: src },
+                    7 => Xor { src, dst: ids[1] },
+                    8 => MulAdd {
+                        src,
+                        scalar,
+                        dst: ids[1],
+                    },
+                    9 => XorTwo {
+                        a: src,
+                        b: ids[1],
+                        dst: ids[2],
+                    },
+                    10 => Broadcast {
+                        src,
+                        destinations: vec![ids[1], ids[2]],
+                    },
+                    11 => Read { id: src },
+                    _ => XorMany {
+                        sources: ids[..3].to_vec(),
+                        dst: ids[3],
+                    },
+                };
+                reference::apply(&mut live, &action, c.width, c.seed.wrapping_add(index + 1));
+                actions.push(action);
+            }
+        }
+        _ => panic!("unknown V04 scenario {}", spec.scenario),
+    }
+    actions
+        .into_iter()
+        .enumerate()
+        .map(|(index, action)| SequenceStep {
+            action,
+            seed: c.seed.wrapping_add(index as u64 + 1),
+        })
+        .collect()
+}
+
+fn panic_text(error: Box<dyn std::any::Any + Send>) -> String {
+    error
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| error.downcast_ref::<&str>().map(|s| s.to_string()))
+        .unwrap_or_else(|| "non-string panic".into())
+}
+
+/// Bounded, exact first-difference diagnostics; never dump the whole state.
+fn require_state(actual: &State, expected: &State, context: &str) {
+    for (id, bytes) in expected {
+        if actual.get(id) == Some(bytes) {
+            continue;
+        }
+        let observed = actual.get(id);
+        let offset = observed.map_or(0, |v| {
+            v.iter()
+                .zip(bytes)
+                .position(|(a, b)| a != b)
+                .unwrap_or(v.len().min(bytes.len()))
+        });
+        panic!(
+            "{context}\nFirst difference: symbol {id}, byte {offset}; expected {}; actual {}; expected length {}; actual length {}.",
+            bytes.get(offset).map_or("missing".into(), u8::to_string),
+            observed
+                .and_then(|v| v.get(offset))
+                .map_or("missing".into(), u8::to_string),
+            bytes.len(),
+            observed.map_or("missing".into(), |v| v.len().to_string())
+        );
+    }
+    assert_eq!(
+        actual.len(),
+        expected.len(),
+        "{context}: unexpected observation keys"
+    );
+}
+
+fn mixed_sequence<S: Subject>(c: &Case) -> Value {
+    let spec = c
+        .sequence
+        .as_ref()
+        .expect("V04 sequence specification missing");
+    let steps = sequence_steps(c);
+    let trace_digest = crate::digest(&serde_json::to_vec(&steps).unwrap());
+    let mut state = reference::initial(c.width, c.seed);
+    let mut subject = S::from_state(c.width, &state);
+    let mut peak_live = state.len();
+    let mut max_id = *state.keys().next_back().unwrap();
+    let mut paths = [0usize; 2];
+    for (index, step) in steps.iter().enumerate() {
+        let direct = spec.dispatch.direct(index);
+        // Insert/read have only a direct public entry, regardless of the trace route.
+        let direct = direct || matches!(step.action, Action::Insert { .. } | Action::Read { .. });
+        let before = crate::digest(&serde_json::to_vec(&state).unwrap());
+        let recent = steps[index.saturating_sub(8)..index]
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                format!(
+                    "{}: {:?} (seed={})",
+                    index.saturating_sub(8) + i + 1,
+                    s.action,
+                    s.seed
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        let context = format!(
+            "V04 {}: width={}, seed={}, route={}, step={}/{}, dispatch={}, input_seed={}, action={:?}\nTrace SHA-256: {trace_digest}; pre-state SHA-256: {before}.\nPrevious steps: {recent}",
+            spec.scenario,
+            c.width,
+            c.seed,
+            spec.dispatch.name(),
+            index + 1,
+            steps.len(),
+            if direct { "direct" } else { "execute" },
+            step.seed,
+            step.action
+        );
+        reference::apply(&mut state, &step.action, c.width, step.seed);
+        let observed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            subject.apply(&step.action, c.width, step.seed, direct);
+            subject.observe(&state)
+        }))
+        .unwrap_or_else(|e| {
+            panic!(
+                "{context}\nComponent call or observation panicked: {}",
+                panic_text(e)
+            )
+        });
+        require_state(&observed, &state, &context);
+        peak_live = peak_live.max(state.len());
+        max_id = max_id.max(*state.keys().next_back().unwrap());
+        paths[usize::from(!direct)] += 1;
+    }
+    json!({"contract":"defined-domain state history", "scenario":spec.scenario, "seed":c.seed,
+        "route":spec.dispatch.name(), "trace_sha256":trace_digest, "checked_prefixes":steps.len(),
+        "public_calls":steps.len(), "direct_calls":paths[0], "execute_calls":paths[1],
+        "peak_live_symbols":peak_live, "maximum_id":max_id,
+        "unobservable":["absence of removed IDs and physical allocation/reclamation; only live bytes and subsequent reuse are checked"],
+        "state":reference::compact(&state)})
+}
+
+/// Apply the boundary's scope rule even when its semantic outcome is only a warning.
+/// This is called outside the timer, for validation and every measured instance.
+pub fn boundary_observation<S: Subject>(
+    subject: &S,
+    c: &Case,
+    initial: &State,
+    expected: &State,
+    rejected: bool,
+) -> Value {
+    let contract = c.boundary.as_ref().expect("V06 contract missing");
+    assert_eq!(
+        c.warning, !contract.defined,
+        "V06 severity/contract mismatch"
+    );
+    let context = format!(
+        "V06 {}: width={}, dispatch={}; {} Basis: {}",
+        c.workload,
+        c.width,
+        if c.direct { "direct" } else { "execute" },
+        contract.expectation,
+        contract.basis
+    );
+    let protected: State = initial
+        .iter()
+        .filter(|(id, _)| !contract.affected_ids.contains(id))
+        .map(|(&id, bytes)| (id, bytes.clone()))
+        .collect();
+    let actual =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| subject.observe(&protected)))
+            .unwrap_or_else(|e| {
+                panic!(
+                    "{context}\nProtected symbols became unreadable: {}",
+                    panic_text(e)
+                )
+            });
+    require_state(
+        &actual,
+        &protected,
+        &format!("{context}\nProtected-symbol corruption (fatal even for an ambiguous boundary)."),
+    );
+    if rejected {
+        assert!(
+            !contract.defined,
+            "{context}\nDefined boundary call was rejected."
+        );
+        return json!({"status":"rejected_by_panic","scope":"boundary call rejection latency; no completed operation"});
+    }
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| subject.observe(expected))) {
+        Ok(actual) => {
+            if contract.defined {
+                require_state(&actual, expected, &context);
+            }
+            reference::compact(&actual)
+        }
+        Err(error) => {
+            assert!(
+                !contract.defined,
+                "{context}\nDefined boundary output unreadable: {}",
+                panic_text(error)
+            );
+            json!({"status":"output_unreadable_after_boundary_call"})
+        }
     }
 }

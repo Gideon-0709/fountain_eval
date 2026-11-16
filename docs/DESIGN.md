@@ -65,7 +65,7 @@ The content version selects the full catalog, not an individual suite or categor
 
 Formal test content has four categories: correctness checks, individual operations, execution chains and integrated workflows. Encoding-plan generation is an engine stage within chain testing, not an atomic operation or fifth category. Plan reuse inside complete encoding is integrated testing. The registered formal content implements these four categories; driver and framework acceptance remain separate from component pass/fail results.
 
-The [0.1.0 test plan and report guide](TEST_PLAN_0.1.0.md) defines the concrete formal cases, their relationships, measurement boundaries and report interpretation. Automatically generated reports record which combinations actually executed and which were blocked by component failures.
+The [0.1.0 test plan and report guide](TEST.md) defines the concrete formal cases, their relationships, measurement boundaries and report interpretation. Automatically generated reports record which combinations actually executed and which were blocked by component failures.
 
 ## Multiple C selections and single components
 
@@ -121,7 +121,7 @@ The three integration families share the same T-owned input generation, scalar o
 
 ## Correctness and measurement ownership
 
-T owns deterministic inputs, the scalar reference, fatal/warning severity, workloads, timers and sampling. I owns calls and observable boundaries. The [test guide](TEST_PLAN_0.1.0.md) defines concrete cases and methodology; `src/content.rs` and `drivers/workloads.rs` implement that content.
+T owns deterministic inputs, the scalar reference, fatal/warning severity, workloads, timers and sampling. I owns calls and observable boundaries. The [test guide](TEST.md) defines concrete cases and methodology; `src/content.rs` and `drivers/workloads.rs` implement that content.
 
 Defined-domain errors are fatal. Registered ambiguous boundaries produce warnings alongside their actual performance. Diagnostic instrumentation is separate from ordinary performance measurement. Exclusive intervals can add up only within the same observed flow; inclusive counters and independent microbenchmarks cannot be summed into another sample's total.
 
@@ -169,7 +169,7 @@ Linux/macOS CI checks the framework and publicly accessible native combinations.
 | `src/main.rs` | CLI parsing, report destinations and exit codes |
 | `drivers/common.rs` | Embedded process protocol, worker dispatch and event emission |
 | `drivers/workloads.rs` | T-owned correctness, operation, chain and workflow execution |
-| `drivers/contracts.rs` | T-owned independent arithmetic/storage contracts and dispatch/composition relations; shared by native drivers and fault-injection tests |
+| `drivers/contracts.rs` | T-owned arithmetic/storage contracts, state histories, dispatch/composition relations and boundary observations; shared by native drivers and fault-injection tests |
 | `drivers/reference.rs` | Independent scalar GF/state model and small Gauss-Jordan oracle |
 | `drivers/telemetry.rs` | Diagnostic-only allocation accounting with explicit observation scope |
 | `drivers/operator.rs` | I-owned operator binding and untimed participation wrapper |

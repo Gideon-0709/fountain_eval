@@ -103,6 +103,46 @@ pub enum Action {
     },
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SequenceDispatch {
+    Direct,
+    Execute,
+    Mixed,
+}
+impl SequenceDispatch {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::Execute => "execute",
+            Self::Mixed => "mixed",
+        }
+    }
+    pub fn direct(self, index: usize) -> bool {
+        self == Self::Direct || (self == Self::Mixed && index % 2 == 0)
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SequenceSpec {
+    pub scenario: String,
+    pub dispatch: SequenceDispatch,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BoundaryContract {
+    /// A requirement of this T, distinguished from an observational reference.
+    pub defined: bool,
+    pub expectation: String,
+    pub basis: String,
+    /// Only these IDs may differ for an ambiguous call. Other live bytes are protected.
+    pub affected_ids: Vec<usize>,
+}
+pub struct Boundary {
+    pub name: &'static str,
+    pub action: Action,
+    pub contract: BoundaryContract,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Case {
     pub id: String,
@@ -120,6 +160,10 @@ pub struct Case {
     pub direct: bool,
     pub instances: usize,
     pub actions: Vec<Action>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequence: Option<SequenceSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boundary: Option<BoundaryContract>,
     pub warning: bool,
     pub measured: bool,
     pub fresh_process: bool,
@@ -143,6 +187,8 @@ impl Case {
             direct: false,
             instances: 1,
             actions: Vec::new(),
+            sequence: None,
+            boundary: None,
             warning: false,
             measured: category != "correctness",
             fresh_process: false,
@@ -271,45 +317,41 @@ pub fn operations() -> Vec<(String, &'static str, Action)> {
     }
     out
 }
-pub fn boundaries() -> Vec<(&'static str, Action)> {
+/// Per-case policy is T-owned and shared by correctness and performance checks.
+/// Sources: DataOperator and Operation in registered engine 2.1 and engine 3.
+pub fn boundaries() -> Vec<Boundary> {
     use Action::*;
-    vec![
-        ("self-xor", Xor { src: 0, dst: 0 }),
-        ("duplicate-source-xor", XorTwo { a: 0, b: 0, dst: 1 }),
-        ("target-in-sources", XorTwo { a: 0, b: 1, dst: 1 }),
-        (
-            "duplicate-broadcast-target",
-            Broadcast {
-                src: 0,
-                destinations: vec![1, 1],
-            },
-        ),
-        ("self-copy", Copy { src: 0, dst: 0 }),
-        ("self-move", Move { src: 0, dst: 0 }),
-        (
-            "empty-xor",
-            XorMany {
-                sources: vec![],
-                dst: 1,
-            },
-        ),
-        (
-            "overlapping-copy",
-            CopyRange {
-                src: 0,
-                dst: 1,
-                count: 3,
-            },
-        ),
-        (
-            "overlapping-move",
-            MoveRange {
-                src: 0,
-                dst: 1,
-                count: 3,
-            },
-        ),
-    ]
+    [
+        ("self-xor", Xor { src: 0, dst: 0 }, false,
+         "The original value XOR itself is zero.",
+         "Same-ID source/target aliasing is unspecified; retained as a warning by the agreed T policy.", vec![0]),
+        ("duplicate-source-xor", XorTwo { a: 0, b: 0, dst: 1 }, false,
+         "Two occurrences of the same source cancel; the target is unchanged.",
+         "The API does not specify duplicate-source handling; retained as a warning by the agreed T policy.", vec![1]),
+        ("target-in-sources", XorTwo { a: 0, b: 1, dst: 1 }, false,
+         "Read sources from the pre-call state; the target becomes the original source 0.",
+         "The API does not define source snapshots when the target also occurs among sources.", vec![1]),
+        ("duplicate-broadcast-target", Broadcast { src: 0, destinations: vec![1, 1] }, false,
+         "Apply each list occurrence; two XOR writes leave the target unchanged.",
+         "The API does not specify whether repeated broadcast destinations are deduplicated.", vec![1]),
+        ("self-copy", Copy { src: 0, dst: 0 }, true,
+         "The existing symbol remains readable with identical bytes.",
+         "Operation::CopyTo requires keeping the source intact; coincident source and destination do not conflict with that requirement.", vec![0]),
+        ("self-move", Move { src: 0, dst: 0 }, false,
+         "A move to the same ID preserves the symbol.",
+         "Operation::MoveTo invalidates the source; precedence when source equals destination is unspecified.", vec![0]),
+        ("empty-xor", XorMany { sources: vec![], dst: 1 }, true,
+         "The existing target remains readable with identical bytes.",
+         "T defines the empty fold of Operation::AddToVector as zero added to the target; this is a derived arithmetic contract, not an explicit upstream empty-list promise.", vec![1]),
+        ("overlapping-copy", CopyRange { src: 0, dst: 1, count: 3 }, false,
+         "Snapshot original IDs 0..2 and write their bytes to IDs 1..3.",
+         "Operation::CopyToN does not specify overlapping-range order or snapshot semantics.", vec![1, 2, 3]),
+        ("overlapping-move", MoveRange { src: 0, dst: 1, count: 3 }, false,
+         "Snapshot original IDs 0..2, remove the source range, then write IDs 1..3.",
+         "Operation::MoveToN does not specify overlapping-range order; source absence is unobservable through the current safe API.", vec![0, 1, 2, 3]),
+    ].into_iter().map(|(name, action, defined, expectation, basis, affected_ids)| Boundary {
+        name, action, contract: BoundaryContract { defined, expectation: expectation.into(), basis: basis.into(), affected_ids }
+    }).collect()
 }
 
 pub fn cases() -> Vec<Case> {
@@ -325,20 +367,41 @@ pub fn cases() -> Vec<Case> {
             c.requires.push("operator_surface".into());
             out.push(c.identify(&format!("b{width}")));
         }
-        for seed in SEEDS {
-            let mut c = Case::new("correctness", "V04", "mixed-sequence");
-            c.width = width;
-            c.seed = seed;
-            c.requires.push("operator_surface".into());
-            out.push(c.identify(&format!("b{width}/s{seed}")));
+        // Directed histories use one payload seed; generated histories vary all three.
+        for scenario in ["copy-chain", "move-reuse", "sparse-churn", "seeded"] {
+            let seeds: &[u64] = if scenario == "seeded" {
+                &SEEDS
+            } else {
+                &SEEDS[..1]
+            };
+            for &seed in seeds {
+                for dispatch in [
+                    SequenceDispatch::Direct,
+                    SequenceDispatch::Execute,
+                    SequenceDispatch::Mixed,
+                ] {
+                    let mut c = Case::new("correctness", "V04", "mixed-sequence");
+                    c.width = width;
+                    c.seed = seed;
+                    c.sequence = Some(SequenceSpec {
+                        scenario: scenario.into(),
+                        dispatch,
+                    });
+                    c.requires.push("operator_surface".into());
+                    out.push(
+                        c.identify(&format!("{scenario}/b{width}/s{seed}/{}", dispatch.name())),
+                    );
+                }
+            }
         }
-        for (name, action) in boundaries() {
+        for boundary in boundaries() {
             for direct in [false, true] {
-                let mut c = Case::new("correctness", "V06", name);
+                let mut c = Case::new("correctness", "V06", boundary.name);
                 c.width = width;
-                c.warning = true;
+                c.warning = !boundary.contract.defined;
                 c.direct = direct;
-                c.actions.push(action.clone());
+                c.actions.push(boundary.action.clone());
+                c.boundary = Some(boundary.contract.clone());
                 c.requires.push("operator_surface".into());
                 out.push(c.identify(&format!(
                     "b{width}/{}",
@@ -347,11 +410,15 @@ pub fn cases() -> Vec<Case> {
             }
         }
     }
-    for (name, family, action) in operations().into_iter().chain(
-        boundaries()
-            .into_iter()
-            .map(|(name, a)| (name.into(), "V06", a)),
-    ) {
+    for (name, family, action, boundary) in operations()
+        .into_iter()
+        .map(|(n, f, a)| (n, f, a, None))
+        .chain(
+            boundaries()
+                .into_iter()
+                .map(|b| (b.name.into(), "V06", b.action, Some(b.contract))),
+        )
+    {
         for width in WIDTHS {
             for direct in [false, true] {
                 // Insertion, lookup and aliasing have no Operation-enum equivalent.
@@ -372,7 +439,8 @@ pub fn cases() -> Vec<Case> {
                     c.direct = direct;
                     c.actions.push(action.clone());
                     c.instances = maximum.min((64 * 1024 * 1024 / (width * 16)).max(1));
-                    c.warning = family == "V06";
+                    c.warning = boundary.as_ref().is_some_and(|b| !b.defined);
+                    c.boundary = boundary.clone();
                     c.requires.push("operator_surface".into());
                     if matches!(action, Action::Alias { .. } | Action::SharedWrite { .. }) {
                         c.requires.push("alias".into());

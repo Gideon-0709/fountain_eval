@@ -185,13 +185,6 @@ impl Operator {
         op.config_finite_field(0x11d);
         Self(op)
     }
-    pub fn preload(width: usize, seed: u64) -> Self {
-        let mut op = Self::new(width);
-        for (id, v) in reference::initial(width, seed) {
-            op.0.insert_vector(&v, id);
-        }
-        op
-    }
     pub fn snapshot(&self, expected: &reference::State) -> reference::State {
         expected
             .keys()

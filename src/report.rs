@@ -596,6 +596,26 @@ fn findings(out: &mut String, c: &crate::artifact::Component) {
         let case = f["case"].as_str().unwrap_or("execution integrity");
         let message = f["message"].as_str().unwrap_or("No diagnostic message");
         let _ = writeln!(out, "**Fatal** · `{}`", cell(case));
+        if let Some(context) = message
+            .lines()
+            .find(|line| line.starts_with("V04 ") || line.starts_with("V06 "))
+        {
+            let _ = writeln!(out, "\n{}\n", cell(context));
+            for line in message.lines().filter(|line| {
+                line.starts_with("First difference:")
+                    || line.starts_with("Component call or observation panicked:")
+                    || line.starts_with("Protected-symbol corruption")
+                    || line.starts_with("Protected symbols became unreadable:")
+                    || line.starts_with("Defined boundary")
+                    || line.starts_with("Trace SHA-256:")
+            }) {
+                let _ = writeln!(out, "{}\n", cell(line));
+            }
+            if message.contains("Previous steps:") {
+                out.push_str("The preceding operations and their input seeds are retained in this report's result index (`feval report REPORT.md --json`).\n\n");
+            }
+            continue;
+        }
         if message.contains("V05 direct versus execute")
             || message.contains("V05 batch versus elementary direct calls")
         {

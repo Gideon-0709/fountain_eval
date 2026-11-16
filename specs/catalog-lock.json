@@ -3,21 +3,21 @@
   "publication_status": "internal-draft",
   "interfaces": [
     {
-      "digest": "a6dd743c264ed9aa6490af6616c265ea8fd3d2c903ad2d05d1b82087016319d7",
+      "digest": "036b234ad89e5d4ab9fdf55a9a39c209e66750b09ba7dc3fd762e4f27e0820d5",
       "id": "native-2@0.1.0"
     },
     {
-      "digest": "93a2383bad59f21c8e9dfe3d3c5018febb3b7313551f21a9b128e0d26ed2dd21",
+      "digest": "bcc77dff811bb21b3e2fa91f270ce2e0244de2e6fcb6438d7c42673582a7674a",
       "id": "native-3@0.1.0"
     },
     {
-      "digest": "9d1838f266f7fc7c4e7bd4c5b5b467e9aa4bcadaecec2b82e6f87ddaa82bd436",
+      "digest": "476e9659a2add8f2f25f4a971f59d1ca93f527931333d0e291ae6c0384b434f2",
       "id": "product-abi@0.1.0"
     }
   ],
   "tests": [
     {
-      "digest": "d5a535148e4329b82cbf25995acd130218908de9bcf8457768b1014caeda2e6d",
+      "digest": "da6ca85b48a43103ebab5b25592fa60577b7757f39185d15f2b767e376eb2495",
       "id": "0.1.0"
     }
   ]
