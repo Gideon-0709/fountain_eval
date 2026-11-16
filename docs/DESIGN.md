@@ -63,7 +63,7 @@ Config is an input to `(C,I,T,E)`, not an additional identity axis. Raw text, co
 
 The content version selects the full catalog, not an individual suite or category. Every case remains in the expanded plan with validation and measurement applicability. Skips have stable reason codes and explanations. Build errors, fatal checks, crashes, interruption and missing expected outputs are failures or unexecuted work; they are not skips. A canonical-plan check prevents an edited skip from concealing a missing result. Native acceptance executes both configured schemes across registered integrations and verifies coverage.
 
-Formal test content has four categories: correctness checks, individual operations, execution chains and integrated workflows. Encoding-plan generation is an engine stage within chain testing, not an atomic operation or fifth category. Plan reuse inside complete encoding is integrated testing. The registered formal content implements these four categories; driver and framework acceptance remain separate from component pass/fail results.
+Formal test content has four categories: validation (V), individual operations (O), execution chains (L) and integrated workflows (W). Encoding-plan generation is an engine stage within chain testing, not an atomic operation or fifth category. Plan reuse inside complete encoding is integrated testing. The registered formal content implements these four categories; driver and framework acceptance remain separate from component pass/fail results.
 
 The [0.1.0 test plan and report guide](TEST.md) defines the concrete formal cases, their relationships, measurement boundaries and report interpretation. Automatically generated reports record which combinations actually executed and which were blocked by component failures.
 
@@ -115,11 +115,11 @@ Drivers communicate through a versioned NDJSON protocol on stdout; stderr and bu
 
 Terminal progress is an observational host-side view of those same log files. `src/progress.rs` groups execution into preparation, correctness, performance and diagnostics, with aggregate counts and concise outcomes. Observed group transitions identify the current workload. Interactive terminals refresh a status line at most once per second. CI and redirected stderr retain plain milestones with a shared 30-second heartbeat across processes. It verifies the invocation identity before counting events; final protocol and evidence checks remain authoritative. `src/process.rs` tails complete lines with bounded live reads, preserves raw logs and emits a periodic heartbeat without replacing file capture with a driver pipe. This does not change native timers or I/T content. CLI `run`/`prepare` use stderr for progress and stdout for a concise final summary; `--json` selects the structured final response for automation. Library execution is silent unless progress is explicitly enabled.
 
-Correctness and measurement are separate process invocations. Correctness can wrap operators with participation and destruction counters; measurement uses the raw selected operator. A product API without the full operation surface records those validation or measurement cases as capability skips while executing its supported codec and callback diagnostic cases.
+Validation and measurement are separate process invocations. Validation can wrap operators with participation and destruction counters; measurement uses the raw selected operator. A product API without the full operation surface records those validation or measurement cases as capability skips while executing its supported codec and callback diagnostic cases.
 
 The three integration families share the same T-owned input generation, scalar oracle, workload ordering, clock boundaries and metrics. Their native binding implementations are I-owned. This permits equal T identities across different API families without hiding the effect of a different interface path.
 
-## Correctness and measurement ownership
+## Validation and measurement ownership
 
 T owns deterministic inputs, the scalar reference, fatal/warning severity, workloads, timers and sampling. I owns calls and observable boundaries. The [test guide](TEST.md) defines concrete cases and methodology; `src/content.rs` and `drivers/workloads.rs` implement that content.
 

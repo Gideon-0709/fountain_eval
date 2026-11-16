@@ -8,7 +8,7 @@ fn report_is_self_contained_grouped_and_bounds_every_table() {
     r.correctness = validation::report(&r);
     let md = report::markdown(&r);
     for section in [
-        "## Correctness and warnings",
+        "## Validation and warnings",
         "## Codec throughput",
         "## Individual operations",
         "## Encoding plans",
@@ -84,7 +84,7 @@ fn comparison_uses_category_sections_and_explains_warnings_without_json() {
     let v = fountain_eval::evidence::compare(&r, &r).unwrap();
     let md = report::comparison(&v);
     assert!(md.contains("## Individual operations"));
-    assert!(md.contains("## Execution chains and encoding plans"));
+    assert!(md.contains("## Execution chains"));
     assert!(md.contains("## Integrated workflows"));
     assert!(md.contains("+0.00%"));
     assert!(!md.contains("```json"));

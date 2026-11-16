@@ -210,7 +210,7 @@ pub fn component_started(index: usize, total: usize, entry: &batch::Entry) {
 }
 pub fn stage(name: &str) -> &'static str {
     match name {
-        "validate" => "Correctness",
+        "validate" => "Validation",
         "measure" | "first-use" => "Performance",
         "diagnose" | "complete" => "Diagnostics",
         _ => "Preparation",
@@ -223,7 +223,7 @@ pub fn phase_started(name: &str) {
     reset_activity();
     let label = stage(name);
     let (index, action) = match label {
-        "Correctness" => (2, "validate outputs and boundary behavior"),
+        "Validation" => (2, "validate outputs and boundary behavior"),
         "Performance" => (3, "measure operators, chains and workflows"),
         "Diagnostics" => (4, "trace codec stages and resource use"),
         _ => (1, "resolve, build and probe"),
@@ -599,10 +599,10 @@ impl<'a> DriverProgress<'a> {
         }
         let check = &self.record.recipe.as_ref().unwrap().checks[case];
         let category = match check.spec.category.as_str() {
-            "correctness" => "Correctness contracts",
+            "correctness" => "Validation",
             "operation" => "Individual operations",
             "chain" if check.spec.workload.starts_with("plan-") => "Encoding plans",
-            "chain" => "Codec chains",
+            "chain" => "Execution chains",
             "workflow" if self.mode == "first-use" => "First-use encoding",
             "workflow" => "Integrated workflows",
             _ => "Other workloads",
@@ -637,7 +637,7 @@ impl<'a> DriverProgress<'a> {
                     self.warnings += 1;
                 } else {
                     self.invalid = true;
-                    return Some("  FATAL Correctness check failed; details in report".into());
+                    return Some("  FATAL Validation check failed; details in report".into());
                 }
             }
             self.section(category);

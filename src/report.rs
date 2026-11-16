@@ -11,9 +11,9 @@ use std::{
 
 const PAGE: usize = 12;
 const CATEGORIES: [(&str, &str); 4] = [
-    ("correctness", "Correctness checks"),
+    ("correctness", "Validation"),
     ("operation", "Individual operations"),
-    ("chain", "Execution chains and encoding plans"),
+    ("chain", "Execution chains"),
     ("workflow", "Integrated workflows"),
 ];
 fn cell(s: &str) -> String {
@@ -308,7 +308,7 @@ pub fn markdown(r: &Record) -> String {
     }
 }
 fn sections(out: &mut String, components: &[crate::artifact::Component]) {
-    out.push_str("## Correctness and warnings\n\nWarnings allow measurement to continue. A fatal failure stops the affected component.\n");
+    out.push_str("## Validation and warnings\n\nWarnings allow measurement to continue. A fatal failure stops the affected component.\n");
     for c in components {
         findings(out, c);
     }

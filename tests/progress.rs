@@ -53,7 +53,7 @@ fn fatal_errors_are_immediate_concise_and_not_repeated() {
     p.observe(&hello(&r, 0, false));
     let event = json!({"event":"validation","case":case,"severity":"fatal","rule":"execution-integrity","status":"failed","message":format!("arithmetic mismatch\n{}", "state dump".repeat(1000))});
     let text = p.observe(&event.to_string()).unwrap();
-    assert!(text.contains("FATAL Correctness: arithmetic mismatch"));
+    assert!(text.contains("FATAL Validation: arithmetic mismatch"));
     assert!(text.len() < 250 && !text.contains("state dump") && !text.contains(case));
     assert!(p.observe(&event.to_string()).is_none());
     assert!(p.heartbeat().contains("error"));

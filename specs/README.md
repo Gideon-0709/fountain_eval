@@ -26,7 +26,7 @@ A successful result requires every applicable validation event and every applica
 
 `run` and `prepare` emit plain-text live progress on stderr and a final human-readable summary on stdout. `--json` replaces only the final stdout response with `{report, batch}` for execution and `{prepared, batch}` for a pending preparation. `inspect` and `list` retain JSON stdout. `report` and `compare` default to Markdown output; `report --json` reads the retained result index. Progress never appears in driver NDJSON or evidence sample fields.
 
-Terminal output groups resolution/build/probe into Preparation, followed by Correctness, Performance and Diagnostics. Each stage has a start and aggregate completion row. Numbered headings and observed test groups locate progress within a component. Interactive stderr updates one line at one-second intervals. CI and redirected stderr emit plain milestones with 30-second heartbeats across invocations. No ordinary case ID, individual warning or per-case rate is printed. Fatal check errors and protocol errors have one concise immediate notice; crashes and interruptions remain visible in the final component status. Warning counts, incomplete outcomes, exclusions and unexecuted checks are retained in summaries and full report coverage. Observed counts do not imply that final evidence validation has succeeded. Final report paths appear only after publication.
+Terminal output groups resolution/build/probe into Preparation, followed by Validation, Performance and Diagnostics. Each stage has a start and aggregate completion row. Numbered headings and observed test groups locate progress within a component. Interactive stderr updates one line at one-second intervals. CI and redirected stderr emit plain milestones with 30-second heartbeats across invocations. No ordinary case ID, individual warning or per-case rate is printed. Fatal check errors and protocol errors have one concise immediate notice; crashes and interruptions remain visible in the final component status. Warning counts, incomplete outcomes, exclusions and unexecuted checks are retained in summaries and full report coverage. Observed counts do not imply that final evidence validation has succeeded. Final report paths appear only after publication.
 
 ## Process protocol 1
 
@@ -43,7 +43,7 @@ The driver does not decide which failed checks to skip. Applicability comes from
 
 Invocation deadlines and process-group cleanup remain enforced. SIGINT produces an interrupted record when a run is active. Resolution/build have separate bounded deadlines.
 
-## Correctness and samples
+## Validation and samples
 
 Validation includes case, rule, fatal/warning severity, passed/failed status and witness. Boundary events carry operation arguments, width, dispatch, scope, expected/actual values and explanation. A failed warning-level check is non-blocking; its witness identifies observed data rather than proving equality with the reference.
 
