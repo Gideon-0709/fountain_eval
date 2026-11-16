@@ -216,7 +216,7 @@ pub fn plan(
                     else { "This case requires a selected engine; the operator's trait dependency is build support, not a tested codec" }.into(),
             });
         } else if check.spec.scheme.as_deref() == Some("r10") && check.spec.k < 4 {
-            check.skip=Some(crate::coverage::Skip{code:"outside_api_domain".into(),reason:"The registered R10 scheme accepts source K in 4..=8192; product invalid-input rejection is checked in C11, and native invalid-input behavior has no recoverable API contract".into()});
+            check.skip=Some(crate::coverage::Skip{code:"outside_api_domain".into(),reason:"The registered R10 scheme accepts source K in 4..=8192; product invalid-input rejection is checked in V11, and native invalid-input behavior has no recoverable API contract".into()});
         } else if let Some(required) = check
             .spec
             .requires

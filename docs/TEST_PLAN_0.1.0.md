@@ -31,7 +31,7 @@ flowchart TD
 
 Encoding-plan generation belongs to an execution chain because it combines parameter processing, symbolic solving and instruction construction. A plan-generation timing can appear as its own row without becoming an individual-operation category. Reusing that plan across complete blocks belongs to integrated testing. There is no fifth test category for plans.
 
-The labels C01, O01, L01 and W01 below are family references. Each expanded case carries its family, category, concrete parameters and requirements; a chain can cover several families through exclusive stages and separately labelled internal observations.
+The labels V01, O01, L01 and W01 below are family references. V stands for validation; C remains reserved for component selections in the CITE tuple. Each expanded case carries its family, category, concrete parameters and requirements; a chain can cover several families through exclusive stages and separately labelled internal observations.
 
 ## Fatal and warning expectations
 
@@ -46,67 +46,67 @@ A fatal validation stops successful measurement for the run. Already produced ev
 
 ## Correctness checks
 
-### C01 — Selected component and scheme participation
+### V01 — Selected component and scheme participation
 
 Verify source identities, resolved dependency bindings, enabled native features, actual shared-library loading where applicable, scheme parameters and finite-field configuration. An untimed diagnostic operator or callback records participation. The selected implementation must receive the work expected by that scenario; a genuine zero-arithmetic systematic receive path is not required to invent arithmetic calls. It still must demonstrate the expected storage/access path.
 
 Wrong bindings, silent fallback and incorrect requested configuration are fatal. Product binary-side and callback-side provenance remain separate. A callback observation proves callback participation, not that all work inside the product library was delegated to it.
 
-### C02 — Arithmetic against an independent scalar reference
+### V02 — Arithmetic against an independent scalar reference
 
 Check zeroing, single/multiple-source XOR, broadcast XOR, multiplication by alpha, scalar multiplication and multiply-add. Cover scalar zero, scalar one and general nonzero values; the B=1 fixture exhausts all 256 byte values against all 256 scalars under polynomial 0x11d. The reference uses independently implemented field arithmetic rather than the tested operator's tables or kernels. The field polynomial must match the selected scheme's declared contract.
 
 Use distinct valid IDs for the core fatal cases. Check affected bytes and untouched symbols, including lengths around vectorization boundaries. A wrong result in this defined domain is fatal. In particular, distinct-ID `dst ^= scalar * src` must preserve `dst` when scalar is zero; clearing it is a fatal arithmetic error. Alias-related cases are handled separately so their warning policy does not weaken ordinary arithmetic checks.
 
-### C03 — Storage, copying, moving and ownership
+### V03 — Storage, copying, moving and ownership
 
 Check insertion at a new ID, replacement at an existing ID, reading, zero initialization, copying, moving, removal and subsequent ID reuse. A copy must preserve its source and provide the independence promised by the API. A move must preserve destination data and invalidate the source according to the documented contract. Tests must not dereference an invalid source merely to provoke undefined behavior.
 
 When sharing is supported, verify the reported outcome of the share request and the required isolation after either ID is written. An implementation may implement this with copy-on-write or another valid mechanism. Unsupported sharing is distinct from an implementation returning success but corrupting the other symbol. Ownership and payload violations are fatal.
 
-### C04 — Mixed operation sequences
+### V04 — Mixed operation sequences
 
 Run a fixed representative sequence and bounded, fixed-seed generated sequences over a controlled ID space. Include allocation, arithmetic, copy/move, removal and reuse. Compare state after each meaningful prefix to locate the first divergence rather than reporting only the final block checksum.
 
 Sequence generation preserves operation preconditions except in separately registered boundary tests. The report identifies the seed, operation index, operands and first incorrect state. Defined-domain divergence is fatal. This check links individual primitives to the sequences used in real plans.
 
-### C05 — Dispatch and batch equivalence
+### V05 — Dispatch and batch equivalence
 
 For supported APIs, apply the same semantic operation through direct methods and `execute`. Compare batch copy/move/zero operations with the corresponding valid individual-operation result. Different instructions and different internal implementations are permitted; required final behavior is the oracle.
 
 Record whether a direct method is an override or uses its default dispatch behavior when that can be established. Do not assume that calling a direct method guarantees a fast path. An absent API is an applicability limitation. A defined-domain discrepancy between supported paths is fatal.
 
-### C06 — Ambiguous boundary semantics
+### V06 — Ambiguous boundary semantics
 
 Observe same-ID XOR, repeated source IDs, a destination occurring among sources, overlapping batch ranges, empty operand lists and self-copy/self-move where the API permits invocation. Each concrete case must state whether the public contract defines its outcome or leaves it ambiguous. The existing same-ID and repeated-source XOR cases remain warning-level.
 
-Record the operation, pre-state, reference expectation, actual post-state, dispatch path and timing observations. For example, same-ID XOR may leave the original bytes instead of producing zeros; both the deviation and its measured cost remain visible. There is no blanket rule that every aliasing problem is only a warning: explicit copy-isolation violations remain fatal under C03.
+Record the operation, pre-state, reference expectation, actual post-state, dispatch path and timing observations. For example, same-ID XOR may leave the original bytes instead of producing zeros; both the deviation and its measured cost remain visible. There is no blanket rule that every aliasing problem is only a warning: explicit copy-isolation violations remain fatal under V03.
 
-### C07 — Scheme, source count and padding
+### V07 — Scheme, source count and padding
 
 Verify requested K, internal padded block size, zero-padding treatment, finite-field selection, source/repair ID mapping and output lengths. Exercise supported small sizes and boundaries around parameter-table transitions. Padding must not appear as additional application payload.
 
-These cases verify systematic source bytes, symbol lengths and the reported padded geometry. They do not provide independent RFC wire-format conformance vectors. C09 supplies an independent arithmetic/linear-algebra check of repairs and recovery.
+These cases verify systematic source bytes, symbol lengths and the reported padded geometry. They do not provide independent RFC wire-format conformance vectors. V09 supplies an independent arithmetic/linear-algebra check of repairs and recovery.
 
-### C08 — Plan construction, application and reuse
+### V08 — Plan construction, application and reuse
 
 Generate a plan through the component's public symbolic/planning facilities when available. Apply it to independent payloads and compare outputs with the corresponding valid coding result and applicable reference checks. Changing source bytes must not reuse old data. The fixture uses three distinct payloads at fixed geometry; it checks stale-data isolation within the advertised reuse domain. It does not test changing K or width on an existing plan.
 
 Verify reuse with available identity, construction-count or trace evidence rather than inferring it from a faster second call. Distinguish component-owned plan reuse from framework composition of a publicly exported plan. A valid plan may change its instruction ordering across component versions. Wrong payloads, stale mappings and invalid reuse are fatal. A product exposing only combined creation and source replacement can validate those behaviors without claiming to export or separately time its private plan.
 
-### C09 — Encoding and recovery results
+### V09 — Encoding and recovery results
 
 Verify systematic symbols, repair generation, recovered payload length and every recovered byte. Check complete source reception and missing-source recovery with deterministic symbol IDs and order. At K=8 and B=31, basis payloads obtain coefficients from the selected encoder. Independent scalar GF(256) arithmetic and Gauss–Jordan elimination then check linear combination and recovery. This checks algebra, not independent RFC conformance.
 
 Recovery success is required for fixtures established as recoverable. Rank-deficient fixtures test the incomplete state; they are not expected to recover. Packet count alone does not prove rank. A performance attempt that does not recover must retain that outcome and cannot report successful recovery throughput. Insufficient input must not be mislabeled as a proven arithmetic defect. False completion or wrong recovered bytes is always fatal.
 
-### C10 — Ordering, duplicates and incremental progress
+### V10 — Ordering, duplicates and incremental progress
 
 The fixed K=64 receive fixture checks all-source input, eight omitted sources followed by repairs, repeated source IDs, repair-only input with a 128-symbol bound, and eight repairs before sources. It checks incomplete prefixes and compares recovered bytes. Duplicate repair IDs and calls after completion are not covered by this fixture.
 
 Verify that valid reordering does not corrupt output, duplicates do not create false progress, and the completion status matches materialized data. Different amounts of work or earlier completion across implementations can be valid and must be recorded. Contract violations and incorrect completion are fatal; undefined boundary behavior receives a separately documented warning rule rather than an invented requirement.
 
-### C11 — Errors and resource lifecycle
+### V11 — Errors and resource lifecycle
 
 Exercise documented invalid arguments through safe callable interfaces, callback errors where supported, constructor failure, normal completion and consecutive block processing. Verify error propagation, handle ownership and release on both normal and supported failure paths. Invalid-input tests respect unsafe API preconditions; arbitrary invalid pointers are not part of the standard workload.
 

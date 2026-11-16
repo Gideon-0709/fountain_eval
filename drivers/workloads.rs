@@ -211,7 +211,7 @@ fn core(c: &Case) -> Value {
             }
         }
     }
-    if c.width == 1 && c.family == "C02" {
+    if c.width == 1 && c.family == "V02" {
         for scalar in 0..=255 {
             for byte in 0..=255 {
                 let mut op = Operator::new(1);

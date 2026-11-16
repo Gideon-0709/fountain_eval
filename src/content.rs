@@ -316,9 +316,9 @@ pub fn cases() -> Vec<Case> {
     let mut out = Vec::new();
     for width in CORRECTNESS_WIDTHS {
         for (work, family) in [
-            ("operator-reference", "C02"),
-            ("storage-ownership", "C03"),
-            ("dispatch-equivalence", "C05"),
+            ("operator-reference", "V02"),
+            ("storage-ownership", "V03"),
+            ("dispatch-equivalence", "V05"),
         ] {
             let mut c = Case::new("correctness", family, work);
             c.width = width;
@@ -326,7 +326,7 @@ pub fn cases() -> Vec<Case> {
             out.push(c.identify(&format!("b{width}")));
         }
         for seed in SEEDS {
-            let mut c = Case::new("correctness", "C04", "mixed-sequence");
+            let mut c = Case::new("correctness", "V04", "mixed-sequence");
             c.width = width;
             c.seed = seed;
             c.requires.push("operator_surface".into());
@@ -334,7 +334,7 @@ pub fn cases() -> Vec<Case> {
         }
         for (name, action) in boundaries() {
             for direct in [false, true] {
-                let mut c = Case::new("correctness", "C06", name);
+                let mut c = Case::new("correctness", "V06", name);
                 c.width = width;
                 c.warning = true;
                 c.direct = direct;
@@ -350,7 +350,7 @@ pub fn cases() -> Vec<Case> {
     for (name, family, action) in operations().into_iter().chain(
         boundaries()
             .into_iter()
-            .map(|(name, a)| (name.into(), "C06", a)),
+            .map(|(name, a)| (name.into(), "V06", a)),
     ) {
         for width in WIDTHS {
             for direct in [false, true] {
@@ -372,7 +372,7 @@ pub fn cases() -> Vec<Case> {
                     c.direct = direct;
                     c.actions.push(action.clone());
                     c.instances = maximum.min((64 * 1024 * 1024 / (width * 16)).max(1));
-                    c.warning = family == "C06";
+                    c.warning = family == "V06";
                     c.requires.push("operator_surface".into());
                     if matches!(action, Action::Alias { .. } | Action::SharedWrite { .. }) {
                         c.requires.push("alias".into());
@@ -387,11 +387,11 @@ pub fn cases() -> Vec<Case> {
     }
     for scheme in ["rq", "r10"] {
         for (work, family) in [
-            ("participation", "C01"),
-            ("plan-reuse-contract", "C08"),
-            ("linear-reference", "C09"),
-            ("receive-contract", "C10"),
-            ("lifecycle-contract", "C11"),
+            ("participation", "V01"),
+            ("plan-reuse-contract", "V08"),
+            ("linear-reference", "V09"),
+            ("receive-contract", "V10"),
+            ("lifecycle-contract", "V11"),
         ] {
             for seed in SEEDS {
                 let mut c = Case::new("correctness", family, work);
@@ -409,7 +409,7 @@ pub fn cases() -> Vec<Case> {
         }
         for k in SOURCE_COUNTS {
             for width in [31, 128] {
-                let mut c = Case::new("correctness", "C07", "scheme-padding");
+                let mut c = Case::new("correctness", "V07", "scheme-padding");
                 c.scheme = Some(scheme.into());
                 c.k = k;
                 c.width = width;

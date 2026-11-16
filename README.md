@@ -139,7 +139,7 @@ test = "0.1.0"
 
 The product uses its bundled scheme; an explicit external `scheme.source` is rejected. Binary and callback dependencies, hashes and loader evidence are recorded separately. Arena can be used as a product callback operator, while its current exact engine 2.1 dependency conflicts with source engine 3.
 
-Product runs execute codec, source-replacement and lifecycle checks through the real shared library and the selected SymbolOps callbacks. Full operator cases and standalone plan/replay cases require surfaces the product ABI does not provide and are explicitly skipped. Product resource observations cover the driver/callback allocator, not allocations inside the dynamic library. The registered R10 scheme accepts K=4..8192 on every integration; K=1 success cases are explicitly outside-domain skips. Product C11 checks below-domain rejection through its recoverable API.
+Product runs execute codec, source-replacement and lifecycle checks through the real shared library and the selected SymbolOps callbacks. Full operator cases and standalone plan/replay cases require surfaces the product ABI does not provide and are explicitly skipped. Product resource observations cover the driver/callback allocator, not allocations inside the dynamic library. The registered R10 scheme accepts K=4..8192 on every integration; K=1 success cases are explicitly outside-domain skips. Product V11 checks below-domain rejection through its recoverable API.
 
 ## Effective settings and prepared execution
 
@@ -171,7 +171,7 @@ The pending workspace is single-use: after the run publishes its report, both th
 
 | Category | Coverage | Measurement |
 |---|---|---|
-| Correctness (C01–C11) | Scalar GF/byte oracle, mixed prefixes, storage/dispatch, boundary observations, scheme padding, plan reuse, small independent linear solve, receive ordering, participation and release | Validation outside ordinary timers |
+| Correctness (V01–V11) | Scalar GF/byte oracle, mixed prefixes, storage/dispatch, boundary observations, scheme padding, plan reuse, small independent linear solve, receive ordering, participation and release | Validation outside ordinary timers |
 | Individual operations (O01–O09) | Public storage, XOR, GF, copy/move and supported alias calls; direct/execute paths; small/large sets | One prepared call per independent instance |
 | Chains (L01–L12) | Symbolic plan construction/export, actual encode/decode stage partitions, recorded real-session replay, operation mix and allocation diagnostics | Ordinary totals and separate instrumented observations |
 | Workflows (W01–W08) | First use, source/repair output, source replacement, all-source and missing-source decode, round trip, 32-block continuity and lifecycle | Directly measured output-ready/lifecycle durations |
