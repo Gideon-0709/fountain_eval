@@ -224,7 +224,7 @@ pub fn phase_started(name: &str) {
     let label = stage(name);
     let (index, action) = match label {
         "Validation" => (2, "validate outputs and boundary behavior"),
-        "Performance" => (3, "measure operators, chains and workflows"),
+        "Performance" => (3, "measure operation, link and workflow tests"),
         "Diagnostics" => (4, "trace codec stages and resource use"),
         _ => (1, "resolve, build and probe"),
     };
@@ -599,12 +599,12 @@ impl<'a> DriverProgress<'a> {
         }
         let check = &self.record.recipe.as_ref().unwrap().checks[case];
         let category = match check.spec.category.as_str() {
-            "correctness" => "Validation",
-            "operation" => "Individual operations",
+            "correctness" => "Validation tests",
+            "operation" => "Operation tests",
             "chain" if check.spec.workload.starts_with("plan-") => "Encoding plans",
-            "chain" => "Execution chains",
+            "chain" => "Link tests",
             "workflow" if self.mode == "first-use" => "First-use encoding",
-            "workflow" => "Integrated workflows",
+            "workflow" => "Workflow tests",
             _ => "Other workloads",
         };
         if kind == "validation"

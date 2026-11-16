@@ -2,7 +2,7 @@
 
 `feval` freezes Fountain components, generates isolated native builds, executes every applicable check, records measurements and compares results. The `fountain-eval` Cargo package provides the `fountain_eval` library and the `feval` CLI. Component source remains in its own repository.
 
-The project is an unreleased internal **0.1.0** candidate. Its formal content covers validation (V), individual operations (O), execution chains (L) and integrated workflows (W). Encoding-plan construction/export and recorded execution belong to chain testing; plan reuse across blocks belongs to integrated testing. See the [test guide](docs/TEST.md) for contracts and interpretation and the automatically generated reports for executed coverage and limitations. No release or performance ranking is implied.
+The project is an unreleased internal **0.1.0** candidate. Its formal content covers validation tests (V), operation tests (O), link tests (L) and workflow tests (W). Encoding-plan construction/export and recorded execution belong to link testing; plan reuse across blocks belongs to workflow testing. See the [test guide](docs/TEST.md) for contracts and interpretation and the automatically generated reports for executed coverage and limitations. No release or performance ranking is implied.
 
 ## Install and run
 
@@ -40,11 +40,11 @@ All relative paths are relative to the config file. There are no parent-director
 
 `run` and `prepare` print compact stage progress to stderr. Each C has a separate heading with its position in the batch and concise component names. Four stages organize the work: **Preparation**, **Validation**, **Performance** and **Diagnostics**. Preparation groups input resolution, native builds and capability checks. `prepare` stops after that stage.
 
-A component heading such as `C1 [2/2]` identifies the active selection. Numbered headings show preparation, correctness, performance and diagnostics. Preparation names the source, build and probe steps. During driver execution, subheadings identify the latest observed test group, such as encoding plans, individual operations or integrated workflows. Measurement and diagnostic groups also identify the worker.
+A component heading such as `C1 [2/2]` identifies the active selection. Numbered headings show preparation, validation, performance and diagnostics. Preparation names the source, build and probe steps. During driver execution, subheadings identify the latest observed test group, such as encoding plans, operation tests, link tests or workflow tests. Measurement and diagnostic groups also identify the worker.
 
 A terminal refreshes one progress line with the observed count, percentage and stage elapsed time. CI and redirected stderr use plain lines at group changes and at 30-second intervals during long stages. A fatal error appears immediately. The final summary gives each component's outcome and the report path. `NO_COLOR` disables color.
 
-Live counts and stage completion describe work performed. The whole C passes only after final protocol, coverage, correctness and evidence validation. Incomplete recovery outcomes are counted separately; the terminal does not aggregate throughput across different workloads. Read the report for individual operations, chains, workflows, detailed warning observations and performance dispersion.
+Live counts and stage completion describe work performed. The whole C passes only after final protocol, coverage, correctness and evidence validation. Incomplete recovery outcomes are counted separately; the terminal does not aggregate throughput across different workloads. Read the report for operation, link and workflow test results, detailed warning observations and performance dispersion.
 
 For automation, add `--json` to keep the structured final response on stdout while progress remains on stderr:
 
@@ -171,10 +171,10 @@ The pending workspace is single-use: after the run publishes its report, both th
 
 | Category | Coverage | Measurement |
 |---|---|---|
-| Validation (V01–V11) | Scalar GF/byte oracle, mixed prefixes, storage/dispatch, boundary observations, scheme padding, plan reuse, small independent linear solve, receive ordering, participation and release | Validation outside ordinary timers |
-| Individual operations (O01–O09) | Public storage, XOR, GF, copy/move and supported alias calls; direct/execute paths; small/large sets | One prepared call per independent instance |
-| Execution chains (L01–L12) | Symbolic plan construction/export, actual encode/decode stage partitions, recorded real-session replay, operation mix and allocation diagnostics | Ordinary totals and separate instrumented observations |
-| Integrated workflows (W01–W08) | First use, source/repair output, source replacement, all-source and missing-source decode, round trip, 32-block continuity and lifecycle | Directly measured output-ready/lifecycle durations |
+| Validation tests (V01–V11) | Scalar GF/byte oracle, mixed prefixes, storage/dispatch, boundary observations, scheme padding, plan reuse, small independent linear solve, receive ordering, participation and release | Validation outside ordinary timers |
+| Operation tests (O01–O09) | Public storage, XOR, GF, copy/move and supported alias calls; direct/execute paths; small/large sets | One prepared call per independent instance |
+| Link tests (L01–L12) | Symbolic plan construction/export, actual encode/decode stage partitions, recorded real-session replay, operation mix and allocation diagnostics | Ordinary totals and separate instrumented observations |
+| Workflow tests (W01–W08) | First use, source/repair output, source replacement, all-source and missing-source decode, round trip, 32-block continuity and lifecycle | Directly measured output-ready/lifecycle durations |
 
 The main matrix uses K=64/512/5008 and symbol widths 128/1016. Ordinary cases run in three sequential worker processes with one excluded warmup and five samples each (15 recorded samples). First-use cases use 15 fresh processes. Diagnostic builds have separate binaries and samples. Timers exclude checking and serialization; output-ready and full-lifecycle scopes are explicitly distinguished. No performance threshold determines correctness.
 

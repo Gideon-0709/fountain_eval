@@ -10,7 +10,7 @@ fn report_is_self_contained_grouped_and_bounds_every_table() {
     for section in [
         "## Validation and warnings",
         "## Codec throughput",
-        "## Individual operations",
+        "## Operation tests",
         "## Encoding plans",
         "## Coverage and measurement context",
     ] {
@@ -83,9 +83,9 @@ fn comparison_uses_category_sections_and_explains_warnings_without_json() {
     let r = support::record("native-2", "rq");
     let v = fountain_eval::evidence::compare(&r, &r).unwrap();
     let md = report::comparison(&v);
-    assert!(md.contains("## Individual operations"));
-    assert!(md.contains("## Execution chains"));
-    assert!(md.contains("## Integrated workflows"));
+    assert!(md.contains("## Operation tests"));
+    assert!(md.contains("## Link tests"));
+    assert!(md.contains("## Workflow tests"));
     assert!(md.contains("+0.00%"));
     assert!(!md.contains("```json"));
 }

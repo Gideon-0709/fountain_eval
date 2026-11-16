@@ -11,10 +11,10 @@ use std::{
 
 const PAGE: usize = 12;
 const CATEGORIES: [(&str, &str); 4] = [
-    ("correctness", "Validation"),
-    ("operation", "Individual operations"),
-    ("chain", "Execution chains"),
-    ("workflow", "Integrated workflows"),
+    ("correctness", "Validation tests"),
+    ("operation", "Operation tests"),
+    ("chain", "Link tests"),
+    ("workflow", "Workflow tests"),
 ];
 fn cell(s: &str) -> String {
     s.replace('&', "&amp;")
@@ -421,7 +421,7 @@ fn plan_results(out: &mut String, components: &[crate::artifact::Component]) {
     }
 }
 fn operation_results(out: &mut String, components: &[crate::artifact::Component]) {
-    out.push_str("## Individual operations\n\nMedian ns/call across 64 independent instances. The multi-source XOR uses 4 sources. GF operations use scalar 7.\n");
+    out.push_str("## Operation tests\n\nMedian ns/call across 64 independent instances. The multi-source XOR uses 4 sources. GF operations use scalar 7.\n");
     let mut measured = false;
     for c in components {
         if c.status != "succeeded" || !c.summary.iter().any(|s| s.case.starts_with("operation/")) {

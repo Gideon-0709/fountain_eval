@@ -8,32 +8,32 @@ The full catalog contains 2,467 concrete cases across RQ and R10. Each selected 
 
 | Category | Question | Main evidence |
 | --- | --- | --- |
-| Validation (V01–V11) | Does this input produce the required result, and which boundary behaviors differ from the reference? | Fatal checks, non-blocking warnings, expected/actual values and lifecycle observations. |
-| Individual operations (O01–O09) | How expensive is one public operation under a specified state and working set? | Time per call, calls per second and explicitly defined logical-byte rates. |
-| Execution chains (L01–L12) | Where is time and work spent along an actual coding path? | Stage durations, operation composition, plan construction/replay and resource diagnostics. |
-| Integrated workflows (W01–W08) | How fast does the component combination complete a useful coding task? | Output-ready and lifecycle durations, throughput, first-use cost and sustained behavior. |
+| Validation tests (V01–V11) | Does this input produce the required result, and which boundary behaviors differ from the reference? | Fatal checks, non-blocking warnings, expected/actual values and lifecycle observations. |
+| Operation tests (O01–O09) | How expensive is one public operation under a specified state and working set? | Time per call, calls per second and explicitly defined logical-byte rates. |
+| Link tests (L01–L12) | Where is time and work spent along an actual coding path? | Stage durations, operation composition, plan construction/replay and resource diagnostics. |
+| Workflow tests (W01–W08) | How fast does the component combination complete a useful coding task? | Output-ready and lifecycle durations, throughput, first-use cost and sustained behavior. |
 
 **C** is one selected engine/operator combination or a single component. **I** identifies the calling interface, **T** the test content, and **E** the common experiment conditions. In workload notation, **B** is bytes per symbol, **K** the application source-symbol count, **K'** an internal padded source count, **R** generated repairs and **M** omitted sources. Symbol width always uses B, avoiding confusion with T. A case is one concrete parameter and capability expansion of a test family.
 
-The categories share deterministic inputs and correctness rules, but measure different boundaries. A scalar reference validates operations. Recorded real operation sequences connect those operations to coding chains. Chain observations explain integrated performance. Integrated performance remains the directly measured outcome rather than a sum of separate microbenchmarks.
+The categories share deterministic inputs and correctness rules, but measure different boundaries. A scalar reference validates operations. Recorded real operation sequences connect those operations to coding chains. Link tests explain workflow performance. Workflow performance remains the directly measured outcome rather than a sum of separate microbenchmarks.
 
 ```mermaid
 flowchart TD
-    Inputs[Fixed config, inputs and capabilities] --> Validation[Validation V]
-    Validation --> Operations[Individual operations O]
-    Validation --> Chains[Execution chains L]
-    Validation --> Integrated[Integrated workflows W]
-    Operations -. operation costs .-> Chains
-    Chains -. stage and work evidence .-> Integrated
+    Inputs[Fixed config, inputs and capabilities] --> Validation[Validation tests V]
+    Validation --> Operations[Operation tests O]
+    Validation --> Links[Link tests L]
+    Validation --> Workflows[Workflow tests W]
+    Operations -. operation costs .-> Links
+    Links -. stage and work evidence .-> Workflows
     Operations --> Report[Coverage, results and comparison report]
-    Chains --> Report
-    Integrated --> Report
+    Links --> Report
+    Workflows --> Report
     Validation --> Report
 ```
 
-Encoding-plan generation belongs to an execution chain because it combines parameter processing, symbolic solving and instruction construction. A plan-generation timing can appear as its own row without becoming an individual-operation category. Reusing that plan across complete blocks belongs to integrated testing. There is no fifth test category for plans.
+Encoding-plan generation belongs to link testing because it combines parameter processing, symbolic solving and instruction construction. A plan-generation timing can appear as its own row without becoming an operation-test category. Reusing that plan across complete blocks belongs to workflow testing. There is no fifth test category for plans.
 
-The labels V01, O01, L01 and W01 below are family references. V stands for validation; C remains reserved for component selections in the CITE tuple. Each expanded case carries its family, category, concrete parameters and requirements; a chain can cover several families through exclusive stages and separately labelled internal observations.
+The labels V01, O01, L01 and W01 below are family references. **V** comes from **Validation**, **O** from **Operation**, **L** from **Link**, and **W** from **Workflow**. A link test follows connected stages along the coding execution path. C remains reserved for component selections in the CITE tuple. Each expanded case carries its family, category, concrete parameters and requirements; a chain can cover several families through exclusive stages and separately labelled internal observations.
 
 ## Fatal and warning expectations
 
@@ -45,7 +45,7 @@ Reference-matching and reference-deviating implementations are both timed. The f
 
 A fatal validation stops measurement for the affected C; other configured C entries still execute. Completed checks and unfinished cases remain visible in the final report index. Temporary evidence and the invocation-owned cache are cleaned after verified report publication. No automatic retry, enlarged repair budget or relaxed timeout turns that attempt into a pass.
 
-## Validation (V01–V11)
+## Validation tests (V01–V11)
 
 ### V01 — Selected component and scheme participation
 
@@ -164,13 +164,13 @@ The product API additionally injects a failing symbol-write callback during enco
 
 Missing required errors, ownership-count violations and wrong surviving payloads are fatal. Allocation counts and retained bytes belong to separate resource diagnostics. The catalog does not measure RSS or establish allocator-retention leaks from a high watermark alone.
 
-## Individual operations (O01–O09)
+## Operation tests (O01–O09)
 
 ### Common boundary
 
 An individual operation is one public operation semantic, not every internal function or machine instruction. A range operation can process several symbols and still be one public call. Reports therefore include both calls and the operation's width, arity or range length.
 
-Prepare inputs and required storage before timing. For `execute`, prepare the operation object before timing; instruction-list construction and allocation belong to chain tests. Stop the timer before inspecting outputs. Preserve the operation's actual effects and prevent compiler elimination without adding validation to the timed region.
+Prepare inputs and required storage before timing. For `execute`, prepare the operation object before timing; instruction-list construction and allocation belong to link tests. Stop the timer before inspecting outputs. Preserve the operation's actual effects and prevent compiler elimination without adding validation to the timed region.
 
 Use independently initialized states where repetition would alter the operation being measured. Repeated XOR on one target, removing an already removed ID or copying an already shared value must not silently replace the intended workload. State restoration is outside the timer and its cache effects must be standardized and recorded.
 
@@ -192,13 +192,13 @@ Working-set variants use batches of independently initialized operator instances
 
 O04 and O06 indicate primitive arithmetic cost. O01/O02/O07/O08/O09 explain why a fast arithmetic kernel may still produce a slow operator or codec. No arithmetic-kernel-only result substitutes for the public-operation measurement.
 
-## Execution chains (L01–L12)
+## Link tests (L01–L12)
 
 ### Stable stage meanings
 
 Stage names describe work, not a particular engine version's function layout. I maps actual calls and exposed observations to these meanings. Components may fuse, defer or reorder stages while preserving their public contract. The framework follows the actual execution path and does not force a less efficient path merely to obtain more columns.
 
-| Test | Chain segment | Required result and relationship |
+| Test | Processing stage | Required result and relationship |
 | --- | --- | --- |
 | L01 | Scheme and context preparation. | Parameter preparation, field setup, operator/storage creation and encoder/decoder context creation, split where observable. Explains costs excluded from preloaded O tests. |
 | L02 | Encoding-plan generation. | Time from the required planning inputs to a usable symbolic plan, excluding payload execution. Include solving and instruction construction. Report plan size and operation composition where exposed. |
@@ -233,7 +233,7 @@ Current source interfaces support recorded operation paths. Some development int
 
 Every planned stage must be represented by a measured interval, an identified combined parent, or an explicit unavailable diagnostic. Stage unavailability does not imply that the work takes no time. If a supported required observation is missing, treat it as an evidence failure rather than inventing a skip after execution.
 
-## Integrated workflows (W01–W08)
+## Workflow tests (W01–W08)
 
 | Test | Workflow | Setup, timer and output |
 | --- | --- | --- |
@@ -258,8 +258,8 @@ The following dimensions expand only the families that consume them; they are no
 
 | Dimension | Values or expansion rule |
 | --- | --- |
-| Main chain and integrated geometry | K = 64, 512, 5008; B = 128, 1016; all six combinations. |
-| Individual-operation widths | B = 16, 31, 32, 33, 128, 1016, 4096, 16384. |
+| Main link/workflow geometry | K = 64, 512, 5008; B = 128, 1016; all six combinations. |
+| Operation-test widths | B = 16, 31, 32, 33, 128, 1016, 4096, 16384. |
 | Additional correctness widths | B = 1, 15, 17, 63, 64, 65, 127, 129, 1023, 1024, 1025, plus the operation widths where relevant. |
 | Validation K coverage | K = 1, 4, 9, 10, 11, 63, 64, 65, 511, 512, 513, 5007, 5008, 5009, 5120; B = 31, 128. R10 K=1 is outside its domain. |
 | Repair generation | R = 1, 8, ceil(0.1K), deduplicated; source-output materialization is a separate case. |
