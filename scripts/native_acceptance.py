@@ -108,6 +108,12 @@ def main():
             record = body["result"]
             assert code == 0 and not record["correctness"]["fatal_failures"]
             assert record["sample_count"] == record["planned_measurements"] * 15
+            for row in record["summary"]:
+                if row["case"].startswith("workflow/decode/") and "/m0/" in row["case"]:
+                    k = int(row["case"].split("/")[3][1:])
+                    assert row["incomplete"] == 0
+                    assert row["workload"]["received_repairs"]["max"] == 0
+                    assert row["workload"]["received_sources"]["min"] == k
             assert all(c["validation"]["status"] != "not_executed" for c in record["coverage"]["cases"])
             command(label+"-report", ["report", body["report"]], 0)
             markdown = (work / (label + "-report.stdout")).read_text()
@@ -128,6 +134,25 @@ def main():
         ledger[-1]["classification"] = "Verified fatal GF mul-add-zero defect; later cases remain not executed; no positive whole-suite coverage"
         (work / "ledger.json").write_text(json.dumps(ledger, indent=2)+"\n")
 
+    def known_arena(label, engine, arena, scheme):
+        body, code = run(label, engine, arena, scheme)
+        if code == 4:
+            record = body["result"]
+            failures = record["correctness"]["fatal_failures"]
+            assert record["stage"] == "validate" and record["sample_count"] == 0, ledger[-1]
+            assert any(
+                v.get("case", "").startswith("correctness/receive-contract/")
+                and "V10 missing-with-duplicates" in v.get("message", "")
+                and "expected Some(" in v.get("message", "")
+                and "actual Some(" in v.get("message", "")
+                for v in failures
+            ), failures
+            ledger[-1]["classification"] = "V10 repeated-input corruption; no measured coverage"
+            (work / "ledger.json").write_text(json.dumps(ledger, indent=2)+"\n")
+        else:
+            assert code == 0, ledger[-1]
+        return body, code
+
     for scheme in ["rq", "r10"]:
         run("public-engine-only-"+scheme, ENGINE, None, scheme, expected=0)
 
@@ -145,10 +170,11 @@ def main():
     arena = f"path:{args.arena.resolve()}" if args.arena else None
     fallback = arena or OPERATORS+"#slab"
     if args.reproduction and not arena:raise SystemExit("--reproduction requires an authorized --arena checkout")
+    arena_results = {}
     for scheme in ["rq", "r10"]:
         for op in ["slab", "simd"]:
             known_operator("public-"+op+"-"+scheme, ENGINE, OPERATORS+"#"+op, scheme)
-        if arena:run("public-arena-"+scheme, ENGINE, arena, scheme, expected=0)
+        if arena:arena_results[scheme] = known_arena("public-arena-"+scheme, ENGINE, arena, scheme)
     if args.monorepo:
         mono = args.monorepo.resolve()
         for scheme in ["rq", "r10"]:
@@ -166,19 +192,25 @@ def main():
             command(f"compare-{scheme}-{index}", ["compare", matching[0]["result_ref"], other["result_ref"]], 0 if common else 2)
             if not common:
                 assert "no common measured cases" in (work/f"compare-{scheme}-{index}.stderr").read_text()
-    if arena:command("different-scheme", ["compare", results["public-arena-rq"]["result_ref"], results["public-arena-r10"]["result_ref"]], 2)
+    command("different-scheme", ["compare", results["public-engine-only-rq"]["result_ref"], results["public-engine-only-r10"]["result_ref"]], 2)
 
     if args.reproduction:
         # The frozen run is independent of later changes to a local component.
-        first=results["public-arena-rq"]
+        first, first_code = arena_results["rq"]
         checkout=work/"generated-fixtures/arena"
         shutil.copytree(args.arena.resolve(),checkout,ignore=shutil.ignore_patterns(".git","target",".fountain-eval"))
         subprocess.run(["git","-C",str(checkout),"init","--quiet"],check=True)
         prepared,_=run("snapshot",ENGINE,f"path:{checkout}",action="prepare",expected=0)
         lib=checkout/"src/lib.rs"
         lib.write_text('compile_error!("changed original after preparation");\n'+lib.read_text())
-        repeated,_=command("prepared-whole-run",["run","--prepared",prepared["prepared"]],0)
-        command("prepared-compare",["compare",first["result_ref"],repeated["result_ref"]],0)
+        repeated,_=command("prepared-whole-run",["run","--prepared",prepared["prepared"]],first_code)
+        if first_code == 0:
+            command("prepared-compare",["compare",first["result_ref"],repeated["result_ref"]],0)
+        else:
+            first_failure = first["result"]["correctness"]["fatal_failures"][0]
+            repeated_failure = repeated["result"]["correctness"]["fatal_failures"][0]
+            assert [first_failure[k] for k in ("case", "message")] == [repeated_failure[k] for k in ("case", "message")]
+            command("prepared-failed-comparison",["compare",first["result_ref"],repeated["result_ref"]],2)
         failed,_=run("changed-input",ENGINE,f"path:{checkout}",expected=4)
         assert failed["result"]["stage"]=="build"
         # A consumed preparation is removed; create an independent frozen input for corruption.

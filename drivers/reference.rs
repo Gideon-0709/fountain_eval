@@ -185,3 +185,71 @@ pub fn solve(mut rows: Vec<Vec<u8>>, k: usize, width: usize) -> Option<Vec<u8>> 
         )
     }
 }
+
+/// Independent geometry expectations for the fixed V07 source counts.
+/// The RQ entries reproduce the relevant rows of RFC 6330, Table 2 (K', S, H).
+pub fn geometry(scheme: &str, k: usize) -> (usize, usize) {
+    if scheme == "rq" {
+        let (padded, sparse, dense) = [
+            (10, 7, 10),
+            (12, 7, 10),
+            (69, 13, 10),
+            (511, 37, 10),
+            (526, 41, 10),
+            (5008, 151, 11),
+            (5063, 151, 11),
+            (5172, 157, 11),
+        ]
+        .into_iter()
+        .find(|&(padded, _, _)| padded >= k)
+        .expect("V07 RQ geometry missing");
+        return (padded, padded + sparse + dense);
+    }
+    assert_eq!(scheme, "r10");
+    // Registered R10 scheme uses the RFC 5053 construction without K padding.
+    let x = (1..).find(|&x| x * (x - 1) >= 2 * k).unwrap();
+    let sparse = (k.div_ceil(100) + x..)
+        .find(|&n| n >= 2 && (2..).take_while(|&d| d <= n / d).all(|d| n % d != 0))
+        .unwrap();
+    let dense = (1..)
+        .find(|&n: &usize| {
+            let middle = (1..=n / 2).fold(1u128, |a, i| a * (n + 1 - i) as u128 / i as u128);
+            middle >= (k + sparse) as u128
+        })
+        .unwrap();
+    (k, k + sparse + dense)
+}
+
+/// Incremental row rank over the same independent scalar field as `solve`.
+pub struct Rank(Vec<Option<Vec<u8>>>);
+impl Rank {
+    pub fn new(columns: usize) -> Self {
+        Self(vec![None; columns])
+    }
+
+    pub fn insert(&mut self, mut row: Vec<u8>) {
+        assert_eq!(row.len(), self.0.len());
+        for column in 0..row.len() {
+            let coefficient = row[column];
+            if coefficient == 0 {
+                continue;
+            }
+            if let Some(pivot) = &self.0[column] {
+                for (value, &reference) in row[column..].iter_mut().zip(&pivot[column..]) {
+                    *value ^= multiply(reference, coefficient);
+                }
+            } else {
+                let scale = inverse(coefficient);
+                for value in &mut row[column..] {
+                    *value = multiply(*value, scale);
+                }
+                self.0[column] = Some(row);
+                return;
+            }
+        }
+    }
+
+    pub fn value(&self) -> usize {
+        self.0.iter().filter(|row| row.is_some()).count()
+    }
+}

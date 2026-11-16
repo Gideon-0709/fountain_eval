@@ -2,7 +2,7 @@
 
 `feval` freezes Fountain components, generates isolated native builds, executes every applicable check, records measurements and compares results. The `fountain-eval` Cargo package provides the `fountain_eval` library and the `feval` CLI. Component source remains in its own repository.
 
-The project is an unreleased internal **0.1.0** candidate. Its formal content covers validation tests (V), operation tests (O), link tests (L) and workflow tests (W). Encoding-plan construction/export and recorded execution belong to link testing; plan reuse across blocks belongs to workflow testing. See the [test guide](docs/TEST.md) for contracts and interpretation and the automatically generated reports for executed coverage and limitations. No release or performance ranking is implied.
+The project is an unreleased internal **0.1.0** candidate. Its formal content covers validation tests (V), operation tests (O), link tests (L) and workflow tests (W). Encoding-plan construction and operation-list cloning and recorded execution belong to link testing; plan reuse across blocks belongs to workflow testing. See the [test guide](docs/TEST.md) for contracts and interpretation and the automatically generated reports for executed coverage and limitations. No release or performance ranking is implied.
 
 ## Install and run
 
@@ -167,13 +167,13 @@ The pending workspace is single-use: after the run publishes its report, both th
 
 ## What the formal content runs
 
-`feval list` expands the complete 2,467-case candidate. The selected scheme and verified interface determine applicability; users cannot suppress cases.
+`feval list` expands the complete 2,511-case candidate. The selected scheme and verified interface determine applicability; users cannot suppress cases.
 
 | Category | Coverage | Measurement |
 |---|---|---|
 | Validation tests (V01–V11) | Scalar GF/byte oracle, mixed prefixes, storage/dispatch, boundary observations, scheme padding, plan reuse, small independent linear solve, receive ordering, participation and release | Validation outside ordinary timers |
 | Operation tests (O01–O09) | Public storage, XOR, GF, copy/move and supported alias calls; direct/execute paths; small/large sets | One prepared call per independent instance |
-| Link tests (L01–L12) | Symbolic plan construction/export, actual encode/decode stage partitions, recorded real-session replay, operation mix and allocation diagnostics | Ordinary totals and separate instrumented observations |
+| Link tests (L01–L12) | Symbolic plan construction and operation-list cloning, actual encode/decode stage partitions, recorded real-session replay, operation mix and allocation diagnostics | Ordinary totals and separate instrumented observations |
 | Workflow tests (W01–W08) | First use, source/repair output, source replacement, all-source and missing-source decode, round trip, 32-block continuity and lifecycle | Directly measured output-ready/lifecycle durations |
 
 The main matrix uses K=64/512/5008 and symbol widths 128/1016. Ordinary cases run in three sequential worker processes with one excluded warmup and five samples each (15 recorded samples). First-use cases use 15 fresh processes. Diagnostic builds have separate binaries and samples. Timers exclude checking and serialization; output-ready and full-lifecycle scopes are explicitly distinguished. No performance threshold determines correctness.
@@ -210,7 +210,7 @@ feval report /path/to/runs/run-id --output ./reports
 feval report /path/to/runs/run-id --output ./reports --replace
 ```
 
-The report opens with component outcomes, fatal errors and grouped semantic warnings. Its performance tables show source-equivalent codec throughput at K=512/5008 and B=128/1016, plan construction/export time, dominant diagnostic stages and seven core operations in ns/call. A dagger flags a displayed median with CV above 10%. Coverage counts explain skipped and unfinished work.
+The report opens with component outcomes, fatal errors and grouped semantic warnings. Its performance tables show source-equivalent codec throughput at K=512/5008 and B=128/1016, plan construction and operation-list clone time, dominant diagnostic stages and seven core operations in ns/call. A dagger flags a displayed median with CV above 10%. Coverage counts explain skipped and unfinished work.
 
 `feval report REPORT.md` prints the readable summary. To refresh an older report in place, run `feval report REPORT.md --output REPORT_ROOT --replace`. The renderer reads the verified result index, so refreshing the layout also works after cache cleanup. `feval report REPORT.md --json` returns every case and diagnostic, and `feval compare LEFT RIGHT --json` returns all validated comparison rows.
 

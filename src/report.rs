@@ -186,6 +186,7 @@ fn metric(c: &crate::artifact::Component, id: &str, kind: &str) -> String {
     }
     let value = match kind {
         "rate" => s.source_payload_gbps,
+        "repair-rate" => s.repair_output_gbps,
         "op" => s.ns_per_operation,
         _ => Some(s.median_ns as f64 / 1e6),
     };
@@ -209,7 +210,10 @@ fn important(c: &crate::content::Case) -> bool {
                 && [128, 1016].contains(&c.width)
                 && c.instances == 64
         }
-        "chain" => matches!(c.workload.as_str(), "plan-build" | "plan-export"),
+        "chain" => {
+            matches!(c.workload.as_str(), "plan-build" | "plan-export")
+                || (c.workload.ends_with("-replay") && [512, 5008].contains(&c.k) && c.width == 128)
+        }
         "workflow" => {
             [512, 5008].contains(&c.k)
                 && [128, 1016].contains(&c.width)
@@ -318,7 +322,7 @@ fn sections(out: &mut String, components: &[crate::artifact::Component]) {
     coverage(out, components);
 }
 fn codec_results(out: &mut String, components: &[crate::artifact::Component]) {
-    out.push_str("## Codec throughput\n\nMedian source-equivalent throughput for 8 repair symbols and recovery with 10% missing sources (source-first, seed 6513). K counts source symbols. T is bytes per symbol. † marks CV above 10%.\n");
+    out.push_str("## Codec throughput\n\nMedian source-equivalent throughput for 8 repair symbols and recovery with 10% missing sources (source-first, seed 6513). K counts source symbols. B is bytes per symbol. † marks CV above 10%.\n");
     for c in components {
         if !c.summary.iter().any(|s| s.case.starts_with("workflow/")) || c.status != "succeeded" {
             continue;
@@ -326,7 +330,14 @@ fn codec_results(out: &mut String, components: &[crate::artifact::Component]) {
         let _ = writeln!(out, "### C{}\n", c.component_id);
         table(
             out,
-            &["K", "T", "Encode Gbit/s", "Decode Gbit/s", "Round trip ms"],
+            &[
+                "K",
+                "B",
+                "Encode Gbit/s",
+                "Repair output Gbit/s",
+                "Decode Gbit/s",
+                "Round trip ms",
+            ],
             [512usize, 5008]
                 .into_iter()
                 .flat_map(|k| [128, 1016].into_iter().map(move |w| (k, w)))
@@ -336,6 +347,11 @@ fn codec_results(out: &mut String, components: &[crate::artifact::Component]) {
                         k.to_string(),
                         w.to_string(),
                         metric(c, &format!("workflow/encode-repairs/{base}/r8"), "rate"),
+                        metric(
+                            c,
+                            &format!("workflow/encode-repairs/{base}/r8"),
+                            "repair-rate",
+                        ),
                         metric(
                             c,
                             &format!(
@@ -357,7 +373,7 @@ fn codec_results(out: &mut String, components: &[crate::artifact::Component]) {
     }
 }
 fn plan_results(out: &mut String, components: &[crate::artifact::Component]) {
-    out.push_str("## Encoding plans and dominant stages\n\nPlan construction and export are timed independently.\n");
+    out.push_str("## Encoding plans and dominant stages\n\nPlan construction and cloning the recorded operation list are timed independently.\n");
     for c in components {
         if c.status != "succeeded" {
             continue;
@@ -366,7 +382,7 @@ fn plan_results(out: &mut String, components: &[crate::artifact::Component]) {
         if c.summary.iter().any(|s| s.case.starts_with("chain/plan-")) {
             table(
                 out,
-                &["K", "Build plan ms", "Export plan ms"],
+                &["K", "Build plan ms", "Clone operations ms"],
                 [64, 512, 5008]
                     .into_iter()
                     .map(|k| {
@@ -388,19 +404,26 @@ fn plan_results(out: &mut String, components: &[crate::artifact::Component]) {
             );
         } else {
             out.push_str(
-                "Plan generation/export: Not measured (no applicable standalone result).\n\n",
+                "Plan construction/operation clone: Not measured (no applicable standalone result).\n\n",
             );
         }
         let mut rows = Vec::new();
-        for k in [512, 5008] {
+        for k in [512usize, 5008] {
             for w in [128, 1016] {
                 let a = dominant(
                     c,
-                    &format!("chain/encode-chain/{}/k{k}/b{w}", c.request.scheme.name),
+                    &format!(
+                        "workflow/encode-repairs/{}/k{k}/b{w}/r8",
+                        c.request.scheme.name
+                    ),
                 );
                 let b = dominant(
                     c,
-                    &format!("chain/decode-chain/{}/k{k}/b{w}", c.request.scheme.name),
+                    &format!(
+                        "workflow/decode/{}/k{k}/b{w}/m{}/source-first/s6513",
+                        c.request.scheme.name,
+                        k.div_ceil(10)
+                    ),
                 );
                 if a.is_some() || b.is_some() {
                     rows.push(vec![
@@ -413,7 +436,7 @@ fn plan_results(out: &mut String, components: &[crate::artifact::Component]) {
         }
         if !rows.is_empty() {
             out.push_str("Two largest exclusive stages, as shares of the instrumented lifecycle (separate from headline timings):\n");
-            table(out, &["K / T", "Encode", "Decode"], rows);
+            table(out, &["K / B", "Encode", "Decode"], rows);
         }
     }
     if !components.iter().any(|c| c.status == "succeeded") {
@@ -562,14 +585,24 @@ fn dominant(c: &crate::artifact::Component, id: &str) -> Option<String> {
     if stages.is_empty() {
         return None;
     }
-    Some(
-        stages
-            .into_iter()
-            .take(2)
-            .map(|(s, n)| format!("{} {:.1}%", title(s), n / total * 100.0))
-            .collect::<Vec<_>>()
-            .join("; "),
-    )
+    let leaders = stages
+        .into_iter()
+        .take(2)
+        .map(|(s, n)| format!("{} {:.1}%", title(s), n / total * 100.0))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let ordinary = c
+        .summary
+        .iter()
+        .find(|sample| sample.case == id && sample.incomplete == 0);
+    let diagnostic = metrics["elapsed_ns"]["mean"].as_f64();
+    Some(match ordinary.zip(diagnostic) {
+        Some((ordinary, diagnostic)) => format!(
+            "{leaders} · diagnostic/ordinary {:.2}×",
+            diagnostic / ordinary.median_ns as f64
+        ),
+        None => leaders,
+    })
 }
 fn diagnostic_state(message: &str, key: &str) -> Option<BTreeMap<usize, Vec<u8>>> {
     let line = message.lines().find(|s| s.trim_start().starts_with(key))?;
@@ -886,14 +919,32 @@ pub fn comparison(value: &Value) -> String {
             selected
                 .into_iter()
                 .map(|row| {
-                    let ratio = row["left_over_right_time"]
-                        .as_f64()
-                        .expect("validated comparison");
+                    let change = match row["left_over_right_time"].as_f64() {
+                        Some(ratio) => format!("{:+.2}%", (1.0 / ratio - 1.0) * 100.0),
+                        None => format!(
+                            "Incomplete ({} / {} completed)",
+                            row["left_completed"], row["right_completed"]
+                        ),
+                    };
                     vec![
-                        string(&row["case"]),
+                        {
+                            let mut label = string(&row["case"]);
+                            let differences: Vec<_> = [
+                                ("same_offered_input", "offered input"),
+                                ("same_recorded_sequence", "recorded trace"),
+                                ("same_consumed_count", "consumed count"),
+                            ]
+                            .into_iter()
+                            .filter_map(|(key, what)| (row[key] == false).then_some(what))
+                            .collect();
+                            if !differences.is_empty() {
+                                label.push_str(&format!(" (changed {})", differences.join(", ")));
+                            }
+                            label
+                        },
                         side(row, "left"),
                         side(row, "right"),
-                        format!("{:+.2}%", (1.0 / ratio - 1.0) * 100.0),
+                        change,
                         format!(
                             "{:.1} / {:.1}",
                             row["left_cv"].as_f64().unwrap_or_default() * 100.0,

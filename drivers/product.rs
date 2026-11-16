@@ -224,7 +224,7 @@ impl Plan {
         self.encoder.as_ref().unwrap().repair_base()
     }
     pub fn diagnostics(&self) -> Value {
-        json!({"path":"product-owned plan reused through set_source","operations":"unavailable","plan_size":"unavailable","combined_stages":["loading and plan application are one public call"]})
+        json!({"path":"same product encoder updated through set_source; internal plan reconstruction is unobservable","operations":"unavailable","plan_size":"unavailable","combined_stages":["loading and plan application are one public call"]})
     }
     pub fn export(&self) -> Vec<()> {
         panic!("product plan export is not an available capability")
@@ -258,14 +258,33 @@ pub fn error_contract(codec: &str, k: usize, width: usize, source: &[u8]) -> Val
             );
             let mut encoder =
                 $api::Encoder::with_ops(&oti, Symbols::new(width, None), source).unwrap();
-            assert!(
-                encoder.set_source(&source[..source.len() - 1]).is_err(),
-                "invalid source length accepted"
+            assert_eq!(
+                encoder.set_source(&source[..source.len() - 1]),
+                Err($api::Error::InvalidArg)
             );
+            let next: Vec<_> = source.iter().map(|byte| byte ^ 0xff).collect();
+            encoder
+                .set_source(&next)
+                .expect("valid replacement after rejected input");
+            assert_eq!(encoder.encode(0).unwrap(), next[..width]);
             let mut decoder = $api::Decoder::with_ops(&oti, Symbols::new(width, None)).unwrap();
+            assert_eq!(
+                decoder.add_symbol(0, &source[..width - 1]),
+                Err($api::Error::InvalidArg)
+            );
+            assert!(!decoder.decoded(), "invalid symbol advanced completion");
+            for (id, block) in source.chunks_exact(width).enumerate() {
+                decoder
+                    .add_symbol(id as u32, block)
+                    .expect("valid source after rejected input");
+            }
             assert!(
-                decoder.add_symbol(0, &source[..width - 1]).is_err(),
-                "invalid symbol width accepted"
+                decoder.decoded(),
+                "valid source stream did not complete after rejection"
+            );
+            assert!(
+                decoder.get_result().unwrap() == source,
+                "receive recovery after rejection"
             );
         }};
     }
@@ -284,5 +303,5 @@ pub fn error_contract(codec: &str, k: usize, width: usize, source: &[u8]) -> Val
         "r10" => check!(r10),
         _ => unreachable!(),
     };
-    json!({"status":"passed","checked":["callback failure propagation","failed constructor releases callback","invalid set_source length","invalid decoder symbol width"]})
+    json!({"status":"passed","checked":["callback failure propagation","failed constructor releases callback","invalid set_source length","invalid decoder symbol width","successful replacement and reception after invalid input"]})
 }

@@ -74,6 +74,7 @@ pub fn recipe(test: &TestReference) -> Result<Recipe> {
         .collect();
     let definition = json!({"purpose":"formal","selection":"all applicable cases","workers":crate::content::WORKERS,
         "samples_per_worker":crate::content::SAMPLES_PER_WORKER,"warmups_per_worker":1,
+        "case_order":"within each category: sorted, reversed, then rotated halfway across workers",
         "seeds":crate::content::SEEDS,"random_generator":"splitmix64-low-byte-v1",
         "build":{"toolchain":"1.89.0","profile":"release","opt_level":3,"codegen_units":1,"lto":false,"target_cpu":"native"},
         "timeout_seconds":600,"fresh_case_timeout_seconds":60,

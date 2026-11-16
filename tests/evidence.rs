@@ -9,7 +9,7 @@ fn metrics_are_decimal_gigabits_and_operations_per_second() {
         codec
             .summary
             .iter()
-            .find(|s| s.case.contains("encode-chain/rq/k64/b128"))
+            .find(|s| s.case.contains("encode-repairs/rq/k64/b128/r8"))
             .unwrap()
             .source_payload_gbps,
         Some(64.0 * 128.0 * 8.0 / 3000.0)
@@ -335,4 +335,45 @@ fn fatal_failure_details_are_visible_in_markdown() {
     assert!(markdown.contains("**Fatal**"));
     assert!(markdown.contains("MulAdd scalar: 0 &lt;invalid&gt;"));
     assert!(!markdown.contains("```json"));
+}
+
+#[test]
+fn comparison_marks_changed_work_and_omits_speed_ratios_for_incomplete_recovery() {
+    let left = record("native-2", "rq");
+    let case = left
+        .samples
+        .iter()
+        .find(|s| s.case.starts_with("workflow/decode/") && !s.case.contains("/m0/"))
+        .unwrap()
+        .case
+        .clone();
+    let mut right = left.clone();
+    let mut left = left;
+    for sample in left.samples.iter_mut().filter(|s| s.case == case) {
+        sample.details["input_digest"] = json!("left stream");
+    }
+    for sample in right.samples.iter_mut().filter(|s| s.case == case) {
+        sample.details["input_digest"] = json!("right stream");
+        if sample.repetition < 12 {
+            sample.outcome = "incomplete_recovery".into();
+            sample.elapsed_ns = 9000;
+        }
+    }
+    let summary = measurement::summarize(&right.samples).unwrap();
+    let row = summary.iter().find(|s| s.case == case).unwrap();
+    assert_eq!(
+        (row.completed_median_ns, row.incomplete_median_ns),
+        (Some(4000), Some(9000))
+    );
+    assert_eq!(row.median_ns, 4000);
+    let comparison = evidence::compare(&left, &right).unwrap();
+    let row = comparison["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["case"] == case)
+        .unwrap();
+    assert_eq!(row["same_offered_input"], false);
+    assert!(row["left_over_right_time"].is_null());
+    assert!(row["right_source_payload_gbps"].is_null());
 }

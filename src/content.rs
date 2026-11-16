@@ -201,7 +201,10 @@ impl Case {
     }
     pub fn payload_bytes(&self) -> u64 {
         if matches!(self.category.as_str(), "workflow" | "chain")
-            && !matches!(self.workload.as_str(), "plan-build" | "plan-export")
+            && !matches!(
+                self.workload.as_str(),
+                "plan-build" | "plan-export" | "encode-replay" | "decode-replay"
+            )
         {
             (self.k * self.width * self.blocks) as u64
         } else {
@@ -410,8 +413,32 @@ pub fn cases() -> Vec<Case> {
             }
         }
     }
+    let operation_controls = [
+        (
+            "xor-list-2".into(),
+            "O04",
+            Action::XorMany {
+                sources: vec![0, 1],
+                dst: 8,
+            },
+        ),
+        (
+            "xor-list-3".into(),
+            "O04",
+            Action::XorMany {
+                sources: vec![0, 1, 2],
+                dst: 8,
+            },
+        ),
+        (
+            "unshared-first-write".into(),
+            "O08",
+            Action::Scale { id: 8, scalar: 7 },
+        ),
+    ];
     for (name, family, action, boundary) in operations()
         .into_iter()
+        .chain(operation_controls)
         .map(|(n, f, a)| (n, f, a, None))
         .chain(
             boundaries()
@@ -423,13 +450,14 @@ pub fn cases() -> Vec<Case> {
             for direct in [false, true] {
                 // Insertion, lookup and aliasing have no Operation-enum equivalent.
                 if !direct
-                    && matches!(
-                        action,
-                        Action::Insert { .. }
-                            | Action::Read { .. }
-                            | Action::Alias { .. }
-                            | Action::SharedWrite { .. }
-                    )
+                    && (name == "unshared-first-write"
+                        || matches!(
+                            action,
+                            Action::Insert { .. }
+                                | Action::Read { .. }
+                                | Action::Alias { .. }
+                                | Action::SharedWrite { .. }
+                        ))
                 {
                     continue;
                 }
@@ -442,7 +470,7 @@ pub fn cases() -> Vec<Case> {
                     c.warning = boundary.as_ref().is_some_and(|b| !b.defined);
                     c.boundary = boundary.clone();
                     c.requires.push("operator_surface".into());
-                    if matches!(action, Action::Alias { .. } | Action::SharedWrite { .. }) {
+                    if family == "O08" {
                         c.requires.push("alias".into());
                     }
                     out.push(c.identify(&format!(
@@ -499,33 +527,32 @@ pub fn cases() -> Vec<Case> {
             }
             for width in [128, 1016] {
                 let geometry = format!("{scheme}/k{k}/b{width}");
-                for (work, family, capability) in [
-                    ("encode-chain", "L01,L04,L05,L06,L09,L10", "codec"),
-                    ("decode-chain", "L07,L08,L09,L10", "codec"),
-                    ("encode-replay", "L11", "plan"),
-                    ("decode-replay", "L12", "plan"),
-                ] {
+                for (work, family) in [("encode-replay", "L11"), ("decode-replay", "L12")] {
                     let mut c = Case::new("chain", family, work);
                     c.scheme = Some(scheme.into());
                     c.k = k;
                     c.width = width;
-                    c.missing = k.div_ceil(10);
-                    c.requires.push(capability.into());
+                    if work == "decode-replay" {
+                        c.missing = k.div_ceil(10);
+                    }
+                    c.requires.push("plan".into());
                     out.push(c.identify(&geometry));
                 }
                 for (work, family) in [
                     ("first-encode", "W01"),
-                    ("encode-sources", "W02"),
+                    ("encode-sources", "W02,W08"),
                     ("round-trip", "W06"),
                     ("continuous-rebuild", "W07"),
                     ("continuous-reuse", "W03,W07"),
-                    ("lifecycle", "W08"),
                 ] {
                     let mut c = Case::new("workflow", family, work);
                     c.scheme = Some(scheme.into());
                     c.k = k;
                     c.width = width;
-                    c.missing = k.div_ceil(10);
+                    if work == "round-trip" {
+                        c.missing = k.div_ceil(10);
+                        c.order = "mixed".into();
+                    }
                     c.fresh_process = work == "first-encode";
                     if work.starts_with("continuous") {
                         c.blocks = 32;
@@ -540,6 +567,11 @@ pub fn cases() -> Vec<Case> {
                 repairs.dedup();
                 for r in repairs {
                     for (work, family) in [("encode-repairs", "W02"), ("reuse-encode", "W03")] {
+                        let family = if work == "encode-repairs" && r == 8 {
+                            "W02,W08,L01,L04,L05,L06,L09,L10"
+                        } else {
+                            family
+                        };
                         let mut c = Case::new("workflow", family, work);
                         c.scheme = Some(scheme.into());
                         c.k = k;
@@ -559,7 +591,16 @@ pub fn cases() -> Vec<Case> {
                         for seed in SEEDS {
                             let mut c = Case::new(
                                 "workflow",
-                                if missing == 0 { "W04" } else { "W05" },
+                                if missing == 0 {
+                                    "W04,W08"
+                                } else if missing == k.div_ceil(10)
+                                    && order == "source-first"
+                                    && seed == SEEDS[0]
+                                {
+                                    "W05,W08,L01,L07,L08,L09,L10"
+                                } else {
+                                    "W05,W08"
+                                },
                                 "decode",
                             );
                             c.scheme = Some(scheme.into());

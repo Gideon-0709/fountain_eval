@@ -1,7 +1,7 @@
 //! T-owned correctness, individual-operation, chain and integrated workloads.
 use crate::{
     Probe, Stages, api,
-    content::{self, Action, Case},
+    content::{Action, Case},
     digest, elapsed,
     operator::{Operator, Program},
     reference::{self, State},
@@ -9,6 +9,7 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::{cell::RefCell, collections::BTreeMap, sync::Arc, time::Instant};
+#[derive(Clone)]
 pub struct Validation {
     pub witness: String,
     pub details: Value,
@@ -25,7 +26,12 @@ pub struct Outcome {
 }
 pub struct Prepared {
     source: Vec<u8>,
+    additional_sources: Vec<Vec<u8>>,
+    source_digest: String,
+    predecessor: Option<Vec<u8>>,
+    rebuild_outputs: RefCell<Option<Vec<Vec<Vec<u8>>>>>,
     packets: Vec<(usize, Vec<u8>)>,
+    packet_digest: Option<String>,
     program: Option<Program>,
     expected: State,
     initial: State,
@@ -38,46 +44,89 @@ fn scheme(c: &Case) -> &str {
 fn source(c: &Case) -> Vec<u8> {
     reference::bytes(c.k * if c.width == 0 { 31 } else { c.width }, c.seed)
 }
+fn stream_digest(stream: &[(usize, Vec<u8>)]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    for (id, symbol) in stream {
+        hash.update((*id as u64).to_le_bytes());
+        hash.update((symbol.len() as u64).to_le_bytes());
+        hash.update(symbol);
+    }
+    format!("{:x}", hash.finalize())
+}
+
 fn state_witness(state: &State) -> String {
     digest(&serde_json::to_vec(&reference::compact(state)).unwrap())
 }
-fn packets(c: &Case, bytes: &[u8]) -> Vec<(usize, Vec<u8>)> {
-    let mut encoder = api::Encoder::new(scheme(c), c.k, c.width, bytes, None);
-    let base = encoder.repair_base();
+/// Shared omission and arrival order for the decoding workloads.
+fn offered_ids(c: &Case, base: usize) -> Vec<usize> {
     let mut omitted: Vec<_> = (0..c.k).collect();
     reference::shuffle(&mut omitted, c.seed ^ 0x10_55);
     omitted.truncate(c.missing);
-    let mut stream: Vec<_> = (0..c.k)
-        .filter(|id| !omitted.contains(id))
-        .map(|id| (id, encoder.encode(id)))
-        .collect();
-    for id in base..base + c.budget() {
-        stream.push((id, encoder.encode(id)));
-    }
+    let omitted: std::collections::BTreeSet<_> = omitted.into_iter().collect();
+    let mut ids: Vec<_> = (0..c.k).filter(|id| !omitted.contains(id)).collect();
+    ids.extend(base..base + if c.missing == 0 { 0 } else { c.budget() });
+    ids
+}
+
+fn order_packets(c: &Case, stream: &mut [(usize, Vec<u8>)]) {
     if c.order == "mixed" {
-        reference::shuffle(&mut stream, c.seed ^ 0x50_17);
+        reference::shuffle(stream, c.seed ^ 0x50_17);
     }
+}
+
+fn packets(c: &Case, bytes: &[u8]) -> Vec<(usize, Vec<u8>)> {
+    // Systematic source bytes are known independently of the selected encoder.
+    let mut encoder =
+        (c.missing > 0).then(|| api::Encoder::new(scheme(c), c.k, c.width, bytes, None));
+    let base = encoder.as_ref().map_or(c.k, api::Encoder::repair_base);
+    assert!(base >= c.k, "{}: invalid repair base {base}", c.id);
+    let mut stream: Vec<_> = offered_ids(c, base)
+        .into_iter()
+        .map(|id| {
+            let data = if id < c.k {
+                bytes[id * c.width..(id + 1) * c.width].to_vec()
+            } else {
+                encoder.as_mut().unwrap().encode(id)
+            };
+            assert_eq!(data.len(), c.width, "{}: offered symbol {id} width", c.id);
+            (id, data)
+        })
+        .collect();
+    order_packets(c, &mut stream);
     stream
 }
 pub fn prepare(c: &Case) -> Prepared {
-    let source = source(c);
-    let mut expected = reference::initial(c.width, c.seed);
+    let source = if c.actions.is_empty() {
+        source(c)
+    } else {
+        Vec::new()
+    };
+    let mut initial = if c.actions.is_empty() {
+        State::new()
+    } else {
+        reference::initial(c.width, c.seed)
+    };
+    if c.workload == "unshared-first-write" {
+        // Give the private destination the same bytes as the shared destination.
+        initial.insert(8, initial[&0].clone());
+    }
+    let mut expected = initial.clone();
     for action in &c.actions {
         reference::apply(&mut expected, action, c.width, c.seed);
     }
     let program =
         (!c.actions.is_empty()).then(|| Program::new(&c.actions, c.direct, c.width, c.seed));
-    let packets = if matches!(
-        c.workload.as_str(),
-        "decode" | "decode-chain" | "decode-replay"
-    ) {
+    let packets = if matches!(c.workload.as_str(), "decode" | "decode-replay") {
         packets(c, &source)
     } else {
         vec![]
     };
-    let plan = if c.workload == "reuse-encode" {
+    let predecessor =
+        (c.workload == "reuse-encode").then(|| reference::bytes(c.k * c.width, c.seed ^ 0x22_12));
+    let plan = if let Some(bytes) = &predecessor {
         let mut plan = api::Plan::new(scheme(c), c.k);
-        plan.load(c.width, &source, None, &mut Stages::disabled());
+        plan.load(c.width, bytes, None, &mut Stages::disabled());
         Some(RefCell::new(plan))
     } else {
         None
@@ -94,10 +143,26 @@ pub fn prepare(c: &Case) -> Prepared {
     } else {
         None
     };
+    let packet_digest = (!packets.is_empty()).then(|| stream_digest(&packets));
+    let additional_sources: Vec<_> = (1..c.blocks)
+        .map(|block| reference::bytes(c.k * c.width, c.seed + block as u64))
+        .collect();
+    use sha2::{Digest, Sha256};
+    let mut input = Sha256::new();
+    input.update(&source);
+    for block in &additional_sources {
+        input.update(block);
+    }
+    let source_digest = format!("{:x}", input.finalize());
     Prepared {
-        initial: reference::initial(c.width, c.seed),
+        initial,
         source,
+        additional_sources,
+        source_digest,
+        predecessor,
+        rebuild_outputs: RefCell::new(None),
         packets,
+        packet_digest,
         program,
         expected,
         plan,
@@ -107,135 +172,360 @@ pub fn prepare(c: &Case) -> Prepared {
 fn checked_state(op: &Operator, expected: &State, context: &str) {
     assert_eq!(op.snapshot(expected), *expected, "{context}");
 }
-fn linear_reference(c: &Case) -> Value {
-    let k = c.k;
-    let width = c.width;
-    let bytes = source(c);
-    let mut basis = vec![0; k * k];
-    for i in 0..k {
-        basis[i * k + i] = 1;
-    }
-    let mut generator = api::Encoder::new(scheme(c), k, k, &basis, None);
-    let mut encoder = api::Encoder::new(scheme(c), k, width, &bytes, None);
-    let base = encoder.repair_base();
-    assert_eq!(base, generator.repair_base());
-    let mut rows = Vec::new();
-    let mut decoder = api::Decoder::new(scheme(c), k, width, None);
-    for id in (0..k).filter(|i| *i % 3 != 0).chain(base..base + 128) {
-        let coefficients = generator.encode(id);
-        assert_eq!(coefficients.len(), k);
-        let actual = encoder.encode(id);
-        let mut expected = vec![0; width];
-        for i in 0..k {
-            for j in 0..width {
-                expected[j] ^= reference::multiply(coefficients[i], bytes[i * width + j]);
-            }
-        }
-        assert_eq!(
-            actual, expected,
-            "generator linearity and independent payload arithmetic"
+fn check_bytes(expected: &[u8], actual: &[u8], context: impl FnOnce() -> String) {
+    if expected != actual {
+        let offset = expected
+            .iter()
+            .zip(actual)
+            .position(|(a, b)| a != b)
+            .unwrap_or(expected.len().min(actual.len()));
+        panic!(
+            "{}; byte {offset}, expected {:?}, actual {:?}; lengths {} and {}",
+            context(),
+            expected.get(offset),
+            actual.get(offset),
+            expected.len(),
+            actual.len()
         );
-        let mut row = coefficients;
+    }
+}
+
+fn basis_encoder(c: &Case) -> api::Encoder {
+    assert!(c.width >= c.k);
+    let mut basis = vec![0; c.k * c.width];
+    for i in 0..c.k {
+        basis[i * c.width + i] = 1;
+    }
+    api::Encoder::new(scheme(c), c.k, c.width, &basis, None)
+}
+
+fn coefficients(generator: &mut api::Encoder, c: &Case, id: usize) -> Vec<u8> {
+    let mut row = generator.encode(id);
+    assert_eq!(row.len(), c.width, "{}: basis symbol {id} width", c.id);
+    assert!(
+        row[c.k..].iter().all(|&b| b == 0),
+        "{}: basis symbol {id} has nonzero inactive lanes",
+        c.id
+    );
+    row.truncate(c.k);
+    row
+}
+
+fn linear_symbol(row: &[u8], source: &[u8], width: usize) -> Vec<u8> {
+    let mut output = vec![0; width];
+    for (&factor, symbol) in row.iter().zip(source.chunks_exact(width)) {
+        for (dst, &src) in output.iter_mut().zip(symbol) {
+            *dst ^= reference::multiply(factor, src);
+        }
+    }
+    output
+}
+
+fn linear_reference(c: &Case) -> Value {
+    let bytes = source(c);
+    let mut generator = basis_encoder(c);
+    let mut encoder = api::Encoder::new(scheme(c), c.k, c.width, &bytes, None);
+    let base = encoder.repair_base();
+    assert_eq!(
+        base,
+        generator.repair_base(),
+        "{}: basis repair domain",
+        c.id
+    );
+    let mut rows = Vec::new();
+    let mut rank = reference::Rank::new(c.k);
+    let mut decoder = api::Decoder::new(scheme(c), c.k, c.width, None);
+    assert!(!decoder.decoded(), "{}: decoded before input", c.id);
+    let mut completion = None;
+    let mut repair_rank = None;
+    let offered = (0..c.k)
+        .filter(|i| *i % 3 != 0)
+        .chain(base..base + c.budget());
+    // The withheld sources are a fixed positive control after the repair-only portion.
+    let repair_end = c.k - c.k.div_ceil(3) + c.budget();
+    for (index, id) in offered.chain((0..c.k).step_by(3)).enumerate() {
+        if index == repair_end {
+            repair_rank = Some(rank.value());
+            assert!(
+                rank.value() < c.k,
+                "{}: rank K after repair budget without completion",
+                c.id
+            );
+        }
+        let mut row = coefficients(&mut generator, c, id);
+        let actual = encoder.encode(id);
+        check_bytes(&linear_symbol(&row, &bytes, c.width), &actual, || {
+            format!("{}: V09 linear encoding, symbol {id}", c.id)
+        });
+        rank.insert(row.clone());
         row.extend_from_slice(&actual);
         rows.push(row);
         decoder.add(id, &actual);
         if decoder.decoded() {
+            assert_eq!(
+                rank.value(),
+                c.k,
+                "{}: V09 false completion at input {}, symbol {id}",
+                c.id,
+                index + 1
+            );
+            completion = Some(index + 1);
             break;
         }
     }
-    let solved =
-        reference::solve(rows, k, width).expect("independent received matrix must have rank K");
-    assert_eq!(solved, bytes);
-    assert!(decoder.decoded());
-    assert_eq!(decoder.result(), bytes);
-    assert!(reference::solve(vec![vec![0; k + width]], k, width).is_none());
-    json!({"independent_solver":"scalar Gauss-Jordan over GF(256)","generator_source":"basis payloads through selected scheme encoder; checks linear coding and recovery, not RFC wire conformance","k":k,"rank":k})
+    let solved = reference::solve(rows, c.k, c.width)
+        .unwrap_or_else(|| panic!("{}: V09 positive control lacks rank K", c.id));
+    check_bytes(&bytes, &solved, || {
+        format!("{}: V09 independent recovery", c.id)
+    });
+    let count =
+        completion.unwrap_or_else(|| panic!("{}: V09 full-rank input did not complete", c.id));
+    check_bytes(&bytes, &decoder.result(), || {
+        format!("{}: V09 decoder recovery at input {count}", c.id)
+    });
+    json!({"coefficient_source":"basis payloads at the same symbol width through the selected encoder", "independent_solver":"scalar Gauss-Jordan over GF(256)", "rank":rank.value(), "completion_input":count, "rank_at_exhausted_repair_budget":repair_rank})
 }
-fn codec_contract(c: &Case) -> Value {
-    if c.workload == "linear-reference" {
-        return linear_reference(c);
+
+fn scheme_contract(c: &Case, bytes: &[u8]) -> Value {
+    let (padded, repair_base) = reference::geometry(scheme(c), c.k);
+    let mut encoder = api::Encoder::new(scheme(c), c.k, c.width, bytes, None);
+    assert_eq!(
+        encoder.repair_base(),
+        repair_base,
+        "{}: V07 first internal repair ID",
+        c.id
+    );
+    let geometry = encoder.diagnostics();
+    if let Some(actual) = geometry["block_k"].as_u64() {
+        assert_eq!(actual, padded as u64, "{}: V07 padded geometry", c.id);
     }
-    let bytes = source(c);
-    let probe = Arc::new(Probe::default());
-    if c.workload == "plan-reuse-contract" {
-        let mut plan = api::Plan::new(scheme(c), c.k);
-        for round in 0..3 {
-            let fresh = reference::bytes(c.k * c.width, c.seed + round);
-            plan.load(c.width, &fresh, None, &mut Stages::disabled());
-            let mut fresh_encoder = api::Encoder::new(scheme(c), c.k, c.width, &fresh, None);
-            for id in (0..c.k).chain(plan.repair_base()..plan.repair_base() + 8) {
-                assert_eq!(
-                    plan.encode(id),
-                    fresh_encoder.encode(id),
-                    "reused plan leaked a previous payload"
-                );
-            }
-        }
-        return json!({"different_payloads":3,"reuse":plan.diagnostics(),"width_contract":"fixed width; changing geometry creates a new plan"});
+    let mut decoder = api::Decoder::new(scheme(c), c.k, c.width, None);
+    for (id, expected) in bytes.chunks_exact(c.width).enumerate() {
+        let actual = encoder.encode(id);
+        check_bytes(expected, &actual, || {
+            format!("{}: V07 systematic symbol {id}", c.id)
+        });
+        decoder.add(id, &actual);
     }
-    let mut encoder = api::Encoder::new(scheme(c), c.k, c.width, &bytes, Some(probe.clone()));
-    let base = encoder.repair_base();
-    assert!(base >= c.k);
-    for id in 0..c.k {
+    assert!(
+        decoder.decoded(),
+        "{}: V07 application output unavailable",
+        c.id
+    );
+    let output = decoder.result();
+    check_bytes(bytes, &output, || {
+        format!("{}: V07 application output boundary", c.id)
+    });
+    json!({"source_symbols":c.k,"expected_block_k":padded,"observed_block_k":geometry["block_k"],"padding_symbols":padded-c.k,"padding_provider":geometry["padding_provider"],"first_internal_repair_id":repair_base,"output_bytes":output.len()})
+}
+
+fn plan_contract(c: &Case) -> Value {
+    let mut plan = api::Plan::new(scheme(c), c.k);
+    for round in 0..3 {
+        let fresh = reference::bytes(c.k * c.width, c.seed + round);
+        plan.load(c.width, &fresh, None, &mut Stages::disabled());
+        let mut rebuilt = api::Encoder::new(scheme(c), c.k, c.width, &fresh, None);
+        let base = plan.repair_base();
         assert_eq!(
-            encoder.encode(id),
-            bytes[id * c.width..(id + 1) * c.width],
-            "systematic or padding mismatch"
+            base,
+            rebuilt.repair_base(),
+            "{}: V08 load {round} repair domain",
+            c.id
         );
-    }
-    let source_packets: Vec<_> = (0..c.k).map(|id| (id, encoder.encode(id))).collect();
-    let repair_packets: Vec<_> = (base..base + 128)
-        .map(|id| (id, encoder.encode(id)))
-        .collect();
-    drop(encoder);
-    let mut scenarios = vec![source_packets.clone()];
-    if c.workload == "receive-contract" {
-        let mut mixed: Vec<_> = source_packets
-            .iter()
-            .skip(8.min(c.k))
-            .cloned()
-            .chain(repair_packets.clone())
-            .collect();
-        reference::shuffle(&mut mixed, c.seed);
-        scenarios.push(mixed);
-        let mut duplicates = Vec::new();
-        for p in &source_packets {
-            duplicates.push(p.clone());
-            duplicates.push(p.clone());
+        for id in (0..c.k).chain(base..base + c.repairs) {
+            let expected = rebuilt.encode(id);
+            let actual = plan.encode(id);
+            assert_eq!(
+                actual.len(),
+                c.width,
+                "{}: V08 load {round}, symbol {id} width",
+                c.id
+            );
+            check_bytes(&expected, &actual, || {
+                format!("{}: V08 load {round}, symbol {id}", c.id)
+            });
         }
-        scenarios.push(duplicates);
-        scenarios.push(repair_packets.clone());
-        let mut early = repair_packets[..8].to_vec();
-        early.extend(source_packets.clone());
-        scenarios.push(early);
     }
-    for stream in &scenarios {
-        let mut decoder = api::Decoder::new(scheme(c), c.k, c.width, Some(probe.clone()));
-        assert!(!decoder.decoded());
-        for (index, (id, v)) in stream.iter().enumerate() {
-            decoder.add(*id, v);
-            if index == 0 && c.k > 1 {
-                assert!(!decoder.decoded(), "false completion from one symbol");
+    json!({"different_payloads":3,"same_geometry":true,"reuse":plan.diagnostics(),"comparison":"reuse versus rebuild"})
+}
+
+fn receive_contract(c: &Case, bytes: &[u8]) -> Value {
+    let mut encoder = api::Encoder::new(scheme(c), c.k, c.width, bytes, None);
+    let mut basis = basis_encoder(c);
+    let base = encoder.repair_base();
+    assert_eq!(
+        base,
+        basis.repair_base(),
+        "{}: V10 basis repair domain",
+        c.id
+    );
+    let repair_end = base + c.budget();
+    let expected_repairs: BTreeMap<_, _> = (base..repair_end)
+        .map(|id| {
+            let row = coefficients(&mut basis, c, id);
+            let payload = encoder.encode(id);
+            check_bytes(&linear_symbol(&row, bytes, c.width), &payload, || {
+                format!("{}: V10 repair fixture symbol {id}", c.id)
+            });
+            (id, (row, payload))
+        })
+        .collect();
+    let source_ids: Vec<_> = (0..c.k).collect();
+    let repair_ids: Vec<_> = (base..repair_end).collect();
+    let missing: Vec<_> = (c.repairs..c.k).chain(base..repair_end).collect();
+    let mut mixed = missing.clone();
+    reference::shuffle(&mut mixed, c.seed);
+    // Give both mixed cases the same early source and repair. Only repetition changes.
+    for (index, id) in [base, c.repairs].into_iter().enumerate() {
+        let pos = mixed.iter().position(|&x| x == id).unwrap();
+        mixed.swap(index, pos);
+    }
+    let mut duplicated = mixed.clone();
+    duplicated.splice(0..2, [base, base, c.repairs, c.repairs]);
+    let doubled_sources = source_ids.iter().flat_map(|&id| [id, id]).collect();
+    let early = (base..base + c.repairs).chain(0..c.k).collect();
+    let scenarios = [
+        ("all-sources", source_ids),
+        ("duplicate-sources", doubled_sources),
+        ("missing-source-first", missing),
+        ("missing-mixed", mixed),
+        ("missing-with-duplicates", duplicated),
+        ("repairs-only", repair_ids),
+        ("repairs-first", early),
+    ];
+    let mut results = Vec::new();
+    for (name, stream) in scenarios {
+        let mut rank = reference::Rank::new(c.k);
+        let mut seen = std::collections::BTreeSet::new();
+        let mut decoder = api::Decoder::new(scheme(c), c.k, c.width, None);
+        assert!(
+            !decoder.decoded(),
+            "{}: V10 {name} decoded before input",
+            c.id
+        );
+        let mut consumed = 0;
+        let mut duplicates = 0;
+        let mut repairs = 0;
+        let mut complete = false;
+        for &id in &stream {
+            let (row, payload) = if id < c.k {
+                let mut row = vec![0; c.k];
+                row[id] = 1;
+                (row, &bytes[id * c.width..(id + 1) * c.width])
+            } else {
+                let (row, payload) = &expected_repairs[&id];
+                (row.clone(), payload.as_slice())
+            };
+            consumed += 1;
+            repairs += usize::from(id >= base);
+            if seen.insert(id) {
+                rank.insert(row);
+            } else {
+                duplicates += 1;
             }
+            decoder.add(id, payload);
             if decoder.decoded() {
+                assert_eq!(
+                    rank.value(),
+                    c.k,
+                    "{}: V10 {name} false completion at input {consumed}, symbol {id}",
+                    c.id
+                );
+                check_bytes(bytes, &decoder.result(), || {
+                    format!("{}: V10 {name} input {consumed}, symbol {id}", c.id)
+                });
+                complete = true;
                 break;
             }
         }
-        assert!(decoder.decoded(), "fixed recovery fixture did not finish");
-        assert_eq!(decoder.result(), bytes);
-        drop(decoder);
+        assert!(
+            complete || rank.value() < c.k,
+            "{}: V10 {name} exhausted {consumed} inputs at rank K, last symbol {:?}",
+            c.id,
+            stream.last()
+        );
+        results.push(json!({"scenario":name,"status":if complete{"completed"}else{"rank_deficient"},"offered":stream.len(),"consumed":consumed,"repair_inputs":repairs,"duplicates":duplicates,"rank":rank.value()}));
     }
-    let counters = probe.snapshot();
-    assert!(
-        counters["reads"].as_u64().unwrap() > 0 && counters["writes"].as_u64().unwrap() > 0,
-        "selected operator did not participate"
-    );
+    json!({"scenarios":results})
+}
+
+fn source_roundtrip(c: &Case, bytes: &[u8], probe: Option<Arc<Probe>>) -> Vec<u8> {
+    let mut decoder = api::Decoder::new(scheme(c), c.k, c.width, probe);
+    for (id, data) in bytes.chunks_exact(c.width).enumerate() {
+        decoder.add(id, data);
+    }
+    assert!(decoder.decoded(), "{}: all-source control", c.id);
+    decoder.result()
+}
+
+fn participation_contract(c: &Case, bytes: &[u8]) -> Value {
+    let encode_probe = Arc::new(Probe::default());
+    let decode_probe = Arc::new(Probe::default());
+    let mut encoder = api::Encoder::new(scheme(c), c.k, c.width, bytes, Some(encode_probe.clone()));
+    let repair = encoder.encode(encoder.repair_base());
+    assert_eq!(repair.len(), c.width, "{}: V01 repair width", c.id);
+    let output = source_roundtrip(c, bytes, Some(decode_probe.clone()));
+    check_bytes(bytes, &output, || {
+        format!("{}: V01 selected decode operator", c.id)
+    });
+    let encode_evidence = encode_probe.snapshot();
+    let decode_evidence = decode_probe.snapshot();
+    for (label, evidence) in [("encode", &encode_evidence), ("decode", &decode_evidence)] {
+        assert!(
+            evidence["reads"].as_u64().unwrap() > 0 && evidence["writes"].as_u64().unwrap() > 0,
+            "{}: V01 selected {label} operator did not participate",
+            c.id
+        );
+    }
+    json!({"encoder":encode_evidence,"decoder":decode_evidence})
+}
+
+fn lifecycle_contract(c: &Case, bytes: &[u8]) -> Value {
+    let encode_probe = Arc::new(Probe::default());
+    let decode_probe = Arc::new(Probe::default());
+    let mut encoder = api::Encoder::new(scheme(c), c.k, c.width, bytes, Some(encode_probe.clone()));
+    let repair = encoder.encode(encoder.repair_base());
+    drop(encoder);
     assert_eq!(
-        counters["drops"].as_u64().unwrap(),
-        1 + scenarios.len() as u64,
-        "component resources were not released"
+        encode_probe.snapshot()["drops"],
+        1,
+        "{}: V11 encoder ownership",
+        c.id
     );
-    json!({"probe":counters,"source_symbols":c.k,"first_repair_id":base,"scenarios":scenarios.len(),"output_bytes":bytes.len(),"error_contract":if c.workload=="lifecycle-contract"{api::error_contract(scheme(c),c.k,c.width,&bytes)}else{Value::Null},"field_and_source_mapping":"selected binding verified during build; source bytes and padding checked here"})
+    assert_eq!(repair.len(), c.width, "{}: V11 handoff width", c.id);
+    let mut abandoned = api::Decoder::new(scheme(c), c.k, c.width, Some(decode_probe.clone()));
+    abandoned.add(0, &bytes[..c.width]);
+    drop(abandoned);
+    assert_eq!(
+        decode_probe.snapshot()["drops"],
+        1,
+        "{}: V11 partially loaded decoder ownership",
+        c.id
+    );
+    let output = source_roundtrip(c, bytes, Some(decode_probe.clone()));
+    assert_eq!(
+        decode_probe.snapshot()["drops"],
+        2,
+        "{}: V11 completed decoder ownership",
+        c.id
+    );
+    check_bytes(bytes, &output, || {
+        format!("{}: V11 caller-owned output after component release", c.id)
+    });
+    json!({"encoder_drops":1,"abandoned_decoder_drops":1,"completed_decoder_drops":1,"output_verified_after_release":true,"error_contract":api::error_contract(scheme(c),c.k,c.width,bytes)})
+}
+
+fn codec_contract(c: &Case) -> Value {
+    let bytes = source(c);
+    match c.workload.as_str() {
+        "scheme-padding" => scheme_contract(c, &bytes),
+        "plan-reuse-contract" => plan_contract(c),
+        "linear-reference" => linear_reference(c),
+        "receive-contract" => receive_contract(c, &bytes),
+        "participation" => participation_contract(c, &bytes),
+        "lifecycle-contract" => lifecycle_contract(c, &bytes),
+        _ => unreachable!("unknown codec validation: {}", c.workload),
+    }
 }
 pub fn validate(c: &Case) -> Validation {
     if c.category == "correctness" && !c.warning && c.boundary.is_none() {
@@ -279,10 +569,10 @@ fn primitive(c: &Case, p: &Prepared) -> Outcome {
     } else {
         c.instances
     };
+    use fountain_engine::traits::DataOperator;
     let mut operators: Vec<_> = (0..instances)
         .map(|_| {
             let mut op = Operator::new(c.width);
-            use fountain_engine::traits::DataOperator;
             for (id, v) in &p.initial {
                 op.0.insert_vector(v, *id);
             }
@@ -295,10 +585,17 @@ fn primitive(c: &Case, p: &Prepared) -> Outcome {
         std::panic::set_hook(Box::new(|_| {}));
     }
     let mut panics = Vec::with_capacity(instances);
+    let read_id = match c.actions.as_slice() {
+        [Action::Read { id }] => Some(*id),
+        _ => None,
+    };
+    let mut reads = Vec::with_capacity(if read_id.is_some() { instances } else { 0 });
     let before = telemetry::start();
     let start = Instant::now();
     for op in &mut operators {
-        if c.boundary.is_some() {
+        if let Some(id) = read_id {
+            reads.push(std::hint::black_box(op.0.get_vector(id)));
+        } else if c.boundary.is_some() {
             panics.push(
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     op.run(p.program.as_ref().unwrap())
@@ -314,10 +611,19 @@ fn primitive(c: &Case, p: &Prepared) -> Outcome {
     if let Some(hook) = hook {
         std::panic::set_hook(hook);
     }
+    if let Some(id) = read_id {
+        for bytes in reads {
+            check_bytes(&p.expected[&id], bytes, || {
+                format!("{}: timed read of symbol {id}", c.id)
+            });
+        }
+    }
     let mut outcomes: BTreeMap<String, (u64, Value)> = BTreeMap::new();
     for (index, op) in operators.iter().enumerate() {
         if c.boundary.is_none() && !c.warning {
-            checked_state(op, &p.expected, &c.id);
+            if read_id.is_none() {
+                checked_state(op, &p.expected, &c.id);
+            }
             continue;
         }
         let value = if c.boundary.is_some() {
@@ -340,7 +646,7 @@ fn primitive(c: &Case, p: &Prepared) -> Outcome {
         resources,
         observation: c.warning.then_some(observation),
         status: "completed".into(),
-        details: json!({"public_calls":instances,"initial_symbol_bytes":instances*16*c.width,"dispatch":if c.direct{"direct"}else{"execute"},"operations":c.actions,"boundary_contract":c.boundary,"logical_byte_rate":"not physical memory bandwidth"}),
+        details: json!({"public_calls":instances,"initial_symbol_bytes":instances*16*c.width,"symbol_bytes":c.width,"field_polynomial":0x11d,"dispatch":if c.direct{"direct"}else{"execute"},"operations":c.actions,"boundary_contract":c.boundary,"logical_byte_rate":"not physical memory bandwidth"}),
     }
 }
 pub fn run(c: &Case, p: &Prepared, diagnostic: bool) -> Outcome {
@@ -348,7 +654,13 @@ pub fn run(c: &Case, p: &Prepared, diagnostic: bool) -> Outcome {
         return primitive(c, p);
     }
     if c.workload.ends_with("-replay") {
-        let (ns, details, resources) = p.replay.as_ref().unwrap().execute();
+        let (ns, mut details, resources) = p.replay.as_ref().unwrap().execute();
+        details["input_digest"] = json!(
+            p.packet_digest
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(|| digest(&p.source))
+        );
         return Outcome {
             ns,
             witness: digest(&p.source),
@@ -372,22 +684,46 @@ pub fn run(c: &Case, p: &Prepared, diagnostic: bool) -> Outcome {
         let ns = elapsed(start);
         let resources = telemetry::finish(before);
         let plan = created.as_mut().or(existing.as_mut()).unwrap();
-        let details = plan.diagnostics();
-        let bytes = reference::bytes(c.k * 31, c.seed);
-        plan.load(31, &bytes, None, &mut Stages::disabled());
-        for id in 0..c.k {
-            assert_eq!(plan.encode(id), bytes[id * 31..(id + 1) * 31]);
+        let mut details = plan.diagnostics();
+        if let Some(operations) = exported {
+            assert_eq!(
+                operations.len() as u64,
+                details["operations"].as_u64().unwrap()
+            );
+            assert_eq!(
+                digest(format!("{operations:?}").as_bytes()),
+                details["program_digest"]
+            );
+            details["timed_work"] = json!("clone the recorded operation list");
+        } else {
+            details["timed_work"] = json!("scheme setup through retained symbolic operations");
+        }
+        let bytes = &p.source;
+        plan.load(31, bytes, None, &mut Stages::disabled());
+        let mut encoder = api::Encoder::new(scheme(c), c.k, 31, bytes, None);
+        let base = plan.repair_base();
+        assert_eq!(
+            base,
+            encoder.repair_base(),
+            "{}: planning repair domain",
+            c.id
+        );
+        for id in base..base + c.repairs {
+            let expected = encoder.encode(id);
+            check_bytes(&expected, &plan.encode(id), || {
+                format!("{}: applied plan repair {id}", c.id)
+            });
         }
         return Outcome {
             ns,
-            witness: digest(&bytes),
+            witness: digest(bytes),
             details,
             resources,
             observation: None,
             status: "completed".into(),
         };
     }
-    if matches!(c.workload.as_str(), "decode" | "decode-chain") {
+    if c.workload == "decode" {
         return decode(c, p, diagnostic);
     }
     if c.workload == "round-trip" {
@@ -395,6 +731,60 @@ pub fn run(c: &Case, p: &Prepared, diagnostic: bool) -> Outcome {
     }
     encode(c, p, diagnostic)
 }
+/// These relationships are expectations of the registered fixture and its timings.
+/// Unavailable subdivisions are described without inventing an independent interval.
+fn link_coverage(c: &Case, stages: &Value, diagnostic: bool) -> Value {
+    if !diagnostic || !c.family.split(',').any(|family| family.starts_with('L')) {
+        return Value::Null;
+    }
+    let product = crate::config::FAMILY == "product-abi";
+    let rows: &[(&str, &str, bool)] = if c.workload == "decode" {
+        &[
+            ("L01", "decoder-context-setup", false),
+            ("L07", "ingestion-and-solve", true),
+            ("L08", "ingestion-and-solve", true),
+            ("L09", "output-materialization", false),
+            ("L10", "component-release", false),
+        ]
+    } else if product {
+        &[
+            (
+                "L01",
+                "product-construction-loading-and-plan-application",
+                true,
+            ),
+            (
+                "L04",
+                "product-construction-loading-and-plan-application",
+                true,
+            ),
+            (
+                "L05",
+                "product-construction-loading-and-plan-application",
+                true,
+            ),
+            ("L06", "product-generation-and-output", true),
+            ("L09", "product-generation-and-output", true),
+            ("L10", "component-release", false),
+        ]
+    } else {
+        &[
+            ("L01", "scheme-and-storage-setup", false),
+            ("L04", "source-loading-and-padding", false),
+            ("L05", "encoder-context-and-plan-application", true),
+            ("L06", "symbol-generation", false),
+            ("L09", "output-materialization", false),
+            ("L10", "component-release", false),
+        ]
+    };
+    let map: BTreeMap<_, _> = rows.iter().map(|(family, stage, combined)| {
+        assert!(stages["exclusive_ns"][stage].as_u64().is_some(),
+            "{}: required stage {stage} missing for {family}", c.id);
+        (*family, json!({"interval":stage,"scope":if *combined { "combined parent" } else { "exclusive interval" }}))
+    }).collect();
+    json!(map)
+}
+
 fn decode(c: &Case, p: &Prepared, diagnostic: bool) -> Outcome {
     let probe = diagnostic.then(|| Arc::new(Probe::default()));
     let before = telemetry::start();
@@ -414,6 +804,11 @@ fn decode(c: &Case, p: &Prepared, diagnostic: bool) -> Outcome {
     }
     stages.mark("ingestion-and-solve");
     let complete = decoder.decoded();
+    assert!(
+        complete || c.missing > 0,
+        "{}: W04 complete source set did not decode",
+        c.id
+    );
     let output = if complete { decoder.result() } else { vec![] };
     stages.mark("output-materialization");
     let ready = elapsed(start);
@@ -425,13 +820,19 @@ fn decode(c: &Case, p: &Prepared, diagnostic: bool) -> Outcome {
     if diagnostic {
         stages.mark("diagnostic-query-overhead");
     }
+    let release_started = elapsed(start);
     drop(decoder);
+    let released = elapsed(start);
     stages.mark("component-release");
     let lifecycle = elapsed(start);
     let resources = telemetry::finish(before);
     if complete {
-        assert_eq!(output, p.source, "decoded payload");
+        check_bytes(&p.source, &output, || {
+            format!("{}: output after {consumed} inputs", c.id)
+        });
     }
+    let stages = stages.value(lifecycle);
+    let links = link_coverage(c, &stages, diagnostic);
     Outcome {
         ns: ready,
         witness: digest(&p.source),
@@ -443,34 +844,31 @@ fn decode(c: &Case, p: &Prepared, diagnostic: bool) -> Outcome {
             "incomplete_recovery"
         }
         .into(),
-        details: json!({"received_symbols":consumed,"received_bytes":received_bytes,"offered_symbols":p.packets.len(),"repair_budget":c.budget(),"output_ready_ns":ready,"lifecycle_ns":lifecycle,"stages":stages.value(lifecycle),"internal":internal,"probe":probe.map(|p|p.snapshot()),"recovery":if complete{"byte-verified"}else{"fixed budget exhausted; rank not established; no successful throughput"}}),
+        details: json!({"received_symbols":consumed,"received_bytes":received_bytes,"received_sources":p.packets[..consumed].iter().filter(|(id,_)| *id<c.k).count(),"received_repairs":p.packets[..consumed].iter().filter(|(id,_)| *id>=c.k).count(),"offered_symbols":p.packets.len(),"repair_budget":if c.missing==0{0}else{c.budget()},"input_digest":p.packet_digest,"output_ready_ns":complete.then_some(ready),"attempt_end_ns":ready,"component_released_ns":released,"release_ns":released-release_started,"lifecycle_ns":lifecycle,"stages":stages,"link_coverage":links,"internal":internal,"probe":probe.map(|p|p.snapshot()),"recovery":if complete{"byte-verified"}else{"fixed budget exhausted; rank not established; no successful throughput"}}),
     }
 }
 fn encode(c: &Case, p: &Prepared, diagnostic: bool) -> Outcome {
     let probe = diagnostic.then(|| Arc::new(Probe::default()));
-    let sources: Vec<_> = (0..c.blocks)
-        .map(|block| {
-            if block == 0 {
-                p.source.clone()
-            } else {
-                reference::bytes(c.k * c.width, c.seed + block as u64)
-            }
-        })
+    let sources: Vec<_> = std::iter::once(&p.source)
+        .chain(&p.additional_sources)
         .collect();
+    let mut outputs = Vec::with_capacity(c.blocks);
+    let mut block_rows = Vec::with_capacity(c.blocks);
     let before = telemetry::start();
     let start = Instant::now();
     let mut stages = Stages::new(start, diagnostic);
     let mut reused = None;
-    let mut outputs = Vec::new();
-    let mut block_rows = Vec::new();
-    let mut generated = 0;
     let mut ready = 0;
+    let mut released = None;
+    let mut release_ns = 0;
+    let mut plan_constructed = None;
     let mut implementation = Value::Null;
     if c.workload == "continuous-reuse" {
         reused = Some(api::Plan::new(scheme(c), c.k));
+        plan_constructed = Some(elapsed(start));
         stages.mark("plan-or-reuse-context-creation");
     }
-    for (block, bytes) in sources.iter().enumerate() {
+    for bytes in &sources {
         let block_start = elapsed(start);
         let mut block_output = Vec::new();
         if c.workload == "reuse-encode" {
@@ -510,52 +908,99 @@ fn encode(c: &Case, p: &Prepared, diagnostic: bool) -> Outcome {
                 implementation = encoder.diagnostics();
                 stages.mark("diagnostic-query-overhead");
             }
+            let drop_start = elapsed(start);
             drop(encoder);
+            let drop_end = elapsed(start);
+            released = Some(drop_end);
+            release_ns += drop_end - drop_start;
             stages.mark("component-release");
         }
         if c.workload == "reuse-encode" || reused.is_some() {
             ready = elapsed(start);
         }
-        let released = elapsed(start);
-        generated += block_output.iter().map(Vec::len).sum::<usize>();
         outputs.push(block_output);
-        if diagnostic {
-            block_rows.push(json!({"block":block,"start_ns":block_start,"output_ready_ns":ready,"release_boundary_ns":released}));
-        }
+        block_rows.push((block_start, ready, released));
     }
-    drop(reused);
+    if let Some(plan) = reused {
+        let drop_start = elapsed(start);
+        drop(plan);
+        let drop_end = elapsed(start);
+        released = Some(drop_end);
+        release_ns += drop_end - drop_start;
+        stages.mark("component-release");
+    }
     stages.mark("workflow-complete");
     let lifecycle = elapsed(start);
     let resources = telemetry::finish(before);
+    let mut repair_reference = p.rebuild_outputs.borrow_mut();
+    let source_outputs = c.workload == "encode-sources";
+    if !source_outputs && repair_reference.is_none() {
+        *repair_reference = Some(
+            sources
+                .iter()
+                .map(|bytes| {
+                    let mut encoder = api::Encoder::new(scheme(c), c.k, c.width, bytes, None);
+                    let base = encoder.repair_base();
+                    (base..base + c.repairs)
+                        .map(|id| encoder.encode(id))
+                        .collect()
+                })
+                .collect(),
+        );
+    }
+    let expected_count = if source_outputs { c.k } else { c.repairs };
+    let mut generated = 0;
     for (block, result) in outputs.iter().enumerate() {
-        if c.workload == "encode-sources" {
-            assert_eq!(result.concat(), sources[block]);
-        } else {
-            let mut reference_encoder =
-                api::Encoder::new(scheme(c), c.k, c.width, &sources[block], None);
-            let base = reference_encoder.repair_base();
-            for (i, v) in result.iter().enumerate() {
-                assert_eq!(
-                    *v,
-                    reference_encoder.encode(base + i),
-                    "repair output mismatch"
-                );
-            }
+        assert_eq!(
+            result.len(),
+            expected_count,
+            "{}: output count for block {block}",
+            c.id
+        );
+        for (id, data) in result.iter().enumerate() {
+            assert_eq!(
+                data.len(),
+                c.width,
+                "{}: output width for block {block} symbol {id}",
+                c.id
+            );
+            let expected = if source_outputs {
+                &sources[block][id * c.width..(id + 1) * c.width]
+            } else {
+                &repair_reference.as_ref().unwrap()[block][id]
+            };
+            check_bytes(expected, data, || {
+                format!("{}: block {block} output {id}", c.id)
+            });
+            generated += data.len();
         }
     }
-    let witness = digest(&sources.concat());
-    let ns = if c.workload == "lifecycle" {
-        lifecycle
-    } else {
-        ready
-    };
+    if let Some(bytes) = &p.predecessor {
+        p.plan
+            .as_ref()
+            .unwrap()
+            .borrow_mut()
+            .load(c.width, bytes, None, &mut Stages::disabled());
+    }
+    let timeline: Vec<_> = block_rows.iter().enumerate().map(|(block, (begin, ready, release))| {
+        json!({"block":block,"start_ns":begin,"output_ready_ns":ready,"component_released_ns":release})
+    }).collect();
+    let first = block_rows[0];
+    let gaps: Vec<_> = block_rows
+        .windows(2)
+        .map(|pair| pair[1].0 - pair[0].1)
+        .collect();
+    let batch_total = if c.blocks > 1 { Some(lifecycle) } else { None };
+    let ns = batch_total.unwrap_or(ready);
+    let stages = stages.value(lifecycle);
+    let links = link_coverage(c, &stages, diagnostic);
     Outcome {
         ns,
-        witness,
+        witness: p.source_digest.clone(),
         resources,
         observation: None,
         status: "completed".into(),
-        details: json!({"output_bytes":generated,"repair_output_bytes":if c.workload=="encode-sources"{0}else{generated},"blocks":c.blocks,"block_timeline":block_rows,"output_ready_ns":ready,"lifecycle_ns":lifecycle,"stages":stages.value(lifecycle),"implementation":implementation,"probe":probe.map(|p|p.snapshot()),"reuse_scope":if c.workload=="reuse-encode"{"prepared plan; replacement/loading included; creation excluded"}else{"creation included where required by workflow"}}),
+        details: json!({"input_digest":p.source_digest,"output_bytes":generated,"repair_output_bytes":if source_outputs{0}else{generated},"retained_input_bytes":c.blocks*c.k*c.width,"blocks":c.blocks,"block_timeline":timeline,"first_block_ready_ns":first.1,"plan_constructed_ns":plan_constructed,"max_block_gap_ns":gaps.iter().max(),"batch_total_ns":batch_total,"output_ready_ns":ready,"component_released_ns":released,"release_ns":released.map(|_| release_ns),"lifecycle_ns":lifecycle,"stages":stages,"link_coverage":links,"implementation":implementation,"probe":probe.map(|p|p.snapshot()),"reuse_scope":if c.workload=="reuse-encode"{"prepared plan; replacement/loading included; creation excluded"}else{"creation included where required by workflow"}}),
     }
 }
 fn round_trip(c: &Case, p: &Prepared, diagnostic: bool) -> Outcome {
@@ -563,15 +1008,12 @@ fn round_trip(c: &Case, p: &Prepared, diagnostic: bool) -> Outcome {
     let start = Instant::now();
     let mut stages = Stages::new(start, diagnostic);
     let mut encoder = api::Encoder::new(scheme(c), c.k, c.width, &p.source, None);
-    let mut stream = Vec::new();
-    for id in c.missing..c.k {
-        stream.push((id, encoder.encode(id)));
-    }
-    for id in encoder.repair_base()..encoder.repair_base() + c.budget() {
-        stream.push((id, encoder.encode(id)));
-    }
+    stages.mark("encoder-construction");
+    let ids = offered_ids(c, encoder.repair_base());
+    stages.mark("delivery-plan");
+    let mut stream: Vec<_> = ids.into_iter().map(|id| (id, encoder.encode(id))).collect();
     stages.mark("encoding");
-    reference::shuffle(&mut stream, c.seed);
+    order_packets(c, &mut stream);
     stages.mark("in-memory-delivery-ordering");
     let mut decoder = api::Decoder::new(scheme(c), c.k, c.width, None);
     let mut received = 0;
@@ -586,14 +1028,29 @@ fn round_trip(c: &Case, p: &Prepared, diagnostic: bool) -> Outcome {
     let output = if complete { decoder.result() } else { vec![] };
     stages.mark("decoding-and-output");
     let ready = elapsed(start);
+    let drop_start = elapsed(start);
     drop(decoder);
     drop(encoder);
+    let released = elapsed(start);
     stages.mark("component-release");
     let lifecycle = elapsed(start);
     let resources = telemetry::finish(before);
     if complete {
-        assert_eq!(output, p.source);
+        check_bytes(&p.source, &output, || {
+            format!("{}: round trip after {received} inputs", c.id)
+        });
     }
+    assert!(
+        stream.iter().all(|(_, data)| data.len() == c.width),
+        "{}: round-trip symbol width",
+        c.id
+    );
+    let received_bytes: usize = stream[..received].iter().map(|(_, data)| data.len()).sum();
+    let offered_repairs = stream.iter().filter(|(id, _)| *id >= c.k).count();
+    let actual_repairs = stream[..received]
+        .iter()
+        .filter(|(id, _)| *id >= c.k)
+        .count();
     Outcome {
         ns: ready,
         witness: digest(&p.source),
@@ -605,6 +1062,6 @@ fn round_trip(c: &Case, p: &Prepared, diagnostic: bool) -> Outcome {
             "incomplete_recovery"
         }
         .into(),
-        details: json!({"output_ready_ns":ready,"lifecycle_ns":lifecycle,"received_symbols":received,"offered_symbols":stream.len(),"stages":stages.value(lifecycle),"scope":"directly timed in-memory encode-delivery-decode; not network throughput"}),
+        details: json!({"output_ready_ns":complete.then_some(ready),"attempt_end_ns":ready,"component_released_ns":released,"release_ns":released-drop_start,"lifecycle_ns":lifecycle,"received_symbols":received,"received_bytes":received_bytes,"received_sources":received-actual_repairs,"received_repairs":actual_repairs,"offered_symbols":stream.len(),"repair_output_bytes":offered_repairs*c.width,"input_digest":stream_digest(&stream),"stages":stages.value(lifecycle),"scope":"directly timed in-memory encode-delivery-decode; not network throughput"}),
     }
 }

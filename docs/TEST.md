@@ -2,7 +2,7 @@
 
 This guide describes the implemented, unreleased **0.1.0** test content. It explains the fixtures, correctness expectations, measurement boundaries and relationships between results. Configuration, component selection, integration and evidence lifecycle are defined in [DESIGN](DESIGN.md); commands and batch reports are documented in the [README](../README.md).
 
-The full catalog contains 2,467 concrete cases across RQ and R10. Each selected C receives the same catalog with explicit applicability. The configured scheme and available component surfaces determine which cases execute. Engine-only C executes standalone plan construction/export; operator-only C executes the pure-operator surface. Missing components, unavailable capabilities and the R10 K<4 domain are reported as skips. Applicable cases blocked by a fatal failure remain unexecuted.
+The full catalog contains 2,511 concrete cases across RQ and R10. Each selected C receives the same catalog with explicit applicability. The configured scheme and available component surfaces determine which cases execute. Engine-only C executes standalone plan construction and operation-list cloning; operator-only C executes the pure-operator surface. Missing components, unavailable capabilities and the R10 K<4 domain are reported as skips. Applicable cases blocked by a fatal failure remain unexecuted.
 
 ## Test categories and notation
 
@@ -49,7 +49,7 @@ A fatal validation stops measurement for the affected C; other configured C entr
 
 ### V01 — Selected component and scheme participation
 
-Verify source identities, resolved dependency bindings, enabled native features, actual shared-library loading where applicable, scheme parameters and finite-field configuration. An untimed diagnostic operator or callback records participation. The selected implementation must receive the work expected by that scenario; a genuine zero-arithmetic systematic receive path is not required to invent arithmetic calls. It still must demonstrate the expected storage/access path.
+Verify source identities, resolved dependency bindings, enabled native features, actual shared-library loading where applicable, scheme parameters and finite-field configuration. Independent untimed encoder and decoder probes record participation. Each must show its own expected read/write path. The selected implementation must receive the work expected by that scenario; a genuine zero-arithmetic systematic receive path is not required to invent arithmetic calls. It still must demonstrate the expected storage/access path.
 
 Wrong bindings, silent fallback and incorrect requested configuration are fatal. Product binary-side and callback-side provenance remain separate. A callback observation proves callback participation, not that all work inside the product library was delegated to it.
 
@@ -134,35 +134,35 @@ Warnings retain expected/actual observations and the per-case contract basis. Th
 
 ### V07 — Scheme, source count and padding
 
-Verify requested K, internal padded block size, zero-padding treatment, finite-field selection, source/repair ID mapping and output lengths. Exercise supported small sizes and boundaries around parameter-table transitions. Padding must not appear as additional application payload.
+V07 checks the declared geometry and application output at each registered K and at B=31 and B=128. It compares the first **internal** repair ID against the independently calculated total intermediate-symbol count. The RQ fixture uses the relevant K′, S and H rows from [RFC 6330 Table 2](https://www.rfc-editor.org/rfc/rfc6330.html#section-5.6). The registered R10 fixture uses the [RFC 5053 intermediate-symbol construction](https://www.rfc-editor.org/rfc/rfc5053.html#section-5.4.2.3) with K′=K. Wire-format encoding symbol IDs require a separate mapping and conformance check.
 
-These cases verify systematic source bytes, symbol lengths and the reported padded geometry. They do not provide independent RFC wire-format conformance vectors. V09 supplies an independent arithmetic/linear-algebra check of repairs and recovery.
+The native observation includes K′ from the selected scheme and identifies the adapter as the provider of zero pad symbols. The product surface exposes the repair base and output but leaves the internal padding operation unobserved. Every systematic output is checked once at its ID, with its exact width. The full source set verifies the application output has exactly K × B correct bytes. This check has no repair generation or decoder-progress assertions. Geometry, mapping and byte mismatches are fatal.
 
-### V08 — Plan construction, application and reuse
+### V08 — Plan application and reuse
 
-Generate a plan through the component's public symbolic/planning facilities when available. Apply it to independent payloads and compare outputs with the corresponding valid coding result and applicable reference checks. Changing source bytes must not reuse old data. The fixture uses three distinct payloads at fixed geometry; it checks stale-data isolation within the advertised reuse domain. It does not test changing K or width on an existing plan.
+At K=64 and B=128, load three distinct payloads into one prepared context. For each payload compare the internal repair base, source symbols and the first eight repairs with a rebuilt encoder. Differences in width, bytes or symbol domain are fatal and identify the load round and symbol. The check establishes reuse/rebuild equivalence. V09 provides the independent arithmetic check.
 
-Verify reuse with available identity, construction-count or trace evidence rather than inferring it from a faster second call. Distinguish component-owned plan reuse from framework composition of a publicly exported plan. A valid plan may change its instruction ordering across component versions. Wrong payloads, stale mappings and invalid reuse are fatal. A product exposing only combined creation and source replacement can validate those behaviors without claiming to export or separately time its private plan.
+Native drivers retain and apply a public recorded operation list. The product case observes the same encoder accepting three loads through its existing source-replacement API. Its internal plan reconstruction is unobservable. This fixture fixes geometry and does not exercise cross-instance plan import. L02 and W03 own planning and reuse timings.
 
-### V09 — Encoding and recovery results
+### V09 — Encoding and recovery mathematics
 
-Verify systematic symbols, repair generation, recovered payload length and every recovered byte. Check complete source reception and missing-source recovery with deterministic symbol IDs and order. At K=8 and B=31, basis payloads obtain coefficients from the selected encoder. Independent scalar GF(256) arithmetic and Gauss–Jordan elimination then check linear combination and recovery. This checks algebra, not independent RFC conformance.
+At K=8 and B=31, the selected encoder supplies coefficient rows using a basis payload with zero inactive lanes. The coefficient and data encoders use the same symbol width. The scalar reference computes each output from its row and the source bytes, independently of the selected operator. An incremental reference rank check rejects false decoder completion on any rank-deficient prefix. An independent Gauss–Jordan solve of the received rows verifies recovery, and the decoder's materialized output must agree with the original payload.
 
-Recovery success is required for fixtures established as recoverable. Rank-deficient fixtures test the incomplete state; they are not expected to recover. Packet count alone does not prove rank. A performance attempt that does not recover must retain that outcome and cannot report successful recovery throughput. Insufficient input must not be mislabeled as a proven arithmetic defect. False completion or wrong recovered bytes is always fatal.
+The stream omits source IDs 0, 3 and 6, then offers up to 128 repairs. If that prefix lacks rank K and has not completed, the fixed positive control supplies the withheld sources and records the rank at budget exhaustion. Rank K at the end of the repair budget without completion, wrong encoded or decoded bytes, and completion below rank K are fatal. Since the selected encoder supplies the coefficients, this establishes linear coding and recovery consistency for the tested IDs. Independent wire-format vectors remain outside this fixture.
 
 ### V10 — Ordering, duplicates and incremental progress
 
-The fixed K=64 receive fixture checks all-source input, eight omitted sources followed by repairs, repeated source IDs, repair-only input with a 128-symbol bound, and eight repairs before sources. It checks incomplete prefixes and compares recovered bytes. Duplicate repair IDs and calls after completion are not covered by this fixture.
+At K=64 and B=128, test seven arrival sequences: all sources, repeated sources, a fixed eight-source omission with source-first order, the same omission and repair set in mixed order, that mixed sequence with identical source and repair duplicates inserted, repairs only, and repairs before the full source set. The mixed pair preserves the order of the distinct IDs. Fixture generation verifies repairs against basis rows and independent scalar arithmetic so rank decisions apply to the actual offered bytes.
 
-Verify that valid reordering does not corrupt output, duplicates do not create false progress, and the completion status matches materialized data. Different amounts of work or earlier completion across implementations can be valid and must be recorded. Contract violations and incorrect completion are fatal; undefined boundary behavior receives a separately documented warning rule rather than an invented requirement.
+Each new decoder starts incomplete. For every distinct ID, insert its row into the independent reference rank. A duplicate adds no information. At reported completion require rank K and exact recovered bytes. A rank-K stream that finishes offering inputs without decoder completion is fatal, as are false completion and output corruption. A rank-deficient exhausted stream is a valid incomplete observation. Preserve the scenario, rank, offered and consumed counts and duplicates. Fatal observations include the scenario, arrival index, symbol ID and first bad byte. Calls after completion and conflicting payloads for one ID remain outside the fixture.
 
 ### V11 — Errors and resource lifecycle
 
-Native checks count normal destruction of encoder/decoder/operator instances and verify bytes across repeated instances. Native traits expose no recoverable invalid-input error contract, so deliberately invalid IDs and vector lengths are not submitted; that limitation is reported explicitly.
+Observe each encoder and decoder separately. Check release of the encoder, a decoder abandoned after a partially loaded prefix, and a decoder that produced an owned result. Verify that result after component release. Native release counts observe the public operator wrapper; the product counts observe callback ownership.
 
-The product API additionally injects a failing symbol-write callback during encoder construction, requires an error, and checks that the partially constructed callback owner is released once. It checks rejection of short replacement source data and short decoder symbols; R10 also checks rejection of K=1. Arbitrary invalid pointers and exhaustive allocation-failure injection are outside this catalog.
+The product negative fixture checks callback-error propagation and callback release on failed construction. Invalid replacement length and invalid received-symbol width must return `InvalidArg`, then a valid replacement and a valid input stream must still work. R10 also checks rejection of K=1. Native methods lack a recoverable invalid-input contract, so these rejection checks are unobservable there. Ownership violations, wrong output and documented errors that fail to propagate are fatal. Allocation and retention are separate diagnostic observations, with product library allocations outside the callback-side allocator's measurement scope.
 
-Missing required errors, ownership-count violations and wrong surviving payloads are fatal. Allocation counts and retained bytes belong to separate resource diagnostics. The catalog does not measure RSS or establish allocator-retention leaks from a high watermark alone.
+V07–V11 define no warning-only exceptions. An unavailable optional capability remains an explicit skip. Rank-deficient and budget-exhausted observations keep their own status.
 
 ## Operation tests (O01–O09)
 
@@ -176,21 +176,21 @@ Use independently initialized states where repetition would alter the operation 
 
 | Test | Operation and variants | Timed work and interpretation |
 | --- | --- | --- |
-| O01 | Insert into a new ID; overwrite an existing ID. | The public insertion call, including allocations it performs. Input generation is excluded. Separating new and existing IDs exposes storage-growth costs. |
-| O02 | Retrieve a stored symbol reference. | Lookup/reference-return cost. Consuming the reference to preserve execution is controlled; copying the whole symbol is a separate operation. No payload-bandwidth claim follows from a reference lookup. |
-| O03 | Zero one symbol, an ID list or a consecutive range. | The selected zero operation, with storage state fixed. Report whether destinations already exist. |
-| O04 | One-, two-, three- and general multi-source XOR. | One public call with fixed arity and valid operands. Distinct-ID core rows and warning-level boundary rows are labeled separately. |
-| O05 | Broadcast one source into multiple destinations. | One call with a specified destination count. Report calls and destinations processed. |
-| O06 | Multiply by alpha, multiply by scalar and multiply-add. | The actual arithmetic call after field setup. Zero/one/general scalar paths remain separate. Field/table initialization is not hidden here. |
-| O07 | Single and range copy/move. | The public operation including work required by its storage semantics. Logical bytes are not assumed to be physically copied. |
-| O08 | Establish sharing; first write after sharing. | Separate rows expose cheap alias creation and any deferred copy cost. Applicable only where the contract supports sharing. |
-| O09 | Remove a live symbol; informational ID association. | Removal or metadata-call cost. These are distinct case rows, not one aggregated benchmark. |
+| O01 | Insert into a new ID; overwrite an existing ID. | The public insertion call into fresh ID 32 or existing ID 1 in a 16-symbol state. Record that fresh insertion may allocate payload or grow the index. Materializing fixture bytes is outside the timer. |
+| O02 | Retrieve a stored symbol reference. | Lookup/reference-return cost, including saving references in a preallocated array for post-timing byte verification. No payload copying is timed. |
+| O03 | Zero one symbol, an ID list or a consecutive range. | The selected zero operation on existing symbols. List and range cases clear four symbols. The fixture measures clearing preloaded storage. |
+| O04 | One-, two-, three- and general multi-source XOR. | One public call with fixed arity. The 2- and 3-source list controls use the same operands and initial states as their specialized calls. V06 owns alias-boundary policy and rejection observations. |
+| O05 | Broadcast one source into multiple destinations. | One call into four or eight distinct preloaded destinations. Arity is part of the test case and the operation recipe. |
+| O06 | Multiply by alpha, multiply by scalar and multiply-add. | Arithmetic after GF(256) setup with polynomial 0x11d. The cases keep scalar 0, 1, 7 and 255 distinct. Field setup is outside the timer. |
+| O07 | Single and range copy/move. | Single and four-symbol nonoverlapping calls replace existing destinations. Elapsed time reflects the component storage policy, including delayed copy behavior if present. |
+| O08 | Establish sharing; first write after sharing. | Measure creation and the first GF write separately. Compare the first write against a private destination containing identical bytes. Applicable through the registered sharing surface. |
+| O09 | Remove a live symbol; informational ID association. | Separate deletion and informational notification rows. The API exposes no safe membership or association query. Removal timing includes any physical release occurring within the call. |
 
-Operations with instruction-enum counterparts use both direct and `execute` paths. Insert, lookup and explicit sharing have one public entry and therefore no alternate-path case. A missing required operator surface produces explicit applicability skips. An interface may return a legitimate unsupported-share result; that does not establish a successful zero-copy implementation.
+Operations with instruction-enum counterparts use both direct and `execute` paths. Insert, lookup and explicit sharing have one public entry and therefore no alternate-path case. A missing required operator surface produces explicit applicability skips. Applicability uses the registered interface capability. An implementation declining sharing under that registration reports an explicit preparation or validation failure for the case. The fixture does not infer physical sharing from time alone.
 
 Working-set variants use batches of independently initialized operator instances: up to 64 for the small set and 512 for the large set, capped at 64 MiB of initial symbol bytes. Each instance receives one measured call. Width-tail cases exercise non-aligned lengths; this catalog does not vary caller buffer offsets or claim a particular cache residency. Internal alignment is a component property.
 
-O04 and O06 indicate primitive arithmetic cost. O01/O02/O07/O08/O09 explain why a fast arithmetic kernel may still produce a slow operator or codec. No arithmetic-kernel-only result substitutes for the public-operation measurement.
+The one-instance precheck is shared by the small and large batch rows for the same operation, width and entry point. Every measured instance still receives its output check. V06 observations keep the outcome and timing distinction between completed calls and rejected calls. Batch timings include the timer loop and entry dispatch. O04 and O06 indicate primitive arithmetic cost. O01/O02/O07/O08/O09 explain why a fast arithmetic kernel may still produce a slow operator or codec. No arithmetic-kernel-only result substitutes for the public-operation measurement.
 
 ## Link tests (L01–L12)
 
@@ -202,7 +202,7 @@ Stage names describe work, not a particular engine version's function layout. I 
 | --- | --- | --- |
 | L01 | Scheme and context preparation. | Parameter preparation, field setup, operator/storage creation and encoder/decoder context creation, split where observable. Explains costs excluded from preloaded O tests. |
 | L02 | Encoding-plan generation. | Time from the required planning inputs to a usable symbolic plan, excluding payload execution. Include solving and instruction construction. Report plan size and operation composition where exposed. |
-| L03 | Plan export, retention and binding. | Materialization/export and attachment to the execution context, separate from L02 when the API exposes that boundary. Do not count the same plan allocation twice. |
+| L03 | Clone the retained operation list. | Time the clone alone and verify its count and content digest. Binding remains with plan application. This case keeps the `plan-export` ID for the existing engine-only selection. |
 | L04 | Source loading and padding. | Input import, ID assignment, allocation and zero-padding required for this block. Report actual and padded source counts. |
 | L05 | Plan application / intermediate-symbol computation. | Apply the prepared work to payload storage. Include operator calls actually made by this path. Link to its operation histogram and O measurements. |
 | L06 | Requested symbol generation. | Source/repair selection, coefficient or degree-set work, instruction generation/dispatch and payload operations for the specified outputs. Report first-output and subsequent-output costs when observable. |
@@ -213,7 +213,7 @@ Stage names describe work, not a particular engine version's function layout. I 
 | L11 | Recorded encoding-operation replay. | Generate and capture the real operation sequence outside the replay timer, then execute it against fixed payload state. Isolates the execution portion of encoding. |
 | L12 | Recorded decoding-operation replay. | Capture an actual decode scenario's sequence and replay it under its required state. Different loss/order scenarios can yield different programs; retain that provenance. |
 
-L02 constructs a new symbolic plan per observation using the ordinary warmup/sample schedule. W01 separately measures fresh-process complete encoding; there is no dedicated fresh-process plan-only row. A separate cached-plan hit must not masquerade as fast plan generation. A fresh process controls process-local caches, but does not establish cold CPU caches or a cold OS page cache.
+L02 constructs a new symbolic plan per observation, including scheme setup, extracting operations and setting the execution mode. Outside the timer, apply the retained plan and compare repair outputs with a rebuilt encoder. The independent arithmetic check remains V09. L03 validates the cloned list and separately checks application of the source plan. W01 separately measures fresh-process complete encoding; there is no dedicated fresh-process plan-only row. A separate cached-plan hit must not masquerade as fast plan generation. A fresh process controls process-local caches, but does not establish cold CPU caches or a cold OS page cache.
 
 Plan generation reports elapsed time and plans/s, plus operation counts and logical plan storage where available. It does not report payload Gbit/s for a symbolic task independent of symbol bytes. Serialized plan size, allocated plan memory and peak construction memory are different metrics.
 
@@ -223,7 +223,7 @@ An identical replay sequence, initial state, dispatch path and finite field can 
 
 Different engines may generate different valid sequences. Their replay comparison then includes changed work, not only different operator speed. Report instruction-count and composition changes alongside elapsed time. A drop from 10,000 operations to 7,000 operations must not be described solely as a faster kernel.
 
-When the selected combination cannot export a program, replay is skipped with the capability reason; its normal coding workload still runs. An independently generated surrogate program cannot be silently substituted for that engine's real program.
+Replay includes input insertion and field calls. Each encoding output is verified at its recorded output checkpoint, before later operations can overwrite it. A decode capture can consume its full input without completing. L12 then measures replay of the recorded work with `capture_decoded=false` and zero recovered-output checkpoints. Replay reports call-time metrics. Its payload-throughput denominator is disabled. When the selected integration lacks the recorded-operation surface, replay is skipped with the capability reason; its normal coding workload still runs. An independently generated surrogate program cannot be silently substituted for that engine's real program.
 
 ### Observable and combined stages
 
@@ -231,20 +231,20 @@ Use public call boundaries, existing profiling facilities and optional wrappers 
 
 Current source interfaces support recorded operation paths. Some development interfaces provide internal profiling. Product creation can combine plan construction, loading and execution behind one API, while source replacement exposes a reuse path. These differences affect observability and I provenance, not the definitions of correctness and useful output.
 
-Every planned stage must be represented by a measured interval, an identified combined parent, or an explicit unavailable diagnostic. Stage unavailability does not imply that the work takes no time. If a supported required observation is missing, treat it as an evidence failure rather than inventing a skip after execution.
+The single-block W02 eight-repair case provides the representative encoding chain. The W05 10%-omission, source-first, first-seed case provides the representative decoding chain. Both carry their L families and use the same ordinary result as the workflow. Separate diagnostics require each declared interval to be present and report the combined parent where appropriate. Every planned stage must be represented by a measured interval, an identified combined parent, or an explicit unavailable diagnostic. Stage unavailability does not imply that the work takes no time. If a supported required observation is missing, treat it as an evidence failure rather than inventing a skip after execution.
 
 ## Workflow tests (W01–W08)
 
 | Test | Workflow | Setup, timer and output |
 | --- | --- | --- |
-| W01 | First-use encoding. | In a fresh worker process, measure the first component use through owned output. Process startup is outside the timer and has no separate benchmark row. Library loading is included when it occurs inside the measured constructor; its cost is not separately isolated. No warmup precedes this first-use sample. |
+| W01 | First-use encoding. | In a fresh worker process, measure construction through the first batch of eight owned repair outputs. Process startup is outside the timer and has no separate benchmark row. Library loading is included when it occurs inside the measured constructor; its cost is not separately isolated. No warmup precedes this first-use sample. |
 | W02 | Rebuild for every block. | Construct scheme/context/operator as prescribed, import input, compute and materialize the requested output for each block. Process-level tables may already be warm; label this as per-block reconstruction rather than universally cold execution. |
-| W03 | Reuse a plan for independent blocks. | Build once, then load distinct payloads and execute the supported reuse path. Report initial construction, first block, later blocks and amortized cost separately. State whether reuse is component-owned or composition of an exported public plan. |
-| W04 | Receive all source symbols. | Pre-generate valid inputs outside the timer. Construct a decoder, receive the complete source set and materialize the recovered block. Valid fast paths that avoid solving retain their performance advantage. |
+| W03 | Reuse a plan for independent blocks. | For the single-block case, load a fixed predecessor before each timed replacement with different bytes. For continuous reuse, build once and load 32 distinct blocks. Report initial construction, first block, later blocks and amortized cost separately. State whether reuse is component-owned or composition of an exported public plan. |
+| W04 | Receive all source symbols. | Pre-generate valid inputs outside the timer. Construct a decoder, offer only K systematic symbols in ordered or deterministically shuffled order, and materialize the exact block. Completion is required. Valid fast paths that avoid solving retain their performance advantage. |
 | W05 | Recover missing sources. | Pre-generate a deterministic received sequence. Time decoder construction through recovery and owned output, with the specified missing-source set and ordering. Record symbols consumed and repairs required at completion. |
-| W06 | Encode-to-decode round trip. | Directly time encoding, the fixed in-memory omission/order procedure and decoding as one workflow. Report the harness delivery portion. This is not a network transport benchmark. |
-| W07 | Consecutive independent blocks. | Process 32 distinct payload blocks using the prescribed reconstruction or supported reuse policy. Record first/later block times, gaps, total batch duration, sustained throughput and state/resource trends. The policy is part of the case. |
-| W08 | Complete component lifecycle. | For the relevant W cases, also stop a lifecycle timer after codec/operator/callback release. The owned output has been handed to the caller and is retained for later checking. Distinguish this endpoint from output-ready time. |
+| W06 | Encode-to-decode round trip. | Directly time encoding, the fixed in-memory omission/order procedure and decoding as one workflow. Use the same omission and order generation as W05 for the matched geometry, omission count and seed. The encoder generates the complete declared repair budget. Report the harness delivery portion. This is not a network transport benchmark. |
+| W07 | Consecutive independent blocks. | Process 32 distinct payload blocks using the prescribed reconstruction or supported reuse policy. Record first/later readiness, gaps, final release and total batch duration. Input fixture bytes are prepared once per worker case and all inputs and outputs remain owned until validation. The native scope includes continuous encoding. The policy is part of the case. |
+| W08 | Complete component lifecycle. | Derive release and lifecycle endpoints from the relevant encode, decode and round-trip samples. The former independent eight-repair lifecycle case shares the W02 run. The owned output has been handed to the caller and is retained for later checking. Distinguish this endpoint from output-ready time. |
 
 Encoding output cases separate source-symbol materialization and repair generation. For repair cases, the selected R determines the work; it must be visible next to the throughput. Decoder input preparation is excluded from W04/W05 so encoder cost cannot leak into decode throughput.
 
@@ -265,11 +265,11 @@ The following dimensions expand only the families that consume them; they are no
 | Repair generation | R = 1, 8, ceil(0.1K), deduplicated; source-output materialization is a separate case. |
 | Main decode omissions | M = 0, 1, ceil(0.01K), ceil(0.1K), deduplicated. |
 | Main reception order | Remaining sources followed by repairs; fixed shuffled mixture of sources and repairs. |
-| V10 reception | Missing first eight sources, duplicate source IDs, repairs first, repair-only recovery and incomplete prefixes; duplicate repairs and post-completion calls are not covered. |
+| V10 reception | Missing first eight sources, repeated source and repair IDs, repairs first, repair-only recovery and prefix-rank checks. Post-completion calls are outside this fixture. |
 | Payload patterns | V02/V03/V05 use zero, 0xff and pseudorandom bytes; V04/V06 and codec workloads use deterministic pseudorandom inputs. |
 | Workload randomness | Seeds `0x1971`, `0x2003`, `0x5008`; SplitMix64 bytes and Fisher–Yates order. Three seeds apply to generated V04 histories, V01/V08–V11 and W04/W05. Other cases use the first seed. |
 | Consecutive-block count | 32 different payload blocks per registered continuity case. |
-| Repair budget | max(128, 2M + 64), bounded by the registered legal repair-ID domain. Record the effective budget and reason for any applicability restriction. |
+| Repair budget | Zero for W04. For the registered missing-source tests, max(128, 2M + 64). Track the offered domain and consumed prefix separately. |
 
 This is a layered matrix, not a full Cartesian product of every row. Main coding performance covers the six geometries and prescribed output/recovery cases. Width-tail and state-boundary rules expand only relevant checks. For example, a plan-generation case whose contract is independent of B should not duplicate the same work and present the duplicates as additional evidence.
 
@@ -312,9 +312,9 @@ For an ordinary performance case, use three independent worker processes, each w
 
 The candidate uses deterministic fixed batches: up to 64 independent instances for the small set and 512 for the large set, capped at 64 MiB of initial symbol bytes. Sixteen symbols are initialized per instance. These sizes are part of T and the actual call count is retained. There is no adaptive retry or hidden change in batch size. Define state preparation consistently and preserve all observed outputs or sufficient checked evidence. A result below usable clock resolution must be reported as unresolved at that resolution rather than an exact zero-time operation.
 
-Keep worker/process grouping, repetition index and workload seed. Three seeds measure different inputs; repeats of one seed measure execution variability for that input. Fifteen samples are not 15 independent machines, nor a basis for precise tail-percentile or production-stability claims.
+Ordinary and diagnostic workers use sorted, reverse and half-rotated case order within each category. C entries still execute independently in configured order. Keep worker/process grouping, repetition index and workload seed. Three seeds measure different inputs; repeats of one seed measure execution variability for that input. Fifteen samples are not 15 independent machines, nor a basis for precise tail-percentile or production-stability claims.
 
-Use every recorded sample when calculating the median, minimum, maximum and dispersion, retaining sample counts and worker grouping in the report index. Do not filter slow observations. Individual samples are temporary execution evidence and are cleaned after the verified Markdown report is published. Record case order and host observations. When orchestrating a baseline/candidate study, use a prescribed balanced order; comparing already existing files cannot retroactively remove order drift.
+Use every recorded sample in its outcome group. Keep completed latency and budget-exhaustion latency separately and retain counts and worker grouping. A recovery row with an incomplete sample has no successful throughput or comparison speed percentage. The result index retains the input and replay digests, work summaries, and ordinary release and output endpoints. Do not filter slow observations. Individual samples are temporary execution evidence and are cleaned after the verified Markdown report is published. Record case order and host observations. When orchestrating a baseline/candidate study, use a prescribed balanced order; comparing already existing files cannot retroactively remove order drift.
 
 ### Resource scope
 
@@ -350,7 +350,7 @@ Warnings do not change denominators. A boundary call that returns immediately st
 
 The framework automatically produces one Markdown report for the entire configured batch. It embeds every C, groups results by test category, and separates execution wall time from benchmark time. The retained report index preserves validated aggregate results and exact per-case coverage; temporary observations are cleaned after publication. The report is derived from that evidence and is readable locally without uploading component information or results.
 
-The [artifact contracts](../specs/README.md) define temporary execution evidence and the retained Markdown result index. `result.json`, raw samples, logs and build cache are working files, not additional final reports. Framework checks detect missing observations, inconsistent work counts and invalid diagnostic accounting before cleanup.
+The retained index includes completed codec validation observations, bounded regression evidence and observed work/digest summaries. Comparison exposes when the offered stream, consumed counts or recorded trace differ across C entries. The [artifact contracts](../specs/README.md) define temporary execution evidence and the retained Markdown result index. `result.json`, raw samples, logs and build cache are working files, not additional final reports. Framework checks detect missing observations, inconsistent work counts and invalid diagnostic accounting before cleanup.
 
 ### Read the report
 

@@ -11,6 +11,7 @@ pub struct Encoder {
     inner: fountain_engine::Encoder,
     base: usize,
     k: usize,
+    block_k: usize,
 }
 pub struct Decoder {
     inner: fountain_engine::Decoder,
@@ -48,6 +49,7 @@ fn encoder_with<S: CodeScheme>(
         inner,
         base: params.num_total(),
         k,
+        block_k: params.k,
     }
 }
 impl Encoder {
@@ -109,7 +111,7 @@ impl Encoder {
         outputs
     }
     pub fn diagnostics(&self) -> Value {
-        json!({"source_k":self.k,"num_total":self.base,"combined_stages":[{"stage":"encoding-plan-generation","included_in":"encoder-context-and-plan-application","reason":"execute-only constructor combines symbolic solving and payload application; standalone symbolic planning is measured separately"}]})
+        json!({"source_k":self.k,"block_k":self.block_k,"padding_provider":"native test adapter writes zero symbols before construction","num_total":self.base,"combined_stages":[{"stage":"encoding-plan-generation","included_in":"encoder-context-and-plan-application","reason":"execute-only constructor combines symbolic solving and payload application; standalone symbolic planning is measured separately"}]})
     }
 }
 impl Decoder {
@@ -181,6 +183,7 @@ impl Plan {
                     inner,
                     base: params.num_total(),
                     k,
+                    block_k: params.k,
                 },
                 operations,
                 block_k: params.k,
@@ -359,8 +362,8 @@ impl DataOperator for Recorder {
 }
 pub struct Replay {
     events: Vec<Event>,
-    outputs: Vec<usize>,
-    expected: Vec<u8>,
+    checkpoints: Vec<(usize, usize, Vec<u8>)>,
+    details: Value,
     width: usize,
 }
 impl Replay {
@@ -385,27 +388,31 @@ impl Replay {
                 inner: operator::raw(width),
                 log: log.clone(),
             });
-            let (outputs, expected) = if decode {
+            let mut checkpoints = Vec::new();
+            let mut consumed = 0;
+            let mut decoded = None;
+            if decode {
                 let mut decoder =
                     fountain_engine::Decoder::new_with_operator_execute_only_and_num_source(
                         &scheme, op, k,
                     );
                 for (id, v) in packets {
                     decoder.add_coded_vector(*id, v);
+                    consumed += 1;
                     if decoder.decode_status() == DecodeStatus::Decoded {
                         break;
                     }
                 }
-                assert_eq!(
-                    decoder.decode_status(),
-                    DecodeStatus::Decoded,
-                    "recorded decode must complete"
-                );
-                let values: Vec<_> = (0..k)
-                    .flat_map(|id| decoder.manager.get_data_vector(id).iter().copied())
-                    .collect();
-                assert_eq!(values, source);
-                ((0..k).collect(), values)
+                let completed = decoder.decode_status() == DecodeStatus::Decoded;
+                decoded = Some(completed);
+                if completed {
+                    let event_count = log.lock().unwrap().len();
+                    for (id, expected) in source.chunks_exact(width).enumerate() {
+                        let actual = decoder.manager.get_data_vector(id);
+                        assert!(actual == expected, "recorded decode output symbol {id}");
+                        checkpoints.push((event_count, id, expected.to_vec()));
+                    }
+                }
             } else {
                 for (i, v) in source.chunks_exact(width).enumerate() {
                     op.insert_vector(v, i);
@@ -417,20 +424,45 @@ impl Replay {
                     fountain_engine::Encoder::new_with_operator_execute_only_and_num_source(
                         &scheme, op, k,
                     );
-                let mut ids = Vec::new();
-                let mut values = Vec::new();
-                for id in scheme.get_params().num_total()..scheme.get_params().num_total() + 8 {
+                let base = scheme.get_params().num_total();
+                for id in base..base + 8 {
                     let d = encoder.encode_coded_vector(id).unwrap();
-                    ids.push(d);
-                    values.extend_from_slice(encoder.get_data_vector(d));
+                    let actual = encoder.get_data_vector(d);
+                    assert_eq!(actual.len(), width, "recorded encoder symbol {id} width");
+                    checkpoints.push((log.lock().unwrap().len(), d, actual.to_vec()));
                 }
-                (ids, values)
-            };
+            }
             let events = Arc::try_unwrap(log).unwrap().into_inner().unwrap();
+            let mut histogram = std::collections::BTreeMap::new();
+            let mut dispatch = std::collections::BTreeMap::new();
+            let mut fields = Vec::new();
+            for event in &events {
+                let name = match event {
+                    Event::Write(..) => "input-write",
+                    Event::Field(p) => {
+                        fields.push(*p);
+                        "field"
+                    }
+                    Event::Op(a, direct) => {
+                        *dispatch
+                            .entry(if *direct { "direct" } else { "execute" })
+                            .or_insert(0usize) += 1;
+                        operator::name(a)
+                    }
+                    Event::Alias(..) => "alias",
+                };
+                *histogram.entry(name).or_insert(0usize) += 1;
+            }
+            let details = json!({
+                "sequence_digest":crate::digest(format!("{events:?}").as_bytes()),
+                "calls":events.len(),"histogram":histogram,"dispatch":dispatch,"fields":fields,
+                "consumed":consumed,"capture_decoded":decoded,"verified_output_symbols":checkpoints.len(),
+                "scope":"ordered imports, field configuration and recorded operations; excludes solver, capture, and output checks"
+            });
             Replay {
                 events,
-                outputs,
-                expected,
+                checkpoints,
+                details,
                 width,
             }
         }
@@ -454,55 +486,66 @@ impl Replay {
             _ => unreachable!(),
         }
     }
+    fn apply(op: &mut operator::Selected, event: &Event) {
+        match event {
+            Event::Write(id, v) => op.insert_vector(v, *id),
+            Event::Field(p) => op.config_finite_field(*p),
+            Event::Op(a, direct) => {
+                if *direct {
+                    operator::dispatch(op, a);
+                } else {
+                    op.execute(a);
+                }
+            }
+            Event::Alias(src, dst) => {
+                #[cfg(feature = "engine3")]
+                assert!(op.alias_to(*src, *dst));
+                #[cfg(not(feature = "engine3"))]
+                {
+                    let _ = (src, dst);
+                    unreachable!("alias event on non-alias interface");
+                }
+            }
+        }
+    }
+
     pub fn execute(&self) -> (u64, Value, Value) {
         let mut op = operator::raw(self.width);
         let resources_start = crate::telemetry::start();
         let start = std::time::Instant::now();
         for event in &self.events {
-            match event {
-                Event::Write(id, v) => op.insert_vector(v, *id),
-                Event::Field(p) => op.config_finite_field(*p),
-                Event::Op(a, direct) => {
-                    if *direct {
-                        operator::dispatch(&mut op, a);
-                    } else {
-                        op.execute(a);
-                    }
-                }
-                Event::Alias(src, dst) => {
-                    #[cfg(feature = "engine3")]
-                    assert!(op.alias_to(*src, *dst));
-                    #[cfg(not(feature = "engine3"))]
-                    {
-                        let _ = (src, dst);
-                        unreachable!("alias event on non-alias interface");
-                    }
-                }
-            }
+            Self::apply(&mut op, event);
         }
         let elapsed = crate::elapsed(start);
         let resources = crate::telemetry::finish(resources_start);
-        let actual: Vec<_> = self
-            .outputs
+        let check = |op: &operator::Selected, id: usize, expected: &[u8]| {
+            let actual = op.get_vector(id);
+            assert!(
+                actual == expected,
+                "replay output at recorded boundary, symbol {id}"
+            );
+        };
+        if self
+            .checkpoints
             .iter()
-            .flat_map(|&id| op.get_vector(id).iter().copied())
-            .collect();
-        assert_eq!(actual, self.expected, "replay output");
-        let mut histogram = std::collections::BTreeMap::new();
-        for e in &self.events {
-            let name = match e {
-                Event::Write(..) => "input-write",
-                Event::Field(..) => "field",
-                Event::Op(a, _) => operator::name(a),
-                Event::Alias(..) => "alias",
-            };
-            *histogram.entry(name).or_insert(0usize) += 1;
+            .all(|(at, _, _)| *at == self.events.len())
+        {
+            for (_, id, expected) in &self.checkpoints {
+                check(&op, *id, expected);
+            }
+        } else {
+            // Earlier outputs can have reused IDs by the end of the program.
+            let mut verifier = operator::raw(self.width);
+            let mut cursor = 0;
+            for (at, id, expected) in &self.checkpoints {
+                for event in &self.events[cursor..*at] {
+                    Self::apply(&mut verifier, event);
+                }
+                check(&verifier, *id, expected);
+                cursor = *at;
+            }
         }
-        (
-            elapsed,
-            json!({"sequence_digest":crate::digest(format!("{:?}",self.events).as_bytes()),"calls":self.events.len(),"histogram":histogram,"scope":"actual recorded session including ordered imports and field calls; solver and sequence capture excluded"}),
-            resources,
-        )
+        (elapsed, self.details.clone(), resources)
     }
 }
 

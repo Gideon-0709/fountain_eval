@@ -38,6 +38,8 @@ pub struct Component {
     pub summary: Vec<measurement::Summary>,
     pub aggregation_error: Option<String>,
     pub fatal_witnesses: BTreeMap<String, Value>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub codec_validation_observations: BTreeMap<String, Value>,
     pub error: Option<String>,
     pub failure_details: Vec<String>,
     /// Prepared metadata contains no samples and references immutable cache inputs.
@@ -102,6 +104,18 @@ impl Component {
             summary,
             aggregation_error,
             fatal_witnesses,
+            codec_validation_observations: r
+                .validation
+                .iter()
+                .filter_map(|event| {
+                    let id = event["case"].as_str()?;
+                    let check = r.recipe.as_ref()?.checks.get(id)?;
+                    (check.spec.category == "correctness"
+                        && check.spec.scheme.is_some()
+                        && event["status"] == "passed")
+                        .then(|| (id.to_owned(), event["details"].clone()))
+                })
+                .collect(),
             error: r.error.clone(),
             failure_details: Vec::new(),
             prepared: (r.status == "prepared").then(|| r.clone()),

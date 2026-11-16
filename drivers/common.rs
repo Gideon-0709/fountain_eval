@@ -101,10 +101,19 @@ fn emit(value: Value) {
     writeln!(out).unwrap();
     out.flush().unwrap();
 }
-fn validation(check: &Check) {
+fn validation(check: &Check, equivalent: &mut BTreeMap<String, workloads::Validation>) {
     let c = &check.spec;
     CURRENT.with(|x| *x.borrow_mut() = c.id.clone());
-    let result = workloads::validate(c);
+    let result = if c.category == "operation" {
+        // The precheck always uses one instance with identical inputs for both batches.
+        let key = c.id.rsplit_once('/').unwrap().0.to_owned();
+        equivalent
+            .entry(key)
+            .or_insert_with(|| workloads::validate(c))
+            .clone()
+    } else {
+        workloads::validate(c)
+    };
     let mut event = json!({"event":"validation","case":c.id,"rule":check.rule,"severity":check.severity,"status":"passed","witness":result.witness,"details":result.details});
     if c.warning {
         let expected = result.expected.expect("warning reference missing");
@@ -166,23 +175,35 @@ fn main() {
         match mode {
             "describe" => {}
             "validate" => {
+                let mut equivalent = BTreeMap::new();
                 for check in plan.checks.values().filter(|c| c.skip.is_none()) {
-                    validation(check);
+                    validation(check, &mut equivalent);
                 }
             }
             "measure" | "diagnose" => {
                 assert_eq!(mode == "diagnose", cfg!(feature = "diagnostics"));
                 assert!(worker < content::WORKERS);
-                for check in plan.checks.values().filter(|c| {
+                let checks = plan.checks.values().filter(|c| {
                     c.skip.is_none()
                         && c.measured
                         && c.measurement_skip.is_none()
                         && !c.spec.fresh_process
-                }) {
-                    if mode == "diagnose" && check.spec.category == "operation" {
-                        continue;
+                        && (mode != "diagnose" || c.spec.category != "operation")
+                });
+                let mut groups: BTreeMap<&str, Vec<&Check>> = BTreeMap::new();
+                for check in checks {
+                    groups.entry(&check.spec.category).or_default().push(check);
+                }
+                for (_, mut group) in groups {
+                    if worker == 1 {
+                        group.reverse();
+                    } else if worker == 2 {
+                        let middle = group.len() / 2;
+                        group.rotate_left(middle);
                     }
-                    measure(check, worker, false);
+                    for check in group {
+                        measure(check, worker, false);
+                    }
                 }
             }
             "first-use" => {

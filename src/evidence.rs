@@ -253,7 +253,31 @@ pub fn compare_summaries(
     let b_summary = &right.summary;
     let left_correctness = &left.correctness;
     let right_correctness = &right.correctness;
-    let rows:Vec<_>=a_summary.iter().filter_map(|a|b_summary.iter().find(|b|b.case==a.case).map(|b|(a,b))).map(|(a,b)|json!({"case":a.case,"left_median_ns":a.median_ns,"right_median_ns":b.median_ns,"left_over_right_time":a.median_ns as f64/b.median_ns as f64,"left_cv":a.coefficient_of_variation,"right_cv":b.coefficient_of_variation,"left_worker_medians_ns":a.worker_medians_ns,"right_worker_medians_ns":b.worker_medians_ns,"left_completed":a.completed,"right_completed":b.completed,"left_operations_per_second":a.operations_per_second,"right_operations_per_second":b.operations_per_second,"left_source_payload_gbps":a.source_payload_gbps,"right_source_payload_gbps":b.source_payload_gbps,"left_warnings":left_correctness.warnings.iter().filter(|w|w["case"]==a.case).collect::<Vec<_>>(),"right_warnings":right_correctness.warnings.iter().filter(|w|w["case"]==b.case).collect::<Vec<_>>()})).collect();
+    let right_by_case: BTreeMap<_, _> = b_summary.iter().map(|row| (&row.case, row)).collect();
+    let rows: Vec<_> = a_summary.iter().filter_map(|a| right_by_case.get(&a.case).map(|b| {
+        let comparable_completion = a.incomplete == 0 && b.incomplete == 0;
+        let equality = |field: &str| a.workload.get(field).zip(b.workload.get(field))
+            .map(|(left, right)| left == right);
+        let same_consumed_count = a.workload.get("received_symbols").zip(b.workload.get("received_symbols"))
+            .and_then(|(left, right)| {
+                if left != right { return Some(false); }
+                let min = left["min"].as_u64()?;
+                (left["max"].as_u64()? == min).then_some(true)
+            });
+        json!({"case":a.case,"left_median_ns":a.median_ns,"right_median_ns":b.median_ns,
+            "left_over_right_time":comparable_completion.then_some(a.median_ns as f64 / b.median_ns as f64),
+            "left_cv":a.coefficient_of_variation,"right_cv":b.coefficient_of_variation,
+            "left_worker_medians_ns":a.worker_medians_ns,"right_worker_medians_ns":b.worker_medians_ns,
+            "left_completed":a.completed,"right_completed":b.completed,
+            "left_incomplete":a.incomplete,"right_incomplete":b.incomplete,
+            "left_incomplete_median_ns":a.incomplete_median_ns,"right_incomplete_median_ns":b.incomplete_median_ns,
+            "same_offered_input":equality("input_digest"),"same_recorded_sequence":equality("sequence_digest"),
+            "same_consumed_count":same_consumed_count,"left_workload":a.workload,"right_workload":b.workload,
+            "left_operations_per_second":a.operations_per_second,"right_operations_per_second":b.operations_per_second,
+            "left_source_payload_gbps":a.source_payload_gbps,"right_source_payload_gbps":b.source_payload_gbps,
+            "left_warnings":left_correctness.warnings.iter().filter(|w|w["case"]==a.case).collect::<Vec<_>>(),
+            "right_warnings":right_correctness.warnings.iter().filter(|w|w["case"]==a.case).collect::<Vec<_>>()})
+    })).collect();
     if rows.is_empty() {
         return Err("not comparable: no common measured cases".into());
     }
