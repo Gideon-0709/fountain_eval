@@ -23,7 +23,7 @@ A completed input identity is `(C,I,T,E)`:
 | Dimension | Owns | May change independently |
 |---|---|---|
 | C: selected components | Selected engine and/or operator identities, scheme, implementation choice, source digests, resolved dependency provenance | Algorithms, layouts, kernels, allocation and internal implementation |
-| I: interface integration | Native API conversions, feature/source binding, supported capabilities, driver family | Package/API/trait/product ABI integration |
+| I: interface integration | Native API conversions, dependency binding, diagnostic build requirements, supported capabilities, driver family | Package/API/trait/product ABI integration |
 | T: test content | Input generation, operations, correctness oracle and severity, timing boundary, sampling and metric semantics | Test scenarios, coverage, workload and methodology |
 | E: effective experiment configuration | Selected scheme algorithm/mode, T-derived parameters, common compiler/build settings and observed runtime conditions | Host, OS, toolchain, CPU/power/affinity and common build environment |
 
@@ -57,9 +57,9 @@ A stable trait is necessary but not sufficient: its semantics, lifecycle, requir
 
 ## Configuration and complete test execution
 
-`src/config.rs` is the sole user configuration boundary. The config contains engine/operator references, a scheme name or detailed source selection, the complete content version, and optional storage paths. Relative paths use the config directory. Unknown fields and user case filters are rejected. No includes, environment substitution or global/CLI component overrides exist. All settings are normalized once and stored before execution; replay uses that frozen configuration.
+`src/config.rs` is the sole user configuration boundary. The CLI reads `fountain-eval.toml` from the current directory by default. An explicit `--config` selects another file. The config contains engine/operator references, a scheme name or detailed source selection, the complete content version, and optional storage paths. Relative paths use the config directory. Unknown fields and user case filters are rejected. All settings are normalized once and stored before execution. Prepared execution uses the stored configuration.
 
-Config is an input to `(C,I,T,E)`, not an additional identity axis. Raw text, comments and filesystem location do not participate in experiment equality. Scheme implementation changes belong to C; the requested scheme algorithm/mode belongs to E. T owns workload parameters and severity. I owns feature mapping and invocation. Source forms (path/Git/registry) are independent of invocation forms (Rust API/product ABI).
+Config is an input to `(C,I,T,E)`, not an additional identity axis. Raw text, comments and filesystem location do not participate in experiment equality. Scheme implementation changes belong to C; the requested scheme algorithm/mode belongs to E. Each operator reference identifies its Rust type in the selected crate. Requested engine/operator Cargo features and default-feature settings belong to C. T owns workload parameters and severity. I owns invocation and diagnostic build requirements. Source forms (path/Git/registry) are independent of invocation forms (Rust API/product ABI).
 
 The content version selects the full catalog, not an individual suite or category. Every case remains in the expanded plan with validation and measurement applicability. Skips have stable reason codes and explanations. Build errors, fatal checks, crashes, interruption and missing expected outputs are failures or unexecuted work; they are not skips. A canonical-plan check prevents an edited skip from concealing a missing result. Native acceptance executes both configured schemes across registered integrations and verifies coverage.
 
@@ -101,7 +101,7 @@ Local Git inputs include tracked and nonignored untracked files, including curre
 
 Path dependencies are captured before computing a build-cache key, including dependencies outside the original repository. Snapshot checks detect concurrent file changes; source hashes include relative paths, bytes and executable bits. Monorepo-relative source includes remain intact. File symlinks within the snapshot are materialized; links escaping the snapshot and directory symlinks are rejected.
 
-Generated build views preserve source files and record original/effective manifests. They expand workspace inheritance and bind selected native dependencies through paths. They do not edit upstream manifests or relax declared semantic version requirements. Native-only dependency feature choices are I-owned and recorded with Cargo's actual resolved features. Unmapped workspace patches/replacements fail explicitly.
+Generated build views preserve source files and record original/effective manifests. They expand workspace inheritance and bind selected native dependencies through paths. Cargo receives the requested feature settings in the generated dependency declarations, or as build options on the product library's root crate. Build provenance retains the request and the resolved Cargo metadata for ordinary, diagnostic and product builds. The build view preserves declared upstream version constraints. Unmapped workspace patches/replacements fail explicitly.
 
 Default public engine 2.1 integrations bind scheme and utility 2.1.0 releases. Engine 3 defaults to its monorepo packages. An explicit native scheme source is frozen, bound and checked against actual Cargo metadata. Product integration uses its bundled scheme and rejects external scheme substitution. The current Arena's exact engine 2.1 requirement rejects source engine 3. Successful compilation establishes concrete Rust type identity, and metadata checks reject duplicated/misbound engine identities in the driver graph.
 

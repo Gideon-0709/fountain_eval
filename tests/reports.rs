@@ -66,22 +66,9 @@ fn equivalence_failure_labels_both_paths_without_inventing_an_oracle() {
 }
 
 #[test]
-fn publishing_refuses_empty_reports_and_never_overwrites() {
-    let t = support::Temp::new();
-    let directory = report::reserve(&t.0, "test-run").unwrap();
-    assert!(report::publish(&directory, "").is_err());
-    assert!(!directory.join("report.md").exists());
-    report::publish(&directory, "# Report\n\nComplete.\n").unwrap();
-    assert!(report::publish(&directory, "replacement").is_err());
-    assert!(report::reserve(&t.0, "test-run").is_err());
-    assert!(report::reserve(&t.0, "../escape").is_err());
-    assert_eq!(std::fs::read_dir(directory).unwrap().count(), 1);
-}
-
-#[test]
 fn comparison_uses_category_sections_and_explains_warnings_without_json() {
     let r = support::record("native-2", "rq");
-    let v = fountain_eval::evidence::compare(&r, &r).unwrap();
+    let v = support::compare(&r, &r).unwrap();
     let md = report::comparison(&v);
     assert!(md.contains("## Operation tests"));
     assert!(md.contains("## Link tests"));

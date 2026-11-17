@@ -218,12 +218,6 @@ pub fn load(directory: &Path) -> Result<Record> {
     record.coverage = crate::coverage::report(&record);
     Ok(record)
 }
-pub fn compare(left: &Record, right: &Record) -> Result<Value> {
-    compare_summaries(
-        &crate::artifact::Component::from_record(left)?,
-        &crate::artifact::Component::from_record(right)?,
-    )
-}
 pub fn compare_summaries(
     left: &crate::artifact::Component,
     right: &crate::artifact::Component,

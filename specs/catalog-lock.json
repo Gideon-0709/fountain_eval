@@ -3,15 +3,15 @@
   "publication_status": "internal-draft",
   "interfaces": [
     {
-      "digest": "084a3766be12bb18f0de892ca1e65d682c295b16172d0302d4a87a77981592a1",
+      "digest": "7a76da0933759762a68995e1e4934d9d126c2e80ba05ebbb2686ddba634a2f66",
       "id": "native-2@0.1.0"
     },
     {
-      "digest": "442f071bb1bf39cf4b6eaa848fa5544922da66fc8b4104121e94d8233c094ff2",
+      "digest": "7469b026acd3e9825d664c5b6dc524987589c453966d868f967b29f71a1bf4b2",
       "id": "native-3@0.1.0"
     },
     {
-      "digest": "82def3d793fb857638c4cf7b943a42df67d9fe2369b5d6a1c937ee3b1535431c",
+      "digest": "8fd4ad3055cf3285ff7bb31b4a1a4314a9f75535aa880c9552a423277a2e4dc2",
       "id": "product-abi@0.1.0"
     }
   ],

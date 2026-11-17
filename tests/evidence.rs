@@ -55,10 +55,10 @@ fn comparison_separates_observations_conditions_and_identity_collisions() {
     let mut right = left.clone();
     right.run_id = "another-run".into();
     right.quadruple.as_mut().unwrap().e.observations = json!({"time":99});
-    assert!(evidence::compare(&left, &right).is_ok());
+    assert!(support::compare(&left, &right).is_ok());
     right = record("product-abi", "rq");
     right.quadruple.as_mut().unwrap().c = json!({"engine":"another-component"});
-    let result = evidence::compare(&left, &right).unwrap();
+    let result = support::compare(&left, &right).unwrap();
     assert_eq!(
         result["attribution"],
         "component and interface path together"
@@ -78,7 +78,7 @@ fn comparison_separates_observations_conditions_and_identity_collisions() {
             }
         };
         assert!(
-            evidence::compare(&left, &bad).is_err(),
+            support::compare(&left, &bad).is_err(),
             "mutation {mutation}"
         );
     }
@@ -173,7 +173,7 @@ fn semantic_warnings_preserve_success_measurements_and_comparison() {
     assert_eq!(report.status, "passed_with_warnings");
     assert_eq!(report.warnings.len(), 1);
     assert!(report.fatal_failures.is_empty());
-    let comparison = evidence::compare(&left, &right).unwrap();
+    let comparison = support::compare(&left, &right).unwrap();
     assert_eq!(comparison["status"], "comparable");
     let row = comparison["rows"]
         .as_array()
@@ -204,7 +204,7 @@ fn measured_boundary_variation_is_reported_without_becoming_fatal() {
     let report = fountain_eval::validation::report(&r);
     assert_eq!(report.status, "passed_with_warnings");
     assert_eq!(report.warnings.len(), 1);
-    assert!(evidence::compare(&r, &r).is_ok());
+    assert!(support::compare(&r, &r).is_ok());
 }
 
 #[test]
@@ -231,7 +231,7 @@ fn fatal_failures_cannot_be_downgraded_and_warning_coverage_is_required() {
             evidence::validate_samples(&bad).is_err(),
             "mutation {mutation}"
         );
-        assert!(evidence::compare(&good, &bad).is_err());
+        assert!(support::compare(&good, &bad).is_err());
     }
 }
 
@@ -244,7 +244,7 @@ fn different_internal_candidate_digests_are_not_comparable() {
         left.quadruple.as_ref().unwrap().t.id,
         earlier.quadruple.as_ref().unwrap().t.id
     );
-    assert!(evidence::compare(&earlier, &left).is_err());
+    assert!(support::compare(&earlier, &left).is_err());
 }
 
 #[test]
@@ -366,7 +366,7 @@ fn comparison_marks_changed_work_and_omits_speed_ratios_for_incomplete_recovery(
         (Some(4000), Some(9000))
     );
     assert_eq!(row.median_ns, 4000);
-    let comparison = evidence::compare(&left, &right).unwrap();
+    let comparison = support::compare(&left, &right).unwrap();
     let row = comparison["rows"]
         .as_array()
         .unwrap()

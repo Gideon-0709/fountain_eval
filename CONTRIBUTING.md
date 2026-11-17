@@ -23,8 +23,8 @@ For full authorized local coverage, add `--reproduction --monorepo /path/to/eras
 
 ## Change ownership
 
-- C owns component implementations and their resolved dependencies.
-- I owns native calls, conversions, feature/source binding and capabilities.
+- C owns component implementations, requested Cargo features and resolved dependencies.
+- I owns native calls, conversions, dependency binding, diagnostic build requirements and capabilities.
 - T owns workloads, timing, correctness severity, reference expectations and metric semantics.
 - E is derived from the recipe and actual common conditions.
 

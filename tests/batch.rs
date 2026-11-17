@@ -16,7 +16,7 @@ fn independent_failures_continue_and_automatic_reports_retain_each_c() {
     assert_eq!(r.status, "completed_with_failures");
     assert_eq!(batch::exit_code(&r), 4);
     assert_eq!(r.entries.len(), 2);
-    let (_, saved) = artifact::load(&path).unwrap();
+    let (body, saved) = artifact::load(&path).unwrap();
     assert_eq!(saved.components.len(), 2);
     for c in &saved.components {
         assert_eq!(c.status, "failed");
@@ -36,10 +36,7 @@ fn independent_failures_continue_and_automatic_reports_retain_each_c() {
         .output()
         .unwrap();
     assert!(output.status.success());
-    assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        artifact::visible_text(&report).unwrap()
-    );
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), body);
     assert!(artifact::load(&path).is_ok());
     std::fs::write(&path, report.replace("Key findings", "Changed findings")).unwrap();
     assert!(artifact::load(&path).is_err());
@@ -76,15 +73,7 @@ fn report_rejects_component_identity_and_count_changes() {
             999.into()
         };
         let altered = serde_json::from_value(v).unwrap();
-        assert!(
-            artifact::publish(
-                &t.0.join(field),
-                artifact::visible_text(&text).unwrap(),
-                &altered,
-                false
-            )
-            .is_err()
-        );
+        assert!(artifact::publish(&t.0.join(field), &text, &altered, false).is_err());
     }
 }
 

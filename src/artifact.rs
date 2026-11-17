@@ -17,6 +17,29 @@ use std::{
 const MARKER: &str = "\n<!-- fountain-eval-result\n";
 const LIMIT: u64 = 64 * 1024 * 1024;
 
+fn valid_run_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+}
+
+/// Reserve a fresh directory for a report's verified publication.
+pub fn reserve(root: &Path, id: &str) -> Result<PathBuf> {
+    if !valid_run_id(id) {
+        return Err("invalid report run identifier".into());
+    }
+    fs::create_dir_all(root).map_err(|e| format!("report directory {}: {e}", root.display()))?;
+    let dir = root.join(id);
+    fs::create_dir(&dir).map_err(|e| {
+        format!(
+            "report destination {}: {e}; choose a new output directory",
+            dir.display()
+        )
+    })?;
+    Ok(dir)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Component {
     pub component_id: u32,
@@ -262,37 +285,31 @@ fn log_excerpt(path: &Path, text: &str) -> String {
 
 impl Snapshot {
     pub fn capture(directory: &Path) -> Result<Self> {
-        let batch = batch::load(directory)?;
         let mut components = Vec::new();
-        for entry in &batch.entries {
-            if let Some(relative) = &entry.directory {
-                let child = directory.join(relative);
-                let record = evidence::load(&child)?;
-                let mut c = Component::from_record(&record)?;
-                if matches!(c.status.as_str(), "failed" | "interrupted") {
-                    for path in util::files(&child.join("logs")).unwrap_or_default() {
-                        let name = path.to_string_lossy();
-                        let relevant = match record.stage.as_str() {
-                            "build" => name.contains("build"),
-                            "validate" => name.starts_with("validate"),
-                            "measure" => {
-                                name.starts_with("measure") || name.starts_with("first-use")
-                            }
-                            "diagnose" => name.starts_with("diagnose"),
-                            _ => true,
-                        };
-                        if relevant && path.extension().is_some_and(|v| v == "stderr") {
-                            let text = fs::read_to_string(child.join("logs").join(&path))
-                                .unwrap_or_default();
-                            if !text.trim().is_empty() {
-                                c.failure_details.push(log_excerpt(&path, &text));
-                            }
+        let batch = batch::load_with_children(directory, |_, child, record| {
+            let mut c = Component::from_record(&record)?;
+            if matches!(c.status.as_str(), "failed" | "interrupted") {
+                for path in util::files(&child.join("logs")).unwrap_or_default() {
+                    let name = path.to_string_lossy();
+                    let relevant = match record.stage.as_str() {
+                        "build" => name.contains("build"),
+                        "validate" => name.starts_with("validate"),
+                        "measure" => name.starts_with("measure") || name.starts_with("first-use"),
+                        "diagnose" => name.starts_with("diagnose"),
+                        _ => true,
+                    };
+                    if relevant && path.extension().is_some_and(|v| v == "stderr") {
+                        let text =
+                            fs::read_to_string(child.join("logs").join(&path)).unwrap_or_default();
+                        if !text.trim().is_empty() {
+                            c.failure_details.push(log_excerpt(&path, &text));
                         }
                     }
                 }
-                components.push(c);
             }
-        }
+            components.push(c);
+            Ok(())
+        })?;
         Ok(Self {
             batch,
             components,
@@ -305,13 +322,7 @@ impl Snapshot {
         })
     }
     fn verify(&self) -> Result<()> {
-        if self.batch.run_id.is_empty()
-            || !self
-                .batch
-                .run_id
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
-        {
+        if !valid_run_id(&self.batch.run_id) {
             return Err("invalid report run identity".into());
         }
         if self
@@ -385,7 +396,14 @@ fn encode(body: &str, snapshot: &Snapshot) -> Result<String> {
     let digest = util::hash(format!("{body}{encoded}"));
     Ok(format!("{body}{MARKER}{digest}\n{encoded}\n-->\n"))
 }
-fn decode(text: &str) -> Result<(String, Snapshot)> {
+/// Read the verified visible Markdown and its result index.
+pub fn load(path: &Path) -> Result<(String, Snapshot)> {
+    let path = if path.is_dir() {
+        path.join("report.md")
+    } else {
+        path.into()
+    };
+    let mut text = fs::read_to_string(path).map_err(|e| e.to_string())?;
     let (body, index) = text
         .rsplit_once(MARKER)
         .ok_or("report has no result index; regenerate it from existing raw evidence")?;
@@ -409,21 +427,7 @@ fn decode(text: &str) -> Result<(String, Snapshot)> {
     }
     let snapshot: Snapshot = serde_json::from_slice(&data).map_err(|e| e.to_string())?;
     snapshot.verify()?;
-    Ok((body.into(), snapshot))
-}
-pub fn visible_text(text: &str) -> Result<&str> {
-    text.rsplit_once(MARKER)
-        .map(|(body, _)| body)
-        .ok_or("missing report index".into())
-}
-pub fn load(path: &Path) -> Result<(String, Snapshot)> {
-    let path = if path.is_dir() {
-        path.join("report.md")
-    } else {
-        path.into()
-    };
-    let text = fs::read_to_string(path).map_err(|e| e.to_string())?;
-    let (_, snapshot) = decode(&text)?;
+    text.truncate(body.len());
     Ok((text, snapshot))
 }
 /// Atomic replacement is explicit; verification failure leaves the existing report intact.

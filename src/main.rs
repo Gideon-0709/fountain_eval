@@ -37,9 +37,9 @@ enum Command {
     },
     /// Execute every applicable check; prepared execution consumes its frozen configuration.
     Run {
-        #[arg(long, conflicts_with = "prepared")]
-        config: Option<PathBuf>,
-        #[arg(long)]
+        #[command(flatten)]
+        input: Input,
+        #[arg(long, conflicts_with = "config")]
         prepared: Option<PathBuf>,
         /// Emit the machine-readable result on stdout; progress remains on stderr.
         #[arg(long)]
@@ -115,7 +115,7 @@ fn execute(command: Command) -> Result<u8> {
             outcome(path, record, json)
         }
         Command::Run {
-            config,
+            input,
             prepared,
             json,
         } => {
@@ -123,10 +123,7 @@ fn execute(command: Command) -> Result<u8> {
             let (path, record) = if let Some(path) = prepared {
                 batch::from_prepared(&path)?
             } else {
-                batch::run(
-                    Configuration::load(&config.unwrap_or_else(|| "fountain-eval.toml".into()))?,
-                    false,
-                )?
+                batch::run(Configuration::load(&input.config)?, false)?
             };
             outcome(path, record, json)
         }
@@ -162,7 +159,7 @@ fn execute(command: Command) -> Result<u8> {
                 let directory = if replace {
                     root.join(&saved.batch.run_id)
                 } else {
-                    fountain_eval::report::reserve(&root, &saved.batch.run_id)?
+                    fountain_eval::artifact::reserve(&root, &saved.batch.run_id)?
                 };
                 let report = fountain_eval::artifact::publish(&directory, &body, &saved, replace)?;
                 if raw {

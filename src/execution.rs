@@ -175,19 +175,6 @@ pub fn start(configuration: RunConfiguration, prepare_only: bool) -> Result<(Pat
             &directory.join("sources.json"),
             &json!({"engine":if scope==crate::protocol::Scope::Operator{None}else{Some(&engine)},"support_engine":if scope==crate::protocol::Scope::Operator{Some(&engine)}else{None},"operator":operator,"scheme":scheme}),
         )?;
-        let implementation = if let Some(operator) = &operator {
-            catalog::implementation(
-                operator,
-                record
-                    .request
-                    .components
-                    .operator
-                    .as_ref()
-                    .and_then(|r| r.implementation.as_deref()),
-            )?
-        } else {
-            "scalar-validation-only".into()
-        };
         let mut environment = evidence::environment(&cache)?;
         environment.conditions["recipe"] = recipe.definition.clone();
         environment.conditions["scheme"] =
@@ -202,9 +189,9 @@ pub fn start(configuration: RunConfiguration, prepare_only: bool) -> Result<(Pat
                 engine: &engine,
                 operator: operator.as_ref(),
                 scope,
+                configuration: &record.request.components,
             },
             &scheme,
-            &implementation,
             &recipe,
             &environment.conditions,
         )?;
@@ -231,12 +218,7 @@ pub fn start(configuration: RunConfiguration, prepare_only: bool) -> Result<(Pat
     finish(&directory, &mut record, result)?;
     Ok((directory, record))
 }
-pub fn from_prepared(prepared: &Path, output: &Path) -> Result<(PathBuf, Record)> {
-    process::install_handler()?;
-    let old = evidence::load(prepared)?;
-    from_prepared_record(&old, &util::file_hash(&prepared.join("seal.json"))?, output)
-}
-pub fn from_prepared_record(
+pub(crate) fn from_prepared_record(
     old: &Record,
     origin: &str,
     output: &Path,

@@ -1,8 +1,9 @@
 #![allow(dead_code)]
 use fountain_eval::{
+    artifact::Component,
     build::Built,
     catalog,
-    evidence::{Environment, Quadruple, Record},
+    evidence::{self, Environment, Quadruple, Record},
     measurement::{self, Sample},
     util,
 };
@@ -47,8 +48,14 @@ impl Drop for Temp {
         let _ = fs::remove_dir_all(&self.0);
     }
 }
+pub fn compare(left: &Record, right: &Record) -> util::Result<serde_json::Value> {
+    evidence::compare_summaries(
+        &Component::from_record(left)?,
+        &Component::from_record(right)?,
+    )
+}
 pub fn record(family: &str, scheme: &str) -> Record {
-    let configuration = fountain_eval::config::Configuration::parse("/fixture/fountain-eval.toml".into(),format!("engine0 = \"registry:fountain_engine@2.1.0\"\noperator0 = \"registry:fountain_operators@2.0.0#slab\"\nscheme = {scheme:?}\ntest = \"0.1.0\"\n")).unwrap();
+    let configuration = fountain_eval::config::Configuration::parse("/fixture/fountain-eval.toml".into(),format!("engine0 = \"registry:fountain_engine@2.1.0\"\noperator0 = \"registry:fountain_operators@2.0.0#SlabDataOperator\"\nscheme = {scheme:?}\ntest = \"0.1.0\"\n")).unwrap();
     let configuration = configuration.selection(&configuration.selections[0]);
     let request = configuration.request.clone();
     let recipe = catalog::plan(

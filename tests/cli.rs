@@ -34,7 +34,7 @@ fn default_config_and_explicit_config_are_offline_and_equivalent() {
         "fountain-eval.toml",
         &config(
             "registry:fountain_engine@2.1.0",
-            "registry:fountain_operators@2.0.0#slab",
+            "registry:fountain_operators@2.0.0#SlabDataOperator",
         ),
     );
     let a = cli(&t.0, &["inspect"]);
@@ -70,7 +70,7 @@ fn missing_config_invalid_sources_and_legacy_selectors_are_rejected() {
         "fountain-eval.toml",
         &config(
             "registry:fountain_engine@latest",
-            "registry:fountain_operators@2.0.0#slab",
+            "registry:fountain_operators@2.0.0#SlabDataOperator",
         ),
     );
     assert_eq!(cli(&t.0, &["inspect"]).status.code(), Some(2));
@@ -88,6 +88,41 @@ fn missing_config_invalid_sources_and_legacy_selectors_are_rejected() {
             .iter()
             .any(|d| d["code"] == "local_manifest_error")
     );
+}
+
+#[test]
+fn explicit_configuration_replaces_the_default_and_prepared_runs_use_frozen_input() {
+    let t = Temp::new();
+    t.write("fountain-eval.toml", "invalid default");
+    let alternate = t.write(
+        "alternate.toml",
+        "engine7 = 'path:missing-engine'\nscheme = 'rq'\ntest = '0.1.0'\n",
+    );
+    let alternate = alternate.canonicalize().unwrap();
+    let alternate = alternate.to_str().unwrap();
+    let inspected = cli(&t.0, &["inspect", "--config", alternate]);
+    let inspected: serde_json::Value = serde_json::from_slice(&inspected.stdout).unwrap();
+    assert_eq!(inspected["inspections"][0]["component_id"], 7);
+    let prepared = cli(&t.0, &["prepare", "--config", alternate, "--json"]);
+    assert_eq!(prepared.status.code(), Some(4));
+    let pending: serde_json::Value = serde_json::from_slice(&prepared.stdout).unwrap();
+    let pending = pending["prepared"].as_str().unwrap();
+    assert_eq!(
+        cli(&t.0, &["run", "--prepared", pending, "--config", alternate])
+            .status
+            .code(),
+        Some(2)
+    );
+    for args in [
+        ["run", "--prepared", pending, "--json"],
+        ["run", "--config", alternate, "--json"],
+    ] {
+        let output = cli(&t.0, &args);
+        assert_eq!(output.status.code(), Some(4));
+        let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["batch"]["configuration"]["path"], alternate);
+        assert_eq!(result["batch"]["entries"][0]["component_id"], 7);
+    }
 }
 
 #[test]

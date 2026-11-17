@@ -1,10 +1,14 @@
 //! One explicit configuration file. Paths are relative to that file, never to a hidden overlay.
 use crate::{
-    protocol::{EvaluationRequest, SchemeSelection, SourceReference},
+    protocol::{
+        BuildOptions, ComponentReference, ComponentSelection, EvaluationRequest, SchemeSelection,
+        SourceReference, TestReference,
+    },
     util::{self, Result},
 };
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -12,11 +16,44 @@ use std::{
 #[derive(Debug, Deserialize)]
 struct Input {
     #[serde(flatten)]
-    components: std::collections::BTreeMap<String, String>,
+    components: BTreeMap<String, ComponentInput>,
     scheme: SchemeInput,
     test: String,
     #[serde(default)]
     run: RunSettings,
+}
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ComponentInput {
+    Source(String),
+    Detailed(ComponentDetail),
+}
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+struct ComponentDetail {
+    source: String,
+    #[serde(default)]
+    features: Vec<String>,
+    #[serde(default)]
+    default_features: bool,
+}
+impl ComponentInput {
+    fn resolve(self, base: &Path) -> Result<ComponentReference> {
+        let (source, mut build) = match self {
+            Self::Source(source) => (source, BuildOptions::default()),
+            Self::Detailed(detail) => (
+                detail.source,
+                BuildOptions {
+                    features: detail.features,
+                    default_features: detail.default_features,
+                },
+            ),
+        };
+        build.normalize().map_err(|e| e.to_string())?;
+        let mut reference = resolve_reference(base, &source)?;
+        reference.build = build;
+        Ok(reference)
+    }
 }
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
@@ -127,17 +164,31 @@ impl Configuration {
             SchemeInput::Detailed(detail) => detail,
         };
         let base = path.parent().ok_or("configuration directory missing")?;
-        let scheme_source = scheme
+        let source = scheme
             .source
-            .map(|s| s.parse())
-            .transpose()
-            .map_err(|e: crate::protocol::ReferenceError| e.to_string())?;
-        let mut groups = std::collections::BTreeMap::<u32, (Option<String>, Option<String>)>::new();
+            .as_deref()
+            .map(|s| resolve_reference(base, s))
+            .transpose()?;
+        if source.as_ref().is_some_and(|s| s.implementation.is_some()) {
+            return Err(
+                "scheme.source cannot contain an implementation selector; use scheme.name".into(),
+            );
+        }
+        let scheme = SchemeSelection {
+            name: scheme.name,
+            mode: scheme.mode,
+            source,
+        };
+        let test = input
+            .test
+            .parse::<TestReference>()
+            .map_err(|e| e.to_string())?;
+        let mut groups = BTreeMap::<u32, ComponentSelection>::new();
         for (key, value) in input.components {
-            let (role, suffix) = if let Some(n) = key.strip_prefix("engine") {
-                (0, n)
+            let (engine, suffix) = if let Some(n) = key.strip_prefix("engine") {
+                (true, n)
             } else if let Some(n) = key.strip_prefix("operator") {
-                (1, n)
+                (false, n)
             } else {
                 return Err(format!(
                     "unknown configuration field {key}; use engine0/operator0, engine1/operator1, ..."
@@ -150,10 +201,11 @@ impl Configuration {
                 return Err(format!("noncanonical component index in {key}"));
             }
             let entry = groups.entry(id).or_default();
-            if role == 0 {
-                entry.0 = Some(value);
+            let reference = value.resolve(base).map_err(|e| format!("{key}: {e}"))?;
+            if engine {
+                entry.engine = Some(reference);
             } else {
-                entry.1 = Some(value);
+                entry.operator = Some(reference);
             }
         }
         if groups.is_empty() {
@@ -161,44 +213,17 @@ impl Configuration {
                 "configuration must select at least one C with engineN and/or operatorN".into(),
             );
         }
-        let mut selections = Vec::new();
-        for (id, (engine, operator)) in groups {
-            let mut request = EvaluationRequest::parse(
-                engine.as_deref(),
-                operator.as_deref(),
-                &scheme.name,
-                &input.test,
-            )
-            .map_err(|e| e.to_string())?;
-            request.scheme = SchemeSelection {
-                name: scheme.name.clone(),
-                mode: scheme.mode.clone(),
-                source: scheme_source.clone(),
-            };
-            for reference in request
-                .components
-                .engine
-                .iter_mut()
-                .chain(request.components.operator.iter_mut())
-                .chain(request.scheme.source.iter_mut())
-            {
-                if let SourceReference::Path { path } = &mut reference.source {
-                    *path = resolve(base, path)?;
-                }
-            }
-            if request
-                .scheme
-                .source
-                .as_ref()
-                .is_some_and(|s| s.implementation.is_some())
-            {
-                return Err(
-                    "scheme.source cannot contain an implementation selector; use scheme.name"
-                        .into(),
-                );
-            }
-            selections.push(Selection { id, request });
-        }
+        let selections = groups
+            .into_iter()
+            .map(|(id, components)| Selection {
+                id,
+                request: EvaluationRequest {
+                    components,
+                    test: test.clone(),
+                    scheme: scheme.clone(),
+                },
+            })
+            .collect();
         let run = RunSettings {
             report: input
                 .run
@@ -217,6 +242,15 @@ impl Configuration {
             run,
         })
     }
+}
+fn resolve_reference(base: &Path, source: &str) -> Result<ComponentReference> {
+    let mut reference = source
+        .parse::<ComponentReference>()
+        .map_err(|e| e.to_string())?;
+    if let SourceReference::Path { path } = &mut reference.source {
+        *path = resolve(base, path)?;
+    }
+    Ok(reference)
 }
 fn resolve(base: &Path, path: &Path) -> Result<PathBuf> {
     if path.as_os_str().is_empty() {

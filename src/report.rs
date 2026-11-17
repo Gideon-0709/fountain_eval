@@ -1,13 +1,7 @@
 //! Markdown reports: one self-contained reading surface, backed by sealed evidence.
-use crate::{evidence::Record, measurement::Summary, util::Result};
+use crate::{evidence::Record, measurement::Summary};
 use serde_json::Value;
-use std::{
-    collections::BTreeMap,
-    fmt::Write as _,
-    fs,
-    io::Write as _,
-    path::{Path, PathBuf},
-};
+use std::{collections::BTreeMap, fmt::Write as _};
 
 const PAGE: usize = 12;
 const CATEGORIES: [(&str, &str); 4] = [
@@ -73,45 +67,6 @@ fn table(out: &mut String, headers: &[&str], rows: Vec<Vec<String>>) {
         }
         out.push('\n');
     }
-}
-/// Reserve a unique report directory before expensive execution. Never overwrite another run.
-pub fn reserve(root: &Path, id: &str) -> Result<PathBuf> {
-    if id.is_empty()
-        || !id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
-    {
-        return Err("invalid report run identifier".into());
-    }
-    fs::create_dir_all(root).map_err(|e| format!("report directory {}: {e}", root.display()))?;
-    let dir = root.join(id);
-    fs::create_dir(&dir).map_err(|e| {
-        format!(
-            "report destination {}: {e}; choose a new output directory",
-            dir.display()
-        )
-    })?;
-    Ok(dir)
-}
-pub fn publish(directory: &Path, text: &str) -> Result<PathBuf> {
-    if text.trim().is_empty() {
-        return Err("refusing to write an empty report".into());
-    }
-    let path = directory.join("report.md");
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-        .map_err(|e| e.to_string())?;
-    if let Err(e) = file
-        .write_all(text.as_bytes())
-        .and_then(|_| file.sync_all())
-    {
-        drop(file);
-        let _ = fs::remove_file(&path);
-        return Err(format!("report write failed: {e}"));
-    }
-    Ok(path)
 }
 fn brief(s: &str, limit: usize) -> String {
     let mut text: String = s.chars().take(limit).collect();

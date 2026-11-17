@@ -16,6 +16,23 @@ ENGINE = "registry:fountain_engine@2.1.0"
 OPERATORS = "git+https://github.com/shhyang/fountain_operators.git?package=fountain_operators&rev=ce232222603876f3c033109c548cf1091e874c10"
 
 
+def operator_reference(source, operator):
+    rust_type = {"slab": "SlabDataOperator", "simd": "SimdDataOperator"}[operator]
+    return {"source": f"{source}#{rust_type}", "features": ["simd"]}
+
+
+def reference_toml(reference):
+    if isinstance(reference, str):
+        return json.dumps(reference)
+    fields = ", ".join(f"{name} = {json.dumps(value)}" for name, value in reference.items())
+    return "{ " + fields + " }"
+
+
+def active_features(graph, package):
+    package_id = next(p["id"] for p in graph["packages"] if p["name"] == package)
+    return next(node["features"] for node in graph["resolve"]["nodes"] if node["id"] == package_id)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cli", type=Path, default=Path("target/debug/feval"))
@@ -101,7 +118,7 @@ def main():
 
     def run(label, engine, operator, scheme="rq", action="run", expected=None, interrupt=False, test="0.1.0"):
         config = work / (label + ".toml")
-        config.write_text((f"engine0={json.dumps(engine)}\n" if engine else "") + (f"operator0={json.dumps(operator)}\n" if operator else "") + f"scheme={json.dumps(scheme)}\ntest={json.dumps(test)}\n[run]\ncache={json.dumps(str(cache))}\noutput={json.dumps(str(runs))}\n")
+        config.write_text((f"engine0={reference_toml(engine)}\n" if engine else "") + (f"operator0={reference_toml(operator)}\n" if operator else "") + f"scheme={json.dumps(scheme)}\ntest={json.dumps(test)}\n[run]\ncache={json.dumps(str(cache))}\noutput={json.dumps(str(runs))}\n")
         body, code = command(label, [action, "--config", config], expected, interrupt)
         if "result" in body: attempts.append(body)
         if body.get("result", {}).get("status") == "succeeded":
@@ -125,6 +142,9 @@ def main():
 
     def known_operator(label, engine, operator, scheme):
         body, code = run(label, engine, operator, scheme)
+        build = body["result"]["build"]
+        assert build["components"]["implementation"] == operator["source"].split("#", 1)[1]
+        assert "simd" in active_features(build["dependency_graph"]["driver"], "fountain_operators")
         if code == 0:
             return
         record = body["result"]
@@ -154,34 +174,39 @@ def main():
         return body, code
 
     for scheme in ["rq", "r10"]:
-        run("public-engine-only-"+scheme, ENGINE, None, scheme, expected=0)
+        engine = {"source": ENGINE, "default-features": scheme == "r10"}
+        body, _ = run("public-engine-only-"+scheme, engine, None, scheme, expected=0)
+        graph = body["result"]["build"]["dependency_graph"]["driver"]
+        driver_package = next(p for p in graph["packages"] if p["name"] == "fountain-eval-driver")
+        engine_edge = next(d for d in driver_package["dependencies"] if d["name"] == "fountain_engine")
+        assert engine_edge["uses_default_features"] == engine["default-features"]
 
     if args.expect_upstream_x86_failure:
         import platform
         assert platform.machine() in ["x86_64", "AMD64"]
         for op in ["slab", "simd"]:
-            body, _ = run("x86-"+op, ENGINE, OPERATORS+"#"+op, expected=4)
+            body, _ = run("x86-"+op, ENGINE, operator_reference(OPERATORS, op), expected=4)
             assert body["result"]["stage"] == "build"
             log = "\n".join(body["result"]["failure_details"])
             assert "E0433" in log and "portable" in log
         print("Verified pinned upstream x86 operator build rejection; engine-only planning covered separately", flush=True)
         return
 
-    arena = f"path:{args.arena.resolve()}" if args.arena else None
-    fallback = arena or OPERATORS+"#slab"
+    arena = f"path:{args.arena.resolve()}#MemoryDataOperator" if args.arena else None
+    fallback = arena or operator_reference(OPERATORS, "slab")
     if args.reproduction and not arena:raise SystemExit("--reproduction requires an authorized --arena checkout")
     arena_results = {}
     for scheme in ["rq", "r10"]:
         for op in ["slab", "simd"]:
-            known_operator("public-"+op+"-"+scheme, ENGINE, OPERATORS+"#"+op, scheme)
+            known_operator("public-"+op+"-"+scheme, ENGINE, operator_reference(OPERATORS, op), scheme)
         if arena:arena_results[scheme] = known_arena("public-arena-"+scheme, ENGINE, arena, scheme)
     if args.monorepo:
         mono = args.monorepo.resolve()
         for scheme in ["rq", "r10"]:
             for op in ["slab", "simd"]:
-                known_operator("dev-"+op+"-"+scheme, f"path:{mono/'fountain_engine'}", f"path:{mono/'fountain_operators'}#{op}", scheme)
+                known_operator("dev-"+op+"-"+scheme, f"path:{mono/'fountain_engine'}", operator_reference(f"path:{mono/'fountain_operators'}", op), scheme)
             for op in ["slab", "simd", *(["arena"] if arena else [])]:
-                run("product-"+op+"-"+scheme, f"path:{mono/'fountain_bin_ffi'}", arena if op=="arena" else f"path:{mono/'fountain_operators'}#{op}", scheme, expected=0)
+                run("product-"+op+"-"+scheme, f"path:{mono/'fountain_bin_ffi'}", arena if op=="arena" else operator_reference(f"path:{mono/'fountain_operators'}", op), scheme, expected=0)
         if arena:
             body, _ = run("dev-arena-conflict", f"path:{mono/'fountain_engine'}", arena, expected=4)
             assert "conflict" in body["result"]["error"]
@@ -200,7 +225,8 @@ def main():
         checkout=work/"generated-fixtures/arena"
         shutil.copytree(args.arena.resolve(),checkout,ignore=shutil.ignore_patterns(".git","target",".fountain-eval"))
         subprocess.run(["git","-C",str(checkout),"init","--quiet"],check=True)
-        prepared,_=run("snapshot",ENGINE,f"path:{checkout}",action="prepare",expected=0)
+        snapshot_operator = f"path:{checkout}#MemoryDataOperator"
+        prepared,_=run("snapshot",ENGINE,snapshot_operator,action="prepare",expected=0)
         lib=checkout/"src/lib.rs"
         lib.write_text('compile_error!("changed original after preparation");\n'+lib.read_text())
         repeated,_=command("prepared-whole-run",["run","--prepared",prepared["prepared"]],first_code)
@@ -211,11 +237,11 @@ def main():
             repeated_failure = repeated["result"]["correctness"]["fatal_failures"][0]
             assert [first_failure[k] for k in ("case", "message")] == [repeated_failure[k] for k in ("case", "message")]
             command("prepared-failed-comparison",["compare",first["result_ref"],repeated["result_ref"]],2)
-        failed,_=run("changed-input",ENGINE,f"path:{checkout}",expected=4)
+        failed,_=run("changed-input",ENGINE,snapshot_operator,expected=4)
         assert failed["result"]["stage"]=="build"
         # A consumed preparation is removed; create an independent frozen input for corruption.
         lib.write_text(lib.read_text().removeprefix('compile_error!("changed original after preparation");\n'))
-        prepared,_=run("corrupt-snapshot",ENGINE,f"path:{checkout}",action="prepare",expected=0)
+        prepared,_=run("corrupt-snapshot",ENGINE,snapshot_operator,action="prepare",expected=0)
         binary=Path(prepared["result"]["built"]["binary"])
         with binary.open("ab") as out:out.write(b"corruption fixture")
         corrupt,_=command("corrupt-cache",["run","--prepared",prepared["prepared"]],4)
@@ -225,13 +251,19 @@ def main():
         def fixture(name, injection):
             root=work/"generated-fixtures"/name
             (root/"src").mkdir(parents=True)
-            (root/"Cargo.toml").write_text('[package]\nname="fountain-arena-operator"\nversion="0.2.0"\nedition="2024"\n[dependencies]\nfountain_engine="=2.1.0"\n')
-            (root/"src/lib.rs").write_text('use fountain_engine::{traits::DataOperator,types::Operation};pub struct MemoryDataOperator{v:Vec<u8>}impl MemoryDataOperator{pub fn new(n:usize)->Self{'+injection+'Self{v:vec![0;n]}}}impl DataOperator for MemoryDataOperator{fn get_vector(&self,_:usize)->&[u8]{&self.v}fn execute(&mut self,_:&Operation){}}')
+            (root/"Cargo.toml").write_text('[package]\nname="acceptance-operator"\nversion="0.2.0"\nedition="2024"\n[dependencies]\nfountain_engine="=2.1.0"\n[features]\ndefault=["default-marker"]\ndefault-marker=[]\nfixture-type=[]\n')
+            (root/"src/lib.rs").write_text('#[cfg(all(feature="fixture-type", not(feature="default-marker")))] pub mod ops {use fountain_engine::{traits::DataOperator,types::Operation};pub struct FixtureOperator{v:Vec<u8>}impl FixtureOperator{pub fn new(n:usize)->Self{'+injection+'Self{v:vec![0;n]}}}impl DataOperator for FixtureOperator{fn get_vector(&self,_:usize)->&[u8]{&self.v}fn execute(&mut self,_:&Operation){}}}')
             subprocess.run(["git","-C",str(root),"init","--quiet"],check=True)
-            return "path:"+str(root)
+            return {"source": f"path:{root}#ops::FixtureOperator", "features": ["fixture-type"]}
+        gated = fixture("gated-operator", "")
+        body,_=run("disabled-operator-type",ENGINE,{**gated,"default-features":True},expected=4)
+        assert body["result"]["stage"]=="build"
+        assert "ops" in "\n".join(body["result"]["failure_details"])
         for name, injection in [("wrong-output", ""), ("crash", "std::process::exit(23);"), ("protocol", 'println!("invalid event");std::process::exit(0);')]:
             body,_=run(name,ENGINE,fixture(name,injection),expected=4)
             assert body["result"]["stage"]=="validate"
+            graph = body["result"]["build"]["dependency_graph"]["driver"]
+            assert active_features(graph, "acceptance-operator") == ["fixture-type"]
             if name=="protocol":assert "driver protocol" in body["result"]["error"]
         unknown=work/"generated-fixtures/unknown-engine"
         (unknown/"src").mkdir(parents=True)

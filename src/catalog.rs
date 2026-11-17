@@ -144,16 +144,6 @@ pub fn family(engine: &Package) -> Result<String> {
         )),
     }
 }
-pub fn implementation(package: &Package, selected: Option<&str>) -> Result<String> {
-    match (package.name.as_str(), selected) {
-        ("fountain-arena-operator", None | Some("arena")) => Ok("arena".into()),
-        ("fountain_operators", Some("slab" | "simd")) => Ok(selected.unwrap().into()),
-        ("fountain_operators", None) => {
-            Err("unsupported: fountain_operators requires #slab or #simd".into())
-        }
-        _ => Err("unsupported: unknown operator implementation".into()),
-    }
-}
 /// Reject changed content under a registered identity before executing or comparing it.
 pub fn verify_lock() -> Result<()> {
     let locked: Value = serde_json::from_str(include_str!("../specs/catalog-lock.json"))

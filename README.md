@@ -10,23 +10,15 @@ Requirements: Linux or macOS, Git, `tar`, a native linker/C toolchain and Rust m
 
 ```bash
 cargo install --path . --locked
-cp fountain-eval.example.toml fountain-eval.toml
 feval inspect
 feval run
 ```
 
-An installed CLI works without the eval checkout. Create a `fountain-eval.toml` containing indexed component references plus a shared scheme and test version:
-
-```toml
-engine0 = "registry:fountain_engine@2.1.0"
-operator0 = "registry:fountain_operators@2.0.0#slab"
-scheme = "rq"
-test = "0.1.0"
-```
+Run these commands from the repository directory. Edit [fountain-eval.toml](fountain-eval.toml) to select the components, scheme and test version. The checked-in configuration compares the public engine with Slab and Arena and writes reports under `report/`. The Arena entry expects the `fountain-arena-operator` checkout beside this repository.
 
 `test` selects the **entire content version**. Users cannot select individual cases or disable checks. Every registered case is considered. Inapplicable cases remain in the report with a machine-readable reason and explanation. A fatal failure stops that C; later cases in that C remain `not_executed`. Independent Cs continue. An interrupt stops the batch and leaves subsequent Cs unexecuted.
 
-Commands default to `fountain-eval.toml` in the current directory. An explicit location works from any directory:
+`inspect`, `prepare` and `run` default to `fountain-eval.toml` in the current directory. An installed CLI also works from another directory using `--config` to select the file:
 
 ```bash
 feval inspect --config /path/to/experiment.toml
@@ -34,7 +26,7 @@ feval prepare --config /path/to/experiment.toml --json > prepared.json
 feval run --config /path/to/experiment.toml
 ```
 
-All relative paths are relative to the config file. There are no parent-directory searches, includes, environment interpolation, hidden global configuration or CLI overrides for component/test settings. Unknown fields, misspellings, duplicate keys and malformed references are errors. `--engine`, `--operator` and per-test `--test` flags have been removed.
+All relative paths are resolved from the selected config file's directory. Unknown fields, duplicate keys and malformed references are configuration errors.
 
 ## Terminal progress
 
@@ -64,14 +56,14 @@ Each index defines a C. For example:
 ```toml
 # C0: a complete engine/operator combination.
 engine0 = "registry:fountain_engine@2.1.0"
-operator0 = "registry:fountain_operators@2.0.0#slab"
+operator0 = { source = "registry:fountain_operators@2.0.0#SlabDataOperator", features = ["simd"] }
 # C1: engine alone.
 engine1 = "registry:fountain_engine@2.1.0"
 # C2: operator alone (requires your local checkout).
-operator2 = "path:../fountain-arena-operator"
+operator2 = "path:../fountain-arena-operator#MemoryDataOperator"
 # C3: another complete combination.
 engine3 = "path:../erasure_coding_lib/fountain_engine"
-operator3 = "path:../erasure_coding_lib/fountain_operators#simd"
+operator3 = { source = "path:../erasure_coding_lib/fountain_operators#SimdDataOperator", features = ["simd"] }
 scheme = "rq"
 test = "0.1.0"
 ```
@@ -88,9 +80,22 @@ Engine, operator and explicit scheme sources use the same grammar:
 |---|---|
 | Local package directory or manifest | `path:../engine` |
 | Exact registry version | `registry:fountain_engine@2.1.0` |
-| Fixed Git commit and package | `git+https://github.com/shhyang/fountain_operators.git?package=fountain_operators&rev=ce232222603876f3c033109c548cf1091e874c10#slab` |
+| Fixed Git commit and package | `git+https://github.com/shhyang/fountain_operators.git?package=fountain_operators&rev=ce232222603876f3c033109c548cf1091e874c10#SlabDataOperator` |
 
-Git revisions must be full commit IDs. Credentials do not belong in reference URLs. `fountain_operators` requires `#slab` or `#simd`; `fountain-arena-operator` selects Arena automatically. Engine references do not accept an implementation selector. Scheme implementation selection uses `scheme.name`.
+Git revisions must be full commit IDs. Credentials do not belong in reference URLs. Every operator reference ends in `#` followed by a public, crate-relative Rust type path, such as `#SlabDataOperator` or `#ops::CustomOperator`. The generated driver uses that type directly. The type must provide `new(width: usize)` and implement the `DataOperator` trait used in the selected build. Build errors identify missing exports, constructors or incompatible traits. Engine references select a crate. Scheme implementation selection uses `scheme.name` and the optional `scheme.source`.
+
+Use an inline table when an engine or operator needs Cargo features:
+
+```toml
+engine0 = "registry:fountain_engine@2.1.0"
+operator0 = { source = "registry:fountain_operators@2.0.0#SimdDataOperator", features = ["simd"], default-features = false }
+scheme = "rq"
+test = "0.1.0"
+```
+
+`source` accepts the same reference syntax as the string form. `features` defaults to an empty list, and `default-features` defaults to `false`. Set `default-features = true` to request the crate's default feature set. Cargo may also enable features through other dependencies. The report index records the requested options and Cargo's resolved features for the measurement and diagnostic builds. Diagnostic-only features requested by an interface are applied to its diagnostic build.
+
+The Slab examples request `simd` to preserve the feature set used by earlier builds. To migrate an existing configuration, use `#SlabDataOperator`, `#SimdDataOperator`, or `#MemoryDataOperator` in the matching operator reference and specify its desired features explicitly.
 
 Local inputs capture tracked and nonignored untracked modifications, deletions, workspace inheritance and required path dependencies. `prepare` freezes their actual bytes; later worktree changes do not alter prepared execution. Upstream files and version constraints are never rewritten. Required path bindings occur only in the generated build view, with original and effective manifests retained.
 
@@ -98,7 +103,7 @@ A local development configuration can be:
 
 ```toml
 engine0 = "path:../erasure_coding_lib/fountain_engine"
-operator0 = "path:../erasure_coding_lib/fountain_operators#simd"
+operator0 = { source = "path:../erasure_coding_lib/fountain_operators#SimdDataOperator", features = ["simd"] }
 scheme = "r10"
 test = "0.1.0"
 ```
@@ -113,7 +118,7 @@ Default sources are deterministic: public engine 2.1 uses registered `fountain_s
 
 ```toml
 engine0 = "registry:fountain_engine@2.1.0"
-operator0 = "registry:fountain_operators@2.0.0#slab"
+operator0 = { source = "registry:fountain_operators@2.0.0#SlabDataOperator", features = ["simd"] }
 test = "0.1.0"
 
 [scheme]
@@ -132,7 +137,7 @@ To build the actual product shared library from an authorized monorepo checkout:
 
 ```toml
 engine0 = "path:../erasure_coding_lib/fountain_bin_ffi"
-operator0 = "path:../erasure_coding_lib/fountain_operators#slab"
+operator0 = { source = "path:../erasure_coding_lib/fountain_operators#SlabDataOperator", features = ["simd"] }
 scheme = "rq"
 test = "0.1.0"
 ```
@@ -143,7 +148,7 @@ Product runs execute codec, source-replacement and lifecycle checks through the 
 
 ## Effective settings and prepared execution
 
-Test content derives K, symbol width, repair budget, seeds, ordering, warmup/repetition counts, severity and timing. This draft has no arbitrary parameter, severity, feature or per-case skip overrides. I derives native bindings/features. E captures actual common build and runtime conditions.
+Test content derives K, symbol width, repair budget, seeds, ordering, warmup/repetition counts, severity and timing. The config selects component build features alongside component references. I derives the native bindings and diagnostic build requirements. E captures actual common build and runtime conditions.
 
 Optional storage settings belong in the same file:
 

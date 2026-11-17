@@ -1,0 +1,15 @@
+# Shared test content for every component selection.
+scheme = "rq"
+test = "0.1.0"
+
+# C0 · public engine with Slab.
+engine0 = "registry:fountain_engine@2.1.0"
+operator0 = { source = "registry:fountain_operators@2.0.0#SlabDataOperator", features = ["simd"] }
+
+# C1 · the same engine with Arena from the sibling checkout.
+# Resolve relative paths from this file's directory.
+engine1 = "registry:fountain_engine@2.1.0"
+operator1 = "path:../fountain-arena-operator#MemoryDataOperator"
+
+[run]
+report = "report"

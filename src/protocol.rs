@@ -28,12 +28,40 @@ pub enum SourceReference {
     },
 }
 
-/// One component reference, optionally selecting an implementation in its crate.
+/// Cargo options for a selected component's normal build.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+pub struct BuildOptions {
+    pub features: Vec<String>,
+    pub default_features: bool,
+}
+impl BuildOptions {
+    fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+
+    pub(crate) fn normalize(&mut self) -> Result<(), ReferenceError> {
+        if self.features.iter().any(|name| {
+            name.is_empty() || name.contains(',') || name.chars().any(char::is_whitespace)
+        }) {
+            return Err(invalid(
+                "features must contain individual Cargo feature names",
+            ));
+        }
+        self.features.sort_unstable();
+        self.features.dedup();
+        Ok(())
+    }
+}
+
+/// One component reference, optionally selecting a Rust type in its crate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ComponentReference {
     #[serde(flatten)]
     pub source: SourceReference,
     pub implementation: Option<String>,
+    #[serde(default, skip_serializing_if = "BuildOptions::is_default")]
+    pub build: BuildOptions,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,7 +71,7 @@ pub struct TestReference {
 
 /// Engine and operator references; scheme selection is recorded separately.
 /// Support crates are resolved later.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ComponentSelection {
     pub engine: Option<ComponentReference>,
     pub operator: Option<ComponentReference>,
@@ -75,30 +103,6 @@ pub struct EvaluationRequest {
     pub scheme: SchemeSelection,
 }
 
-impl EvaluationRequest {
-    pub fn parse(
-        engine: Option<&str>,
-        operator: Option<&str>,
-        scheme: &str,
-        test: &str,
-    ) -> Result<Self, ReferenceError> {
-        let components = ComponentSelection {
-            engine: engine.map(str::parse).transpose()?,
-            operator: operator.map(str::parse).transpose()?,
-        };
-        components.scope()?;
-        Ok(Self {
-            components,
-            test: test.parse()?,
-            scheme: SchemeSelection {
-                name: scheme.into(),
-                mode: "systematic".into(),
-                source: None,
-            },
-        })
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReferenceError(pub String);
 
@@ -121,11 +125,32 @@ fn valid_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
 }
 
+fn is_type_path(path: &str) -> bool {
+    path.split("::").all(|part| {
+        part != "_"
+            && part
+                .as_bytes()
+                .first()
+                .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
+            && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    })
+}
+
 fn split_implementation(input: &str) -> Result<(&str, Option<String>), ReferenceError> {
     match input.split_once('#') {
-        Some((source, name)) if valid_name(name) => Ok((source, Some(name.to_owned()))),
-        Some(_) => Err(invalid("implementation must be an identifier after '#'")),
+        Some((source, name)) if is_type_path(name) => Ok((source, Some(name.to_owned()))),
+        Some(_) => Err(invalid(
+            "expected a crate-relative Rust type path after '#'",
+        )),
         None => Ok((input, None)),
+    }
+}
+
+impl ComponentReference {
+    pub(crate) fn operator_type(&self) -> Result<&str, ReferenceError> {
+        self.implementation.as_deref().filter(|path| is_type_path(path)).ok_or_else(|| {
+            invalid("operator references require a Rust type after '#', for example #SlabDataOperator")
+        })
     }
 }
 
@@ -206,6 +231,7 @@ impl FromStr for ComponentReference {
         Ok(Self {
             source,
             implementation,
+            build: BuildOptions::default(),
         })
     }
 }

@@ -1,13 +1,16 @@
-use fountain_eval::protocol::{
-    ComponentReference, EvaluationRequest, SourceReference, TestReference,
+use fountain_eval::{
+    config::Configuration,
+    protocol::{ComponentReference, SourceReference, TestReference},
 };
 
 const REV: &str = "d777cad6b512ee17663e129512bae10bca3397b1";
 
 #[test]
 fn references_preserve_source_and_implementation_selection() {
-    let local: ComponentReference = "path:../local checkout/Cargo.toml#arena".parse().unwrap();
-    assert_eq!(local.implementation.as_deref(), Some("arena"));
+    let local: ComponentReference = "path:../local checkout/Cargo.toml#MemoryDataOperator"
+        .parse()
+        .unwrap();
+    assert_eq!(local.implementation.as_deref(), Some("MemoryDataOperator"));
     assert_eq!(
         local.source,
         SourceReference::Path {
@@ -30,7 +33,7 @@ fn references_preserve_source_and_implementation_selection() {
         "ssh://git@example.org/team/mono.git",
     ] {
         let reference: ComponentReference = format!(
-            "git+{url}?package=fountain_operators&rev={}#slab",
+            "git+{url}?package=fountain_operators&rev={}#slab_data_operator::SlabDataOperator",
             REV.to_uppercase()
         )
         .parse()
@@ -43,7 +46,10 @@ fn references_preserve_source_and_implementation_selection() {
                 package: "fountain_operators".into()
             }
         );
-        assert_eq!(reference.implementation.as_deref(), Some("slab"));
+        assert_eq!(
+            reference.implementation.as_deref(),
+            Some("slab_data_operator::SlabDataOperator")
+        );
     }
     let sha256 = format!(
         "git+https://example.org/repo?rev={}&package=engine",
@@ -60,6 +66,9 @@ fn mutable_ambiguous_and_credential_bearing_sources_are_rejected() {
         "path:bad\0path".into(),
         "path:engine#".into(),
         "path:engine#one#two".into(),
+        "path:engine#module::".into(),
+        "path:engine#Operator<T>".into(),
+        "path:engine#Operator; fn extra() {}".into(),
         "registry:engine@latest".into(),
         "registry:engine@^2.1.0".into(),
         "registry:engine@2.1".into(),
@@ -87,13 +96,8 @@ fn test_versions_select_whole_content_and_scheme_is_explicit() {
     for invalid in ["core", "core@latest", "core@^1.0.0", "core@1.0", "@1.0.0"] {
         assert!(invalid.parse::<TestReference>().is_err());
     }
-    let request = EvaluationRequest::parse(
-        Some("registry:engine@3.0.0-dev"),
-        Some("path:../operator#slab"),
-        "rq",
-        "0.1.0",
-    )
-    .unwrap();
+    let config = Configuration::parse("/fixture/fountain-eval.toml".into(), "engine0 = 'registry:engine@3.0.0-dev'\noperator0 = 'path:../operator#SlabDataOperator'\nscheme = 'rq'\ntest = '0.1.0'\n".into()).unwrap();
+    let request = &config.selections[0].request;
     let json = serde_json::to_value(request).unwrap();
     let components = json["components"].as_object().unwrap();
     assert_eq!(components.len(), 2);

@@ -4,7 +4,7 @@ use fountain_eval::{
 };
 use serde_json::json;
 fn basic() -> String {
-    "engine0=\"path:../engine\"\noperator0=\"path:../operator#slab\"\nscheme=\"rq\"\ntest=\"0.1.0\"\n"
+    "engine0=\"path:../engine\"\noperator0=\"path:../operator#SlabDataOperator\"\nscheme=\"rq\"\ntest=\"0.1.0\"\n"
         .into()
 }
 fn parse(text: String) -> Result<Configuration, String> {
@@ -66,12 +66,49 @@ fn unknown_fields_overrides_and_partial_test_selection_are_errors() {
         basic().replace("test=\"0.1.0\"", "test=\"operator-smoke@0.1.0\""),
         basic() + "[parameters]\nk=512\n",
         basic().replace(
+            "engine0=\"path:../engine\"",
+            "engine0={source=\"path:../engine\", feature=[]}",
+        ),
+        basic().replace(
+            "engine0=\"path:../engine\"",
+            "engine0={source=\"path:../engine\", features=[\"two names\"]}",
+        ),
+        basic().replace(
             "scheme=\"rq\"",
             "scheme={name=\"rq\",source=\"path:../scheme#rq\"}",
         ),
     ] {
         assert!(parse(text.clone()).is_err(), "accepted {text}");
     }
+}
+#[test]
+fn component_build_options_follow_each_selection_and_round_trip() {
+    let config = parse(r#"
+engine0 = { source = "path:../engine", features = ["second", "first", "first"], default-features = true }
+operator0 = { source = "path:../operator#ops::Slab", features = ["accelerated"] }
+operator1 = "path:../operator#ops::Slab"
+scheme = "rq"
+test = "0.1.0"
+"#.into()).unwrap();
+    let pair = &config.selections[0].request.components;
+    let engine = pair.engine.as_ref().unwrap();
+    assert_eq!(engine.build.features, ["first", "second"]);
+    assert!(engine.build.default_features);
+    let operator = pair.operator.as_ref().unwrap();
+    assert_eq!(operator.implementation.as_deref(), Some("ops::Slab"));
+    assert_eq!(operator.build.features, ["accelerated"]);
+    assert!(!operator.build.default_features);
+    let single = config.selections[1]
+        .request
+        .components
+        .operator
+        .as_ref()
+        .unwrap();
+    assert_eq!(single.source, operator.source);
+    assert_eq!(single.build, Default::default());
+    let value = serde_json::to_value(&config).unwrap();
+    let restored: Configuration = serde_json::from_value(value).unwrap();
+    assert_eq!(restored.selections[0].request, config.selections[0].request);
 }
 #[test]
 fn all_cases_are_planned_and_inapplicable_cases_have_reasons() {
@@ -148,7 +185,7 @@ fn skips_cannot_hide_missing_results_or_be_relabelled_as_success() {
 fn comparison_exposes_common_scope_and_refuses_different_schemes() {
     let left = support::record("native-2", "rq");
     let right = support::record("product-abi", "rq");
-    let comparison = evidence::compare(&left, &right).unwrap();
+    let comparison = support::compare(&left, &right).unwrap();
     assert!(comparison["rows"].as_array().unwrap().len() > 100);
     assert!(
         comparison["coverage"]["right"]["skipped_measurement"]
@@ -156,7 +193,7 @@ fn comparison_exposes_common_scope_and_refuses_different_schemes() {
             .unwrap()
             > 0
     );
-    assert!(evidence::compare(&left, &support::record("native-2", "r10")).is_err());
+    assert!(support::compare(&left, &support::record("native-2", "r10")).is_err());
     let mut invalid = left.clone();
     invalid.validation.push(json!({"case":"codec/r10/missing-0/encode","severity":"fatal","rule":"codec-payload","status":"passed","witness":"fake"}));
     assert!(evidence::validate_samples(&invalid).is_err());
@@ -193,7 +230,7 @@ fn r10_success_cases_respect_the_registered_domain_on_every_interface() {
 #[test]
 fn indexed_selections_are_numeric_sparse_and_allow_single_components() {
     use fountain_eval::protocol::Scope;
-    let c=parse("operator10=\"path:../op#simd\"\nengine2=\"registry:fountain_engine@2.1.0\"\nengine0=\"path:../engine\"\noperator0=\"path:../operator#slab\"\nscheme=\"rq\"\ntest=\"0.1.0\"\n".into()).unwrap();
+    let c=parse("operator10=\"path:../op#SimdDataOperator\"\nengine2=\"registry:fountain_engine@2.1.0\"\nengine0=\"path:../engine\"\noperator0=\"path:../operator#SlabDataOperator\"\nscheme=\"rq\"\ntest=\"0.1.0\"\n".into()).unwrap();
     assert_eq!(
         c.selections.iter().map(|s| s.id).collect::<Vec<_>>(),
         vec![0, 2, 10]

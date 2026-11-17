@@ -103,19 +103,13 @@ pub fn run(configuration: Configuration, prepare_only: bool) -> Result<(PathBuf,
 }
 pub fn from_prepared(path: &Path) -> Result<(PathBuf, Record)> {
     let lease = crate::workspace::Lease::acquire(path)?;
-    let old = load(&lease.directory)?;
-    let components = old
-        .entries
-        .iter()
-        .filter(|e| e.status == "prepared")
-        .map(|e| {
-            let child = member(
-                &lease.directory,
-                e.directory.as_ref().ok_or("prepared C has no evidence")?,
-            )?;
-            Ok((e.component_id, evidence::load(&child)?))
-        })
-        .collect::<Result<BTreeMap<_, _>>>()?;
+    let mut components = BTreeMap::new();
+    let old = load_with_children(&lease.directory, |entry, _, child| {
+        if entry.status == "prepared" {
+            components.insert(entry.component_id, child);
+        }
+        Ok(())
+    })?;
     let origin = util::file_hash(&lease.directory.join("seal.json"))?;
     if old.action != "prepare" {
         return Err("expected a prepared batch".into());
@@ -282,7 +276,7 @@ fn execute(
     }
     crate::progress::line("REPORT  Writing Markdown report and sealing evidence");
     let report_directory =
-        crate::report::reserve(&record.configuration.report_root(), &record.run_id)?;
+        crate::artifact::reserve(&record.configuration.report_root(), &record.run_id)?;
     let saved = crate::artifact::Snapshot::capture(&directory)?;
     let body = crate::report::snapshot(&saved);
     let report = crate::artifact::publish(&report_directory, &body, &saved, false)?;
@@ -325,6 +319,12 @@ fn member(root: &Path, relative: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 pub fn load(directory: &Path) -> Result<Record> {
+    load_with_children(directory, |_, _, _| Ok(()))
+}
+pub(crate) fn load_with_children(
+    directory: &Path,
+    mut visit: impl FnMut(&Entry, &Path, evidence::Record) -> Result<()>,
+) -> Result<Record> {
     evidence::verify_seal(directory, "batch.json")?;
     let record: Record = util::read_json(&directory.join("batch.json"))?;
     if record.format_version != 1 || !matches!(record.action.as_str(), "run" | "prepare") {
@@ -350,7 +350,8 @@ pub fn load(directory: &Path) -> Result<Record> {
             return Err("batch C identity mismatch".into());
         }
         if let Some(relative) = &entry.directory {
-            let child = evidence::load(&member(directory, relative)?)?;
+            let path = member(directory, relative)?;
+            let child = evidence::load(&path)?;
             if child.request != entry.request
                 || child.configuration.component_id != entry.component_id
                 || child.status != entry.status
@@ -369,6 +370,7 @@ pub fn load(directory: &Path) -> Result<Record> {
             {
                 return Err("batch counts or duration do not match child evidence".into());
             }
+            visit(entry, &path, child)?;
         } else if matches!(entry.status.as_str(), "succeeded" | "prepared") {
             return Err("successful C is missing evidence".into());
         } else if entry.samples != 0

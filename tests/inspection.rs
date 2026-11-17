@@ -6,6 +6,7 @@ use std::{
 };
 
 use fountain_eval::{
+    config::Configuration,
     protocol::{EvaluationRequest, Inspection},
     runner::inspect,
 };
@@ -45,7 +46,12 @@ impl Drop for Inputs {
 }
 
 fn request(engine: &str, operator: &str) -> EvaluationRequest {
-    EvaluationRequest::parse(Some(engine), Some(operator), "rq", "0.1.0").unwrap()
+    let config = Configuration::parse(
+        "/fixture/fountain-eval.toml".into(),
+        format!("engine0 = {engine:?}\noperator0 = {operator:?}\nscheme = 'rq'\ntest = '0.1.0'\n"),
+    )
+    .unwrap();
+    config.selections.into_iter().next().unwrap().request
 }
 
 fn has_code(report: &Inspection, code: &str) -> bool {

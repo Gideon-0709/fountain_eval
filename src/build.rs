@@ -2,6 +2,7 @@
 use crate::{
     catalog::{self, Identity, Recipe},
     process,
+    protocol::{BuildOptions, ComponentSelection},
     source::{Package, Resolver, package_at, workspace_root},
     util::{self, Result},
 };
@@ -380,13 +381,13 @@ pub struct BuildSelection<'a> {
     pub engine: &'a Package,
     pub operator: Option<&'a Package>,
     pub scope: crate::protocol::Scope,
+    pub configuration: &'a ComponentSelection,
 }
 
 pub fn prepare(
     resolver: &mut Resolver,
     selection: BuildSelection<'_>,
     scheme: &Package,
-    implementation: &str,
     recipe: &Recipe,
     environment: &Value,
 ) -> Result<Built> {
@@ -394,7 +395,18 @@ pub fn prepare(
         engine,
         operator,
         scope,
+        configuration,
     } = selection;
+    let defaults = BuildOptions::default();
+    let engine_build = configuration.engine.as_ref().map(|r| &r.build);
+    let operator_build = configuration.operator.as_ref().map(|r| &r.build);
+    let operator_type = configuration
+        .operator
+        .as_ref()
+        .map(|r| r.operator_type().map_err(|e| e.to_string()))
+        .transpose()?;
+    let implementation = operator_type.unwrap_or("scalar-validation-only");
+    let requested_build = json!({"engine":engine_build,"operator":operator_build});
     let family = catalog::family(engine)?;
     let interface = catalog::interface(&family);
     let mut overrides = BTreeMap::new();
@@ -428,6 +440,7 @@ pub fn prepare(
         scope,
         scheme.identity(),
         implementation,
+        &requested_build,
         &interface,
         &recipe.identity,
         environment,
@@ -461,11 +474,11 @@ pub fn prepare(
     let engine_dir = composer.add(engine)?;
     let operator_dir = operator.map(|p| composer.add(p)).transpose()?;
     let mut dependencies = toml::map::Map::new();
-    let mut add = |name: &str, package: &str, path: &Path, features: Vec<&str>| {
+    let mut add = |name: &str, package: &str, path: &Path, options: &BuildOptions| {
         dependencies.insert(
             name.into(),
             toml::Value::try_from(
-                json!({"package":package,"path":path,"default-features":false,"features":features}),
+                json!({"package":package,"path":path,"default-features":options.default_features,"features":options.features}),
             )
             .unwrap(),
         );
@@ -475,29 +488,33 @@ pub fn prepare(
             "tested_operator",
             &operator.name,
             operator_dir,
-            if operator.name == "fountain_operators" {
-                vec!["simd"]
-            } else {
-                vec![]
-            },
+            operator_build.unwrap_or(&defaults),
         );
     }
     let mut product_library = None;
     let mut product_graph = None;
     if family == "product-abi" {
+        let options = engine_build.unwrap_or(&defaults);
+        let features = format!("--features={}", options.features.join(","));
+        let mut feature_args = Vec::new();
+        if !options.default_features {
+            feature_args.push("--no-default-features");
+        }
+        if !options.features.is_empty() {
+            feature_args.push(features.as_str());
+        }
+        let mut build_args = vec!["build", "--release", "--locked", "--lib"];
+        build_args.extend_from_slice(&feature_args);
+        let mut metadata_args = vec!["metadata", "--format-version", "1", "--locked"];
+        metadata_args.extend_from_slice(&feature_args);
         cargo(&engine_dir, &logs, "product-lock", &["generate-lockfile"])?;
-        cargo(
-            &engine_dir,
-            &logs,
-            "product-build",
-            &["build", "--release", "--locked", "--lib"],
-        )?;
+        cargo(&engine_dir, &logs, "product-build", &build_args)?;
         product_graph = Some(
             serde_json::from_str::<Value>(&cargo(
                 &engine_dir,
                 &logs,
                 "product-metadata",
-                &["metadata", "--format-version", "1", "--locked"],
+                &metadata_args,
             )?)
             .map_err(|e| e.to_string())?,
         );
@@ -518,7 +535,7 @@ pub fn prepare(
         for name in ["fountain_raptor_q", "fountain_raptor_10"] {
             let package = sibling(engine, &format!("product/{name}"))?;
             let path = composer.add(&package)?;
-            add(name, name, &path, vec![]);
+            add(name, name, &path, &defaults);
         }
         // Callback-side engine identity belongs to the operator dependency graph.
         let op_manifest = util::read_toml(
@@ -545,20 +562,25 @@ pub fn prepare(
                 "fountain_engine",
                 "fountain_engine",
                 Path::new(path),
-                vec![],
+                &defaults,
             );
         } else {
             let p = composer.resolver.registry("fountain_engine", "2.1.0")?;
             let path = composer.add(&p)?;
-            add("fountain_engine", "fountain_engine", &path, vec![]);
+            add("fountain_engine", "fountain_engine", &path, &defaults);
         }
     } else {
-        add("fountain_engine", "fountain_engine", &engine_dir, vec![]);
+        add(
+            "fountain_engine",
+            "fountain_engine",
+            &engine_dir,
+            engine_build.unwrap_or(&defaults),
+        );
         let path = composer.add(scheme)?;
-        add("fountain_scheme", "fountain_scheme", &path, vec![]);
+        add("fountain_scheme", "fountain_scheme", &path, &defaults);
         let utility = utility.as_ref().unwrap();
         let path = composer.add(utility)?;
-        add("fountain_utility", "fountain_utility", &path, vec![]);
+        add("fountain_utility", "fountain_utility", &path, &defaults);
     }
     dependencies.insert("serde_json".into(), toml::Value::String("=1.0.154".into()));
     dependencies.insert(
@@ -616,18 +638,11 @@ pub fn prepare(
             .is_some_and(|v| v.starts_with("3."));
     util::toml_set(&mut manifest,"features",toml::Value::try_from(json!({"default":if engine3{vec!["engine3"]}else{vec![]},"engine3":[],"diagnostics":if family=="native-3"{vec!["fountain_engine/profiling"]}else{vec![]}})).unwrap());
     util::write_toml(&directory.join("Cargo.toml"), &manifest)?;
-    let selected = if operator.is_none() {
-        catalog::SCALAR_OPERATOR.to_owned()
-    } else {
-        let selected = match implementation {
-            "arena" => "pub type Selected = tested_operator::MemoryDataOperator;",
-            "slab" => "pub type Selected = tested_operator::SlabDataOperator;",
-            "simd" => "pub type Selected = tested_operator::SimdDataOperator;",
-            _ => return Err("unknown implementation".into()),
-        };
-        format!(
-            "{selected}\n#[cfg(feature=\"engine3\")] fn alias_selected(op:&mut Selected,src:usize,dst:usize)->bool {{fountain_engine::traits::DataOperator::alias_to(op,src,dst)}}\n#[cfg(not(feature=\"engine3\"))] fn alias_selected(_op:&mut Selected,_src:usize,_dst:usize)->bool {{false}}\n"
-        )
+    let selected = match operator_type {
+        Some(path) => format!(
+            "pub type Selected = tested_operator::{path};\n#[cfg(feature=\"engine3\")] fn alias_selected(op:&mut Selected,src:usize,dst:usize)->bool {{fountain_engine::traits::DataOperator::alias_to(op,src,dst)}}\n#[cfg(not(feature=\"engine3\"))] fn alias_selected(_op:&mut Selected,_src:usize,_dst:usize)->bool {{false}}\n"
+        ),
+        None => catalog::SCALAR_OPERATOR.to_owned(),
     };
     for (name, contents) in [
         ("main.rs", catalog::COMMON),
@@ -723,6 +738,20 @@ pub fn prepare(
         &logs,
         "driver-metadata",
         &["metadata", "--locked", "--format-version", "1"],
+    )?)
+    .map_err(|e| e.to_string())?;
+    let diagnostic_graph: Value = serde_json::from_str(&cargo(
+        &directory,
+        &logs,
+        "diagnostic-metadata",
+        &[
+            "metadata",
+            "--locked",
+            "--format-version",
+            "1",
+            "--features",
+            "diagnostics",
+        ],
     )?)
     .map_err(|e| e.to_string())?;
     let engines: Vec<_> = graph["packages"]
@@ -891,8 +920,8 @@ pub fn prepare(
         interface,
         family,
         implementation: implementation.into(),
-        components: json!({"scope":scope,"engine":if scope == crate::protocol::Scope::Operator {None} else {Some(engine.identity())},"operator":operator.map(Package::identity),"support_engine":if scope == crate::protocol::Scope::Operator {Some(engine.identity())} else {None},"validation_operator":if operator.is_none(){Some("embedded scalar reference; validation outside plan timers")}else{None},"scheme":scheme.identity(),"scheme_selection":environment["scheme"],"implementation":implementation,"dependencies":closure,"input_sources":input_sources}),
-        dependency_graph: json!({"driver":graph,"product":product_graph}),
+        components: json!({"scope":scope,"engine":if scope == crate::protocol::Scope::Operator {None} else {Some(engine.identity())},"operator":operator.map(Package::identity),"support_engine":if scope == crate::protocol::Scope::Operator {Some(engine.identity())} else {None},"validation_operator":if operator.is_none(){Some("embedded scalar reference; validation outside plan timers")}else{None},"scheme":scheme.identity(),"scheme_selection":environment["scheme"],"implementation":implementation,"build_options":requested_build,"dependencies":closure,"input_sources":input_sources}),
+        dependency_graph: json!({"driver":graph,"diagnostic_driver":diagnostic_graph,"product":product_graph}),
         bindings: json!(composer.bindings),
         product_library,
     };

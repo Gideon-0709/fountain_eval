@@ -83,7 +83,7 @@ fn workspace_inheritance_and_external_paths_are_part_of_the_frozen_closure() {
     assert_ne!(first, capture());
 }
 #[test]
-fn unregistered_and_ambiguous_interfaces_are_rejected() {
+fn unregistered_engine_interfaces_are_rejected() {
     let t = Temp::new();
     let path = package(&t, "engine", "fountain_engine", "4.0.0");
     let engine = t.resolver().local(&path).unwrap();
@@ -92,10 +92,6 @@ fn unregistered_and_ambiguous_interfaces_are_rejected() {
             .unwrap_err()
             .contains("unsupported")
     );
-    let path = package(&t, "operator", "fountain_operators", "2.0.0");
-    let op = t.resolver().local(&path).unwrap();
-    assert!(catalog::implementation(&op, None).is_err());
-    assert_eq!(catalog::implementation(&op, Some("simd")).unwrap(), "simd");
 }
 #[cfg(unix)]
 #[test]

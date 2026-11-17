@@ -98,10 +98,15 @@ fn publication_failure_changed_evidence_and_overlap_never_delete_raw_input() {
     let raw = raw(&t);
     let saved = artifact::Snapshot::capture(&raw).unwrap();
     let body = "# Report\n\nRun: `fixture-batch`\n";
-    assert!(artifact::publish(&t.0.join("reports"), "", &saved, false).is_err());
+    let root = t.0.join("reports");
+    let directory = artifact::reserve(&root, "fixture-batch").unwrap();
+    assert!(artifact::reserve(&root, "fixture-batch").is_err());
+    assert!(artifact::reserve(&root, "../escape").is_err());
+    assert!(artifact::publish(&directory, "", &saved, false).is_err());
+    assert!(!directory.join("report.md").exists());
     assert!(raw.exists());
-    let path = artifact::publish(&t.0.join("reports"), body, &saved, false).unwrap();
-    assert!(artifact::publish(&t.0.join("reports"), body, &saved, false).is_err());
+    let path = artifact::publish(&directory, body, &saved, false).unwrap();
+    assert!(artifact::publish(&directory, body, &saved, false).is_err());
     assert!(raw.exists());
     let inside = artifact::publish(&raw.join("nested-report"), body, &saved, false).unwrap();
     assert!(artifact::cleanup(&raw, &inside).is_err());
@@ -124,10 +129,7 @@ fn report_checksum_covers_visible_text_and_index_and_replacement_is_atomic() {
     fs::write(&path, &original).unwrap();
     let replacement = body.to_owned() + "\nUpdated layout.\n";
     artifact::publish(path.parent().unwrap(), &replacement, &saved, true).unwrap();
-    assert_eq!(
-        artifact::visible_text(&artifact::load(&path).unwrap().0).unwrap(),
-        replacement
-    );
+    assert_eq!(artifact::load(&path).unwrap().0, replacement);
     let current = fs::read(&path).unwrap();
     assert!(artifact::publish(path.parent().unwrap(), "", &saved, true).is_err());
     assert_eq!(fs::read(&path).unwrap(), current);
