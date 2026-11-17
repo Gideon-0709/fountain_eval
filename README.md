@@ -26,7 +26,9 @@ feval_workspace/
   results/
     <result-id>/
   reports/
-    <result-id>/report.md
+    <result-id>/
+      report.md
+      index.json.lzma
   .fountain-eval/
     cache/
     prepared/
@@ -208,7 +210,7 @@ Crashes, timeouts, build conflicts, malformed evidence and missing applicable re
 
 ## Reading results and comparing
 
-`feval run` seals the entire batch under `results/<result-id>/` and prints the ID. `feval report <result-id>` generates **one Markdown file for the entire batch** at `reports/<result-id>/report.md` in the active workspace. After verified publication, it removes the raw result and its private build cache. Use `--keep` to retain that data, including any consumed preparation. The same result ID can be reported again while its raw result is available.
+`feval run` seals the entire batch under `results/<result-id>/` and prints the ID. `feval report <result-id>` publishes **one directory for the entire batch** at `reports/<result-id>/` in the active workspace. It contains `report.md` for reading and `index.json.lzma` for comparison. After verified publication, it removes the raw result and its private build cache. Use `--keep` to retain that data, including any consumed preparation. While the raw result is available, repeating the command verifies and reuses an existing report from the same sealed run.
 
 Result IDs use the UTC start time in `YYYY-MM-DD_HH-MM-SSZ` format. A collision adds a numeric suffix starting at `-2`. The report uses the same ID.
 
@@ -218,22 +220,24 @@ RESULT=$(python3 -c 'import json; print(json.load(open("run.json"))["result"])')
 feval report "$RESULT" --keep --json > report-path.json
 REPORT=$(python3 -c 'import json; print(json.load(open("report-path.json"))["report"])')
 feval report "$REPORT" --json
-feval compare "$REPORT#C0" /path/to/candidate/report.md#C0 > comparison.md
+feval compare "$REPORT#C0" /path/to/candidate-report#C0 > comparison.md
 ```
 
-The `run --json` response contains `result` and `batch`. Use the printed ID even when a run exits with a component failure. `report --json` emits `report` and `result_id` when generating from a raw result. Pass a published Markdown path to display the report or read its stored index with `--json`. Relative report and comparison paths are resolved from the active workspace root. Multi-C comparisons use the `#C<N>` selector. Single-C reports can be passed directly.
+The `run --json` response contains `result` and `batch`. Use the printed ID even when a run exits with a component failure. `report <result-id> --json` returns the report directory as `report`, the Markdown path as `markdown`, and `result_id`. Pass a published report directory to display the report or read its stored index with `--json`. The original `report.md` path also works with the index beside it. Relative report and comparison paths are resolved from the active workspace root. Multi-C comparisons use the `#C<N>` selector. Single-C reports can be passed directly.
 
-The report opens with component outcomes, fatal errors and grouped semantic warnings. Its performance tables show source-equivalent codec throughput at K=512/5008 and B=128/1016, plan construction and operation-list clone time, dominant diagnostic stages and seven core operations in ns/call. A dagger flags a displayed median with CV above 10%. Coverage counts explain skipped and unfinished work.
+The report opens with the outcome and accepted measurement count for each C. The next sections follow Validation (V), Operation (O), Link (L) and Workflow (W). They show fatal findings, warning observation counts, operation costs, plan and replay timings, additive stage breakdowns, and codec results for fixed representative workloads. Comparable workloads show component results side by side. A dagger marks benchmark timing CV above 10%.
 
-The file includes a checksummed, compressed result index in a Markdown comment. It contains the original config, C/I/T/E, resolved test plan, build/source provenance, complete per-case coverage, correctness findings, grouped warning observations, aggregate performance results and per-metric diagnostic summaries. It contains no individual timing samples or raw log files. This index keeps `report`, `compare` usable after cleanup. Visible text and the index are checked together; checksums detect changes, not authenticate a publisher. `report --json` exposes the index without creating another file. Removing it disables structured reading and comparison.
+Coverage counts come from the per-case records. The report separates accepted measurements, partial sample sets, complete sets rejected with their run, unexecuted cases and skips. A case with a complete sample set can contain incomplete recovery attempts. Its row shows the recovery count and omits successful throughput. Family coverage and skip reasons remain visible for single-component and capability-limited selections.
 
-`compare` verifies T/E/I and common fatal-check witnesses before comparing common measured cases. Failed runs are ineligible; semantic warnings remain visible and eligible. Comparison uses the aggregate statistics validated before cleanup; it cannot recalculate statistics from disposed samples. Existing per-C raw evidence directories are still readable. A finalized report is a result, not a replayable preparation.
+`report.md` contains plain Markdown. Share it by itself for reading, or copy the entire report directory to retain `compare` and `report --json` access. The adjacent index records the config, C/I/T/E, test plan, build provenance, complete per-case coverage, correctness findings, warning observations, aggregate timings and diagnostics. The loader checks the Markdown and index as a pair. Earlier reports with an embedded index remain readable.
+
+`compare` verifies T/E/I and common fatal-check witnesses before comparing common measured cases. Failed runs are ineligible; semantic warnings remain visible and eligible. Its headline rows show the baseline, candidate, median time change and CV, with observed changes in input, work and warnings flagged per case. Comparison uses the aggregate statistics validated before cleanup; it cannot recalculate statistics from disposed samples. Existing per-C raw evidence directories are still readable. A finalized report is a result, not a replayable preparation.
 
 ## Evidence, failures and retention
 
 Each run retains its config, plan, provenance, validation, samples, diagnostics and subprocess logs. This includes completed prefixes from failed, unsupported and interrupted batches. Their report preserves outcome, errors, warnings and exact coverage. Large byte-array assertions retain lengths, the first differing offset and values, the total number of differences, short prefixes and SHA-256 hashes.
 
-`report` verifies the sealed result and reads back the published Markdown before cleaning raw data. A publication or verification error retains the raw result. A cleanup error identifies the affected paths. Cleanup uses result ownership and locks so other runs and preparations can continue. `clean` and explicit directory reset require exclusive access to the workspace. Keep the result with `--keep` when you need its individual samples or full logs.
+`report` verifies the sealed result and reads back both published files before cleaning raw data. A publication or verification error retains the raw result. A cleanup error identifies the affected paths. Cleanup uses result ownership and locks so other runs and preparations can continue. `clean` and explicit directory reset require exclusive access to the workspace. Keep the result with `--keep` when you need its individual samples or full logs.
 
 | Exit | Meaning |
 |---|---|
@@ -243,7 +247,7 @@ Each run retains its config, plan, provenance, validation, samples, diagnostics 
 | 4 | At least one failed or unexecuted C; inspect every batch entry |
 | 130 | Interrupted run |
 
-Start failures with the component outcome, fatal findings and diagnostic excerpts in the report index. A preparation with a corrupt cache fails explicitly. Execution and publication are local operations. The verified Markdown report survives cleanup and can be shared as a single file.
+Start failures with the component outcome, fatal findings and diagnostic excerpts in the report index. A preparation with a corrupt cache fails explicitly. Execution and publication are local operations. The verified report directory survives cleanup.
 
 ## Maintainer references
 

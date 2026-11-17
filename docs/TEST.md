@@ -348,13 +348,17 @@ Warnings do not change denominators. A boundary call that returns immediately st
 
 ### Deliverables
 
-The Markdown report for a selected run includes every C, groups results by test category, and separates execution wall time from benchmark time. Its index preserves validated aggregate results and exact per-case coverage.
+The Markdown report for a selected run includes every C, groups results by test category, and separates execution wall time from benchmark time. The sibling index in the report directory preserves validated aggregate results and exact per-case coverage.
 
-The retained index includes completed codec validation observations, bounded regression evidence and observed work/digest summaries. Comparison exposes when the offered stream, consumed counts or recorded trace differ across C entries. The [artifact contracts](../specs/README.md) define temporary execution evidence and the retained Markdown result index. `result.json`, raw samples, logs and build cache are working files, not additional final reports. Framework checks detect missing observations, inconsistent work counts and invalid diagnostic accounting before cleanup.
+The retained index includes completed codec validation observations, bounded regression evidence and observed work/digest summaries. Comparison exposes when the offered stream, consumed counts or recorded trace differ across C entries. The [artifact contracts](../specs/README.md) define temporary execution evidence and the retained result index. `result.json`, raw samples, logs and build cache are working files, not additional final reports. Framework checks detect missing observations, inconsistent work counts and invalid diagnostic accounting before cleanup.
 
 ### Read the report
 
-Start with each component’s outcome and the first failed check or semantic warning group. Read codec throughput at K=512/5008 and widths 128/1016, separately measured encoding-plan timings (L02/L03), the largest instrumented lifecycle stages and the direct/execute ns per core operation. Coverage distinguishes skipped cases from checks left unfinished. The result index contains timings for the entire matrix, including other widths and seeds, continuity/reuse workloads, allocation metrics and all stage observations. Read it with `feval report REPORT.md --json`.
+Start with each component's outcome. V shows fatal findings and groups the observed warning outcomes, with separate counts for validation cases and timed calls and examples of the measured call time. O shows representative direct and execute ns/call at widths 128 and 1016. L reports independent plan and replay times, then the exclusive encoding and recovery stages at K=512 and B=128. The stage means and unattributed time add to the mean instrumented lifecycle before rounding. Combined intervals appear once, with their family identifiers. W shows headline throughput and round-trip results at K=512/5008 and B=128/1016, plus representative first-use, reuse, all-source, continuity and lifecycle timings. Recovery rows show the exact number of missing source symbols.
+
+Read family coverage for the selected scheme to see what was checked, measured, diagnosed, stopped or skipped. Accepted timing coverage means the case has its required samples in a successful run. A recovery sample can exhaust its budget within such a case. Read the recovered count before comparing throughput. For the full parameter matrix, work counts, failure witnesses, warning variants and diagnostic/resource observations, use `feval report REPORT_DIR --json`.
+
+A comparison uses a compatible baseline and candidate. The time change divides by the baseline median, so a negative value is a lower candidate median. Read that change with CV, recovery completion, warnings and the observed work differences on that row.
 
 ### How to interpret common patterns
 

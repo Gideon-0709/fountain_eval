@@ -12,6 +12,16 @@ pub fn report(record: &Record) -> Value {
     let Some(recipe) = &record.recipe else {
         return json!({"status":"not_planned","cases":[],"reason":"Test content has not been resolved"});
     };
+    // Source resolution can stop after loading the catalog but before applying
+    // the selected scheme and interface's applicability rules.
+    if record.stage == "resolve"
+        && recipe
+            .checks
+            .values()
+            .all(|check| check.skip.is_none() && check.measurement_skip.is_none())
+    {
+        return json!({"status":"not_planned","cases":[],"reason":"Component applicability has not been resolved"});
+    }
     let rows: Vec<_> = recipe.checks.iter().map(|(case,check)| {
         let event = record.validation.iter().find(|e|e["case"]==*case);
         let samples=record.samples.iter().filter(|s|s.case==*case).count();

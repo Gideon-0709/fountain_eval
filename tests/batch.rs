@@ -25,16 +25,18 @@ fn independent_failures_continue_and_explicit_reports_retain_each_c() {
         assert!(c.quadruple.is_none());
         assert!(c.summary.is_empty());
     }
-    let report = std::fs::read_to_string(&path).unwrap();
+    let markdown = path.join("report.md");
+    let report = std::fs::read_to_string(&markdown).unwrap();
     assert!(report.contains("C0") && report.contains("C2") && report.contains("Key findings"));
-    assert_eq!(
-        std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
-        1
-    );
+    assert_eq!(std::fs::read_dir(&path).unwrap().count(), 2);
     assert!(!r.configuration.run.output.join(&r.run_id).exists());
     assert!(!r.configuration.run.cache.exists());
     assert!(artifact::load(&path).is_ok());
-    std::fs::write(&path, report.replace("Key findings", "Changed findings")).unwrap();
+    std::fs::write(
+        &markdown,
+        report.replace("Key findings", "Changed findings"),
+    )
+    .unwrap();
     assert!(artifact::load(&path).is_err());
 }
 #[test]
@@ -77,7 +79,7 @@ fn report_rejects_component_identity_and_count_changes() {
             999.into()
         };
         let altered = serde_json::from_value(v).unwrap();
-        assert!(artifact::publish(&t.0.join(field), &text, &altered, false).is_err());
+        assert!(artifact::publish(&t.0.join(field), &text, &altered).is_err());
     }
 }
 
@@ -212,11 +214,11 @@ fn one_batch_never_cleans_another_preparation_and_busy_preparation_is_rejected()
     );
     let (raw, _) = failures(&t, false);
     let report = artifact::generate(&raw, &t.0.join("reports"), false).unwrap();
-    assert!(report.is_file() && pending.is_dir() && cache.is_dir());
+    assert!(report.is_dir() && pending.is_dir() && cache.is_dir());
     drop(lock);
     let (raw, _) = batch::from_prepared(&pending).unwrap();
     let report = artifact::generate(&raw, &t.0.join("reports"), false).unwrap();
-    assert!(report.is_file() && !pending.exists() && !cache.exists());
+    assert!(report.is_dir() && !pending.exists() && !cache.exists());
     assert!(!t.0.join("runs").exists());
     assert!(!t.0.join(".fountain-eval").exists());
 }

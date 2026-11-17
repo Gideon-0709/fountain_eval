@@ -24,6 +24,7 @@ ctrlc = "3.4"
 fs2 = "0.4"
 base64 = "0.22"
 flate2 = "1.1"
+lzma-rust2 = { version = "0.24.0", default-features = false, features = ["std", "encoder"] }
 
 [lints.rust]
 unsafe_code = "forbid"

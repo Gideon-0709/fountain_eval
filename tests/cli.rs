@@ -272,7 +272,15 @@ fn run_report_keep_and_clean_have_separate_lifecycles() {
     let published = cli(&t, &["report", id, "--keep", "--json"]);
     assert!(published.status.success());
     let report = destination.join("report.md");
-    assert!(raw.is_dir() && cache.is_dir() && report.is_file());
+    let index = destination.join("index.json.lzma");
+    let published_paths = json(&published);
+    assert_eq!(published_paths["report"], destination.to_str().unwrap());
+    assert_eq!(published_paths["markdown"], report.to_str().unwrap());
+    assert!(raw.is_dir() && cache.is_dir() && report.is_file() && index.is_file());
+    assert_eq!(fs::read_dir(&destination).unwrap().count(), 2);
+    let printed = cli(&t, &["report", destination.to_str().unwrap()]);
+    assert!(printed.status.success());
+    assert_eq!(printed.stdout, fs::read(&report).unwrap());
     assert_eq!(
         json(&cli(&t, &["report", report.to_str().unwrap(), "--json"]))["components"]
             .as_array()
@@ -295,7 +303,7 @@ fn run_report_keep_and_clean_have_separate_lifecycles() {
         fs::read_to_string(root.join("fountain-eval.toml")).unwrap(),
         config
     );
-    assert!(report.is_file());
+    assert!(report.is_file() && index.is_file());
     assert!(cli_at(&t, &root, &["init", "."]).status.success());
     assert!(!report.exists());
     assert_ne!(

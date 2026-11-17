@@ -1,4 +1,6 @@
 mod support;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use flate2::{Compression, write::ZlibEncoder};
 use fountain_eval::{artifact, batch, config::Configuration, evidence, report, util, validation};
 use std::{collections::BTreeMap, fs, path::PathBuf};
 use support::Temp;
@@ -66,8 +68,29 @@ fn report_survives_cleanup_and_comparison_keeps_all_cases() {
     let raw = raw(&t);
     let saved = artifact::Snapshot::capture(&raw).unwrap();
     let body = report::snapshot(&saved);
-    let path = artifact::publish(&t.0.join("reports/fixture-batch"), &body, &saved, false).unwrap();
+    let path = artifact::publish(&t.0.join("reports/fixture-batch"), &body, &saved).unwrap();
+    let mut old_index = ZlibEncoder::new(Vec::new(), Compression::default());
+    serde_json::to_writer(&mut old_index, &saved).unwrap();
+    let payload = STANDARD.encode(old_index.finish().unwrap());
+    let checksum = util::hash(format!("{body}{payload}"));
+    let legacy = t.write(
+        "legacy.md",
+        &format!("{body}\n<!-- fountain-eval-result\n{checksum}\n{payload}\n-->\n"),
+    );
+    let (old_body, old_snapshot) = artifact::load(&legacy).unwrap();
+    assert_eq!(old_body, body);
+    assert_eq!(util::digest(&old_snapshot), util::digest(&saved));
     let cache = t.write(".fountain-eval/keep", "cache");
+    let index = path.join("index.json.lzma");
+    let away = t.0.join("index-held");
+    fs::rename(&index, &away).unwrap();
+    assert!(
+        artifact::cleanup(&raw, &path)
+            .unwrap_err()
+            .contains("report index missing")
+    );
+    assert!(raw.is_dir() && t.0.join(".fountain-eval/fixture-batch").is_dir());
+    fs::rename(away, index).unwrap();
     artifact::cleanup(&raw, &path).unwrap();
     assert!(!raw.exists());
     assert!(cache.exists()); // An unrelated sibling is not owned by this run.
@@ -98,17 +121,14 @@ fn publication_failure_changed_evidence_and_overlap_never_delete_raw_input() {
     let raw = raw(&t);
     let saved = artifact::Snapshot::capture(&raw).unwrap();
     let body = "# Report\n\nRun: `fixture-batch`\n";
-    let root = t.0.join("reports");
-    let directory = artifact::reserve(&root, "fixture-batch").unwrap();
-    assert!(artifact::reserve(&root, "fixture-batch").is_err());
-    assert!(artifact::reserve(&root, "../escape").is_err());
-    assert!(artifact::publish(&directory, "", &saved, false).is_err());
-    assert!(!directory.join("report.md").exists());
+    let directory = t.0.join("reports/fixture-batch");
+    assert!(artifact::publish(&directory, "", &saved).is_err());
+    assert!(!directory.exists());
     assert!(raw.exists());
-    let path = artifact::publish(&directory, body, &saved, false).unwrap();
-    assert!(artifact::publish(&directory, body, &saved, false).is_err());
+    let path = artifact::publish(&directory, body, &saved).unwrap();
+    assert!(artifact::publish(&directory, body, &saved).is_err());
     assert!(raw.exists());
-    let inside = artifact::publish(&raw.join("nested-report"), body, &saved, false).unwrap();
+    let inside = artifact::publish(&raw.join("nested-report"), body, &saved).unwrap();
     assert!(artifact::cleanup(&raw, &inside).is_err());
     assert!(raw.exists());
     fs::write(raw.join("batch.json"), "changed").unwrap();
@@ -117,27 +137,28 @@ fn publication_failure_changed_evidence_and_overlap_never_delete_raw_input() {
     assert!(artifact::load(&path).is_ok());
 }
 #[test]
-fn report_checksum_covers_visible_text_and_index_and_replacement_is_atomic() {
+fn report_checksums_bind_both_files_and_publication_is_immutable() {
     let t = Temp::new();
     let raw = raw(&t);
     let saved = artifact::Snapshot::capture(&raw).unwrap();
     let body = "# Report\n\nRun: `fixture-batch`\n";
-    let path = artifact::publish(&t.0.join("reports"), body, &saved, false).unwrap();
-    let original = fs::read_to_string(&path).unwrap();
-    fs::write(&path, original.replace("# Report", "# Changed")).unwrap();
+    let path = artifact::publish(&t.0.join("reports"), body, &saved).unwrap();
+    let markdown = path.join("report.md");
+    let index = path.join("index.json.lzma");
+    assert_eq!(fs::read_dir(&path).unwrap().count(), 2);
+    assert_eq!(fs::read_to_string(&markdown).unwrap(), body);
+    assert_eq!(artifact::load(&markdown).unwrap().0, body);
+    let original = fs::read(&index).unwrap();
+
+    fs::write(&markdown, body.replace("# Report", "# Changed")).unwrap();
+    assert!(artifact::load(&path).unwrap_err().contains("checksum"));
+    fs::write(&markdown, body).unwrap();
+    fs::write(&index, &original[..original.len() / 2]).unwrap();
     assert!(artifact::load(&path).is_err());
-    fs::write(&path, &original).unwrap();
-    let replacement = body.to_owned() + "\nUpdated layout.\n";
-    artifact::publish(path.parent().unwrap(), &replacement, &saved, true).unwrap();
-    assert_eq!(artifact::load(&path).unwrap().0, replacement);
-    let current = fs::read(&path).unwrap();
-    assert!(artifact::publish(path.parent().unwrap(), "", &saved, true).is_err());
-    assert_eq!(fs::read(&path).unwrap(), current);
-    assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
-    let mut truncated = fs::read_to_string(&path).unwrap();
-    truncated.truncate(truncated.len() - 5);
-    fs::write(&path, truncated).unwrap();
-    assert!(artifact::load(&path).is_err());
+    fs::write(&index, &original).unwrap();
+    assert!(artifact::publish(&path, "# Replacement\n", &saved).is_err());
+    assert_eq!(fs::read_to_string(&markdown).unwrap(), body);
+    assert_eq!(fs::read(&index).unwrap(), original);
 }
 
 #[test]
@@ -165,7 +186,7 @@ fn failed_invalid_sample_prefix_still_has_a_publishable_failure_report() {
     assert!(saved.components[0].summary.is_empty());
     let body = report::snapshot(&saved);
     assert!(body.contains("Partial samples could not be aggregated"));
-    let path = artifact::publish(&t.0.join("reports"), &body, &saved, false).unwrap();
+    let path = artifact::publish(&t.0.join("reports"), &body, &saved).unwrap();
     artifact::cleanup(&raw, &path).unwrap();
     assert_eq!(
         artifact::load(&path).unwrap().1.components[0].status,
@@ -178,7 +199,7 @@ fn cache_ownership_and_active_workspace_block_cleanup() {
     let t = Temp::new();
     let raw = raw(&t);
     let saved = artifact::Snapshot::capture(&raw).unwrap();
-    let path = artifact::publish(&t.0.join("reports"), "# Report\n", &saved, false).unwrap();
+    let path = artifact::publish(&t.0.join("reports"), "# Report\n", &saved).unwrap();
     let lock = fs::OpenOptions::new()
         .create(true)
         .truncate(false)

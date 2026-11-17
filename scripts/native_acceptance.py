@@ -82,8 +82,9 @@ def main():
             entries = saved["batch"]["entries"]
             assert len(entries) == 1, "This helper inspects one C; multi-C contracts are in tests/batch.rs"
             assert len(saved["components"]) == 1
-            assert report.stat().st_size > 0 and report.name == "report.md"
-            assert list(report.parent.iterdir()) == [report]
+            markdown = Path(published["markdown"])
+            assert markdown == report / "report.md" and markdown.stat().st_size > 0
+            assert set(report.iterdir()) == {markdown, report / "index.json.lzma"}
             assert not (runs / saved["batch"]["run_id"]).exists(), "Verified reports must clean temporary raw evidence"
             assert not (cache / saved["batch"]["run_id"]).exists(), "Batch cache must be removed"
             body = {"report":str(report), "batch":saved["batch"], "result_ref":str(report)+"#C0", "result":saved["components"][0]}

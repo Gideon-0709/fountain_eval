@@ -85,11 +85,11 @@ The full original configuration is retained in both the batch and derived per-C 
 
 ## Run results, report publication and completion time
 
-Execution returns the batch status and sealed result directory `results/<result-id>/`. The `report` command takes a result ID or path, validates the full evidence and publishes `reports/<result-id>/report.md` with one section per C. Concurrent attempts to publish the same run are serialized by its result lease. Re-publication while raw data remains is allowed only for the same source seal.
+Execution returns the batch status and sealed result directory `results/<result-id>/`. The `report` command validates the full evidence and publishes `reports/<result-id>/`. Each report has a plain `report.md` with one section per C and a sibling `index.json.lzma`. Concurrent publication for one run is controlled by its result lease.
 
-`src/artifact.rs` embeds a zlib/base64 index in a Markdown comment. The checksum covers the visible text and index together. The index preserves config, resolved plans, identities, build provenance, coverage, fatal witnesses, warning variants, aggregate timings and diagnostic summaries. Individual timing samples and raw logs remain in the sealed result. `report` on an existing Markdown report verifies and displays it or exposes the index with `--json`. `compare` selects components using `report.md#C<N>` and checks retained T/E/I, whole-plan aggregate coverage and fatal witnesses.
+The compressed index binds the two files with SHA-256 hashes for the Markdown and the retained snapshot. The snapshot preserves config, resolved plans, identities, build provenance, coverage, fatal witnesses, warning variants, aggregate timings and diagnostic summaries. Individual timing samples and raw logs remain in the sealed result. `report REPORT_DIR` verifies and displays the Markdown and `--json` reads the tracked snapshot. `compare` selects components using `REPORT_DIR#C<N>` and checks retained T/E/I, whole-plan aggregate coverage and fatal witnesses.
 
-Publication is atomic. After read-back verification, publication rechecks the raw seal and removes that batch, its private cache and any consumed preparation unless `--keep` is supplied. A publication failure preserves the raw result. Cleanup failures name the retained data. The same lifecycle applies to successful, failed, unsupported and interrupted runs.
+Publication stages, syncs and verifies the two files, then atomically renames the directory into place. Later requests for the same sealed run verify and reuse its report. Cleanup rechecks the raw seal and removes the batch, its private cache and any consumed preparation unless `--keep` is supplied. Publication failure preserves the raw result. Successful, failed, unsupported and interrupted runs follow the same lifecycle.
 
 Per-C wall time covers execution phases through the final checkpoint. The batch entry time includes child sealing. The batch total covers the `run` command through evidence collection, with report generation and cleanup performed separately. These times describe progress and are separate from the workload's benchmark clocks.
 
@@ -152,7 +152,7 @@ Linux/macOS CI checks the framework and publicly accessible native combinations.
 | `src/source.rs` | Immutable local/Git/registry snapshots and path dependency closure |
 | `src/content.rs` | Pure T-owned expanded case definitions and deterministic matrix |
 | `src/workspace.rs` | Workspace initialization and activation, storage ownership, leases and bounded removal |
-| `src/artifact.rs` | Durable Markdown result index, verified publication, cleanup and component selection |
+| `src/artifact.rs` | Report directory and index, verified publication, cleanup and component selection |
 | `src/report.rs` | Single Markdown batch/per-C reports and grouped comparison views |
 | `src/catalog.rs` | I/T registrations, supported families and embedded assets |
 | `src/build.rs` | Workspace expansion, generated manifests, native builds and cache integrity |

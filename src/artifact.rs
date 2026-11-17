@@ -1,20 +1,25 @@
-//! The single durable Markdown artifact. Raw evidence is a temporary execution workspace.
+//! Durable reports with a readable Markdown file and a separate result index.
 use crate::{
     batch, catalog, evidence, measurement,
     util::{self, Result},
     validation,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use flate2::{Compression, read::ZlibDecoder, write::ZlibEncoder};
-use serde::{Deserialize, Serialize};
+use flate2::read::ZlibDecoder;
+use lzma_rust2::{LzmaOptions, LzmaReader, LzmaWriter};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     fs,
-    io::{Read, Write},
+    io::{self, BufReader, Read, Write},
     path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
 };
-const MARKER: &str = "\n<!-- fountain-eval-result\n";
+pub const MARKDOWN_FILE: &str = "report.md";
+const INDEX_FILE: &str = "index.json.lzma";
+const LEGACY_REFERENCE_HEADER: &str = "\n\n[feval-result-v2]: ";
+const LEGACY_COMMENT_HEADER: &str = "\n<!-- fountain-eval-result\n";
 const LIMIT: u64 = 64 * 1024 * 1024;
 
 pub(crate) fn valid_run_id(id: &str) -> bool {
@@ -22,22 +27,6 @@ pub(crate) fn valid_run_id(id: &str) -> bool {
         && id
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
-}
-
-/// Reserve a fresh directory for a report's verified publication.
-pub fn reserve(root: &Path, id: &str) -> Result<PathBuf> {
-    if !valid_run_id(id) {
-        return Err("invalid report run identifier".into());
-    }
-    fs::create_dir_all(root).map_err(|e| format!("report directory {}: {e}", root.display()))?;
-    let dir = root.join(id);
-    fs::create_dir(&dir).map_err(|e| {
-        format!(
-            "report destination {}: {e}; choose a new output directory",
-            dir.display()
-        )
-    })?;
-    Ok(dir)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -385,99 +374,180 @@ impl Snapshot {
         Ok(())
     }
 }
-fn encode(body: &str, snapshot: &Snapshot) -> Result<String> {
-    snapshot.verify()?;
-    let mut compressor = ZlibEncoder::new(Vec::new(), Compression::default());
-    serde_json::to_writer(&mut compressor, snapshot).map_err(|e| e.to_string())?;
-    let encoded = STANDARD.encode(compressor.finish().map_err(|e| e.to_string())?);
-    let digest = util::hash(format!("{body}{encoded}"));
-    Ok(format!("{body}{MARKER}{digest}\n{encoded}\n-->\n"))
+#[derive(Deserialize, Serialize)]
+struct StoredIndex<S> {
+    markdown_sha256: String,
+    snapshot_sha256: String,
+    snapshot: S,
 }
-/// Read the verified visible Markdown and its result index.
+
+/// Read a verified report directory or its Markdown path.
 pub fn load(path: &Path) -> Result<(String, Snapshot)> {
     let path = if path.is_dir() {
-        path.join("report.md")
+        path.join(MARKDOWN_FILE)
     } else {
-        path.into()
+        path.to_owned()
     };
-    let mut text = fs::read_to_string(path).map_err(|e| e.to_string())?;
-    let (body, index) = text
-        .rsplit_once(MARKER)
-        .ok_or("report has no result index; regenerate it from existing raw evidence")?;
+    let text = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let index = path.with_file_name(INDEX_FILE);
+    if path.file_name().is_some_and(|name| name == MARKDOWN_FILE)
+        && index
+            .try_exists()
+            .map_err(|e| format!("{}: {e}", index.display()))?
+    {
+        let file = fs::File::open(&index).map_err(|e| format!("{}: {e}", index.display()))?;
+        let stored: StoredIndex<Snapshot> = read_json(lzma_reader(BufReader::new(file))?)?;
+        if stored.markdown_sha256 != util::hash(&text)
+            || stored.snapshot_sha256 != util::digest(&stored.snapshot)
+        {
+            return Err("report or index checksum mismatch".into());
+        }
+        stored.snapshot.verify()?;
+        return Ok((text, stored.snapshot));
+    }
+    load_embedded(&text)
+}
+
+fn load_embedded(text: &str) -> Result<(String, Snapshot)> {
+    let (body, snapshot): (_, Snapshot) =
+        if let Some((body, data)) = text.rsplit_once(LEGACY_REFERENCE_HEADER) {
+            let bytes = read_legacy_references(body, data)?;
+            (body, read_json(lzma_reader(bytes.as_slice())?)?)
+        } else if let Some((body, data)) = text.rsplit_once(LEGACY_COMMENT_HEADER) {
+            let bytes = read_legacy_comment(body, data)?;
+            (body, read_json(ZlibDecoder::new(bytes.as_slice()))?)
+        } else {
+            return Err(format!(
+                "report index missing. Keep {INDEX_FILE} beside {MARKDOWN_FILE}"
+            ));
+        };
+    snapshot.verify()?;
+    Ok((body.to_owned(), snapshot))
+}
+
+fn read_legacy_comment(body: &str, index: &str) -> Result<Vec<u8>> {
     let mut lines = index.lines();
     let digest = lines.next().ok_or("missing report checksum")?;
     let encoded = lines.next().ok_or("missing report index")?;
-    if lines.next() != Some("-->")
-        || lines.next().is_some()
-        || util::hash(format!("{body}{encoded}")) != digest
-    {
+    if lines.next() != Some("-->") || lines.next().is_some() {
         return Err("report checksum mismatch".into());
     }
-    let bytes = STANDARD.decode(encoded).map_err(|e| e.to_string())?;
+    checked_payload(body, digest, encoded)
+}
+
+fn read_legacy_references(body: &str, index: &str) -> Result<Vec<u8>> {
+    fn destination(line: &str) -> Option<&str> {
+        line.strip_prefix('<')?.strip_suffix('>')
+    }
+
+    let mut lines = index.lines();
+    let digest = lines
+        .next()
+        .and_then(destination)
+        .ok_or("missing report checksum")?;
+    let mut encoded = String::new();
+    for (n, line) in lines.enumerate() {
+        let chunk = line
+            .strip_prefix("[feval-result-data-")
+            .and_then(|line| line.split_once("]: "))
+            .filter(|(label, _)| label.parse::<usize>().ok() == Some(n + 1))
+            .and_then(|(_, payload)| destination(payload))
+            .filter(|chunk| !chunk.is_empty() && chunk.len() <= 2048)
+            .ok_or("invalid report index chunk")?;
+        encoded.push_str(chunk);
+    }
+    if encoded.is_empty() {
+        return Err("missing report index".into());
+    }
+    checked_payload(body, digest, &encoded)
+}
+
+fn checked_payload(body: &str, digest: &str, encoded: &str) -> Result<Vec<u8>> {
+    if util::hash(format!("{body}{encoded}")) != digest {
+        return Err("report checksum mismatch".into());
+    }
+    STANDARD.decode(encoded).map_err(|e| e.to_string())
+}
+
+fn lzma_reader<R: Read>(reader: R) -> Result<LzmaReader<R>> {
+    LzmaReader::new_mem_limit(reader, (LIMIT / 1024) as u32, None).map_err(|e| e.to_string())
+}
+
+fn read_json<T: DeserializeOwned>(reader: impl Read) -> Result<T> {
     let mut data = Vec::new();
-    ZlibDecoder::new(bytes.as_slice())
+    reader
         .take(LIMIT + 1)
         .read_to_end(&mut data)
         .map_err(|e| e.to_string())?;
     if data.len() as u64 > LIMIT {
         return Err("report index exceeds size limit".into());
     }
-    let snapshot: Snapshot = serde_json::from_slice(&data).map_err(|e| e.to_string())?;
-    snapshot.verify()?;
-    text.truncate(body.len());
-    Ok((text, snapshot))
+    serde_json::from_slice(&data).map_err(|e| e.to_string())
 }
-/// Atomic replacement is explicit; verification failure leaves the existing report intact.
-pub fn publish(
-    directory: &Path,
-    body: &str,
-    snapshot: &Snapshot,
-    replace: bool,
-) -> Result<PathBuf> {
+
+/// Publish the complete report directory in one rename after round-trip verification.
+pub fn publish(directory: &Path, body: &str, snapshot: &Snapshot) -> Result<PathBuf> {
     if body.trim().is_empty() {
         return Err("refusing to publish an empty report".into());
     }
-    fs::create_dir_all(directory).map_err(|e| e.to_string())?;
-    let path = directory.join("report.md");
-    if path.exists() {
-        if !replace {
-            return Err("report already exists".into());
+    snapshot.verify()?;
+    match fs::symlink_metadata(directory) {
+        Ok(_) => {
+            return Err(format!(
+                "report destination already exists: {}",
+                directory.display()
+            ));
         }
-        let old = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-        if !old.contains(&format!("Run: `{}`", snapshot.batch.run_id)) {
-            return Err("replacement report run identity mismatch".into());
-        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("report destination {}: {e}", directory.display())),
     }
-    let text = encode(body, snapshot)?;
-    let temporary = directory.join(format!(".report-{}.tmp", std::process::id()));
+
+    let parent = directory
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_nanos();
+    let temporary = parent.join(format!(".feval-report-{}-{nonce}.tmp", std::process::id()));
+    fs::create_dir(&temporary).map_err(|e| e.to_string())?;
     let result = (|| {
-        let mut f = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)
-            .map_err(|e| e.to_string())?;
-        f.write_all(text.as_bytes())
-            .and_then(|_| f.sync_all())
-            .map_err(|e| e.to_string())?;
-        let (_, verified) = load(&temporary)?;
-        if util::digest(&verified) != util::digest(snapshot) {
-            return Err("report round-trip verification failed".into());
-        }
-        if replace {
-            fs::rename(&temporary, &path).map_err(|e| e.to_string())?;
-        } else {
-            fs::hard_link(&temporary, &path).map_err(|e| e.to_string())?;
-            fs::remove_file(&temporary).map_err(|e| e.to_string())?;
-        }
-        fs::File::open(directory)
+        let stored = StoredIndex {
+            markdown_sha256: util::hash(body),
+            snapshot_sha256: util::digest(snapshot),
+            snapshot,
+        };
+        let mut compressor =
+            LzmaWriter::new_use_header(Vec::new(), &LzmaOptions::with_preset(6), None)
+                .map_err(|e| e.to_string())?;
+        serde_json::to_writer(&mut compressor, &stored).map_err(|e| e.to_string())?;
+        let compressed = compressor.finish().map_err(|e| e.to_string())?;
+        write_synced(&temporary.join(MARKDOWN_FILE), body.as_bytes())?;
+        write_synced(&temporary.join(INDEX_FILE), &compressed)?;
+        load(&temporary)?;
+        fs::File::open(&temporary)
             .and_then(|f| f.sync_all())
             .map_err(|e| e.to_string())?;
-        Ok(path.clone())
+        fs::rename(&temporary, directory)
+            .map_err(|e| format!("report destination {}: {e}", directory.display()))?;
+        fs::File::open(parent)
+            .and_then(|f| f.sync_all())
+            .map_err(|e| e.to_string())?;
+        Ok(directory.to_owned())
     })();
-    if temporary.exists() {
-        let _ = fs::remove_file(temporary);
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&temporary);
     }
     result
+}
+
+fn write_synced(path: &Path, bytes: &[u8]) -> Result<()> {
+    let mut file = fs::File::create_new(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    file.write_all(bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// Publish a sealed result and, by default, remove the result used to produce it.
@@ -499,26 +569,24 @@ pub fn generate(raw: &Path, report_root: &Path, keep: bool) -> Result<PathBuf> {
         return Err("result does not belong to the active workspace".into());
     }
     let directory = report_root.join(id);
-    if fs::symlink_metadata(&directory).is_ok_and(|m| !m.is_dir()) {
-        return Err(format!(
-            "invalid report destination {}",
-            directory.display()
-        ));
-    }
-    let target = directory.join("report.md");
-    let replace = target.exists();
-    if replace {
-        let (_, existing) = load(&target)?;
-        if existing.source_seal != saved.source_seal || &existing.batch.run_id != id {
-            return Err("the existing report belongs to different evidence".into());
+    let report = match fs::symlink_metadata(&directory) {
+        Ok(meta) if meta.is_dir() => {
+            let (_, existing) = load(&directory)?;
+            if existing.source_seal != saved.source_seal || &existing.batch.run_id != id {
+                return Err("the existing report belongs to different evidence".into());
+            }
+            directory
         }
-    }
-    let report = publish(
-        &directory,
-        &crate::report::snapshot(&saved),
-        &saved,
-        replace,
-    )?;
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            publish(&directory, &crate::report::snapshot(&saved), &saved)?
+        }
+        _ => {
+            return Err(format!(
+                "invalid report destination {}",
+                directory.display()
+            ));
+        }
+    };
     if !keep {
         cleanup_held(&lease.directory, &report, &[&lease])?;
     }
@@ -623,7 +691,7 @@ pub fn select(input: &Path) -> Result<Component> {
     }
     let (_, snapshot) = load(&path)?;
     if id.is_none() && snapshot.components.len() != 1 {
-        return Err("select a component using report.md#C0 (or its configured index)".into());
+        return Err("select a component using the report directory and a #C0 selector (or its configured index)".into());
     }
     snapshot
         .components

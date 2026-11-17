@@ -59,13 +59,13 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Generate a Markdown report from a sealed result, or read a published report.
+    /// Publish a report directory from a sealed result, or read a published report.
     Report {
         result: PathBuf,
         /// Keep the raw result after publishing its report.
         #[arg(long)]
         keep: bool,
-        /// Emit the published report path or the stored report index as JSON.
+        /// Emit the published report directory and Markdown path, or the stored index.
         #[arg(long)]
         json: bool,
     },
@@ -180,7 +180,8 @@ fn execute(command: Command) -> Result<u8> {
             let _guard = workspace.lock()?;
             let path = workspace.root().join(&result);
             if path.extension().is_some_and(|extension| extension == "md")
-                || path.join("report.md").is_file()
+                || path.join(artifact::MARKDOWN_FILE).is_file()
+                || path.starts_with(workspace.reports())
             {
                 if keep {
                     return Err("--keep applies when generating a report from a run result".into());
@@ -195,7 +196,11 @@ fn execute(command: Command) -> Result<u8> {
                 let raw = workspace.result_input(&result)?;
                 let report = artifact::generate(&raw, &workspace.reports(), keep)?;
                 if json {
-                    emit(&json!({"report":report,"result_id":raw.file_name()}))?;
+                    emit(&json!({
+                        "report":report,
+                        "markdown":report.join(artifact::MARKDOWN_FILE),
+                        "result_id":raw.file_name(),
+                    }))?;
                 } else {
                     emit_text(&format!("Report: {}\n", report.display()))?;
                 }
