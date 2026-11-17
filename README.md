@@ -16,6 +16,10 @@ feval run
 
 Run these commands from the repository directory. Edit [fountain-eval.toml](fountain-eval.toml) to select the components, scheme and test version. The checked-in configuration compares the public engine with Slab and Arena and writes reports under `report/`. The Arena entry expects the `fountain-arena-operator` checkout beside this repository.
 
+In a new experiment directory, run `feval init` to create an editable `fountain-eval.toml`. The starter selects the public engine and exercises standalone encoding-plan tests. Add a compatible operator to evaluate a pair. An existing configuration is protected from replacement.
+
+Use `feval --help` to list commands and `feval run --help` or `feval help init` for command-specific options.
+
 `test` selects the **entire content version**. Users cannot select individual cases or disable checks. Every registered case is considered. Inapplicable cases remain in the report with a machine-readable reason and explanation. A fatal failure stops that C; later cases in that C remain `not_executed`. Independent Cs continue. An interrupt stops the batch and leaves subsequent Cs unexecuted.
 
 `inspect`, `prepare` and `run` default to `fountain-eval.toml` in the current directory. An installed CLI also works from another directory using `--config` to select the file:

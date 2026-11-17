@@ -1,5 +1,10 @@
 use clap::{Args, Parser, Subcommand};
-use fountain_eval::{batch, catalog, config::Configuration, evidence, runner, util::Result};
+use fountain_eval::{
+    batch, catalog,
+    config::{Configuration, DEFAULT_CONFIG_NAME},
+    evidence, runner,
+    util::Result,
+};
 use serde_json::json;
 use std::{
     io::{self, Write},
@@ -18,11 +23,13 @@ struct Cli {
 }
 #[derive(Args)]
 struct Input {
-    #[arg(long, default_value = "fountain-eval.toml")]
+    #[arg(long, default_value = DEFAULT_CONFIG_NAME)]
     config: PathBuf,
 }
 #[derive(Subcommand)]
 enum Command {
+    /// Create an editable fountain-eval.toml in the current directory.
+    Init,
     /// Offline configuration and local declaration checks.
     Inspect(Input),
     /// List the full test content and interface registrations.
@@ -92,6 +99,12 @@ fn outcome(report: PathBuf, record: batch::Record, machine: bool) -> Result<u8> 
 }
 fn execute(command: Command) -> Result<u8> {
     match command {
+        Command::Init => {
+            let dir = std::env::current_dir().map_err(|e| e.to_string())?;
+            let path = Configuration::initialize(&dir)?;
+            emit_text(&format!("Created {}\n", path.display()))?;
+            Ok(0)
+        }
         Command::List => {
             emit(&catalog::list())?;
             Ok(0)

@@ -10,8 +10,21 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     fs,
+    io::{ErrorKind, Write},
     path::{Path, PathBuf},
 };
+
+pub const DEFAULT_CONFIG_NAME: &str = "fountain-eval.toml";
+
+const STARTER_CONFIG: &str = r#"# Select a code scheme and a test content version for this run.
+scheme = "rq"
+test = "0.1.0"
+
+# C0 tests encoding-plan construction with a public engine.
+engine0 = "registry:fountain_engine@2.1.0"
+# Add a compatible operator with the same index to evaluate a codec pair.
+# operator0 = "path:../my-operator#MyOperator"
+"#;
 
 #[derive(Debug, Deserialize)]
 struct Input {
@@ -125,6 +138,30 @@ pub struct RunConfiguration {
     pub run: RunSettings,
 }
 impl Configuration {
+    /// Write an editable starter configuration into the given directory.
+    pub fn initialize(directory: &Path) -> Result<PathBuf> {
+        let path = directory.join(DEFAULT_CONFIG_NAME);
+        let mut file = fs::File::create_new(&path).map_err(|e| {
+            if e.kind() == ErrorKind::AlreadyExists {
+                format!(
+                    "{} already exists. Edit that file or run feval init in another directory.",
+                    path.display()
+                )
+            } else {
+                format!("cannot create configuration {}: {e}", path.display())
+            }
+        })?;
+        if let Err(e) = file.write_all(STARTER_CONFIG.as_bytes()) {
+            drop(file);
+            let error = format!("cannot write configuration {}: {e}", path.display());
+            return Err(match fs::remove_file(&path) {
+                Ok(()) => error,
+                Err(cleanup) => format!("{error}. Could not remove the incomplete file: {cleanup}"),
+            });
+        }
+        Ok(path)
+    }
+
     pub fn report_root(&self) -> PathBuf {
         self.run.report.clone().unwrap_or_else(|| {
             self.path

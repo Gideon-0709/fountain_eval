@@ -14,7 +14,12 @@ fn config(engine: &str, operator: &str) -> String {
 #[test]
 fn help_and_full_catalog_are_available() {
     let t = Temp::new();
-    assert!(cli(&t.0, &["--help"]).status.success());
+    let help = cli(&t.0, &["--help"]);
+    assert!(help.status.success());
+    assert!(String::from_utf8_lossy(&help.stdout).contains("init"));
+    let help = cli(&t.0, &["help", "init"]);
+    assert!(help.status.success());
+    assert!(String::from_utf8_lossy(&help.stdout).contains("feval init"));
     let output = cli(&t.0, &["list"]);
     let catalog: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(catalog["interfaces"].as_array().unwrap().len(), 3);
@@ -26,6 +31,30 @@ fn help_and_full_catalog_are_available() {
             .len(),
         fountain_eval::content::cases().len()
     );
+}
+
+#[test]
+fn init_writes_an_inspectable_config_and_preserves_an_existing_file() {
+    let t = Temp::new();
+    let created = cli(&t.0, &["init"]);
+    assert!(created.status.success());
+    let path = t.0.join("fountain-eval.toml");
+    assert!(path.is_file());
+    assert_eq!(std::fs::read_dir(&t.0).unwrap().count(), 1);
+
+    let inspected = cli(&t.0, &["inspect"]);
+    assert!(inspected.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&inspected.stdout).unwrap();
+    let components = &report["configuration"]["selections"][0]["request"]["components"];
+    assert_eq!(components["engine"]["kind"], "registry");
+    assert!(components["operator"].is_null());
+
+    let edited = std::fs::read_to_string(&path).unwrap().replace("rq", "r10");
+    std::fs::write(&path, &edited).unwrap();
+    let repeat = cli(&t.0, &["init"]);
+    assert_eq!(repeat.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&repeat.stderr).contains("already exists"));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), edited);
 }
 #[test]
 fn default_config_and_explicit_config_are_offline_and_equivalent() {
