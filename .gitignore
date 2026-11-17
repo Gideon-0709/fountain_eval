@@ -2,6 +2,8 @@
 /runs/
 /report/
 /reports/
+/results/
+/feval_workspace/
 /.fountain-eval/
 .DS_Store
 

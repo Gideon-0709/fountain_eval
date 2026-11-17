@@ -17,7 +17,7 @@ use std::{
 const MARKER: &str = "\n<!-- fountain-eval-result\n";
 const LIMIT: u64 = 64 * 1024 * 1024;
 
-fn valid_run_id(id: &str) -> bool {
+pub(crate) fn valid_run_id(id: &str) -> bool {
     !id.is_empty()
         && id
             .chars()
@@ -335,10 +335,7 @@ impl Snapshot {
         {
             return Err("invalid batch elapsed time".into());
         }
-        let parsed = crate::config::Configuration::parse(
-            self.batch.configuration.path.clone(),
-            self.batch.configuration.original.clone(),
-        )?;
+        let parsed = self.batch.configuration.reparse()?;
         if util::digest(&parsed) != util::digest(&self.batch.configuration)
             || parsed.selections.len() != self.batch.entries.len()
         {
@@ -482,6 +479,52 @@ pub fn publish(
     }
     result
 }
+
+/// Publish a sealed result and, by default, remove the result used to produce it.
+pub fn generate(raw: &Path, report_root: &Path, keep: bool) -> Result<PathBuf> {
+    let lease = crate::workspace::Lease::acquire(raw)?;
+    let saved = Snapshot::capture(&lease.directory)?;
+    let id = &saved.batch.run_id;
+    if saved.batch.action != "run"
+        || lease.directory.file_name().and_then(|n| n.to_str()) != Some(id)
+        || !valid_run_id(id)
+    {
+        return Err("expected a sealed run result".into());
+    }
+    let config = &saved.batch.configuration;
+    if config.workspace.is_some()
+        && (lease.directory.parent() != Some(&config.run.output)
+            || report_root != config.report_root())
+    {
+        return Err("result does not belong to the active workspace".into());
+    }
+    let directory = report_root.join(id);
+    if fs::symlink_metadata(&directory).is_ok_and(|m| !m.is_dir()) {
+        return Err(format!(
+            "invalid report destination {}",
+            directory.display()
+        ));
+    }
+    let target = directory.join("report.md");
+    let replace = target.exists();
+    if replace {
+        let (_, existing) = load(&target)?;
+        if existing.source_seal != saved.source_seal || &existing.batch.run_id != id {
+            return Err("the existing report belongs to different evidence".into());
+        }
+    }
+    let report = publish(
+        &directory,
+        &crate::report::snapshot(&saved),
+        &saved,
+        replace,
+    )?;
+    if !keep {
+        cleanup_held(&lease.directory, &report, &[&lease])?;
+    }
+    Ok(report)
+}
+
 /// Delete the verified batch, its owned cache and a consumed preparation workspace.
 pub fn cleanup(raw: &Path, report: &Path) -> Result<()> {
     cleanup_held(raw, report, &[])
@@ -506,6 +549,13 @@ pub(crate) fn cleanup_held(
         // A completed cleanup is idempotent if only final raw removal previously failed.
         if path.exists() {
             let old = batch::load(&path)?;
+            if let Some(root) = &saved.batch.configuration.workspace
+                && (path.parent() != Some(&crate::workspace::prepared_root(root))
+                    || old.configuration.workspace.as_ref() != Some(root)
+                    || util::read_json::<String>(&path.join("consumed.tmp"))? != saved.batch.run_id)
+            {
+                return Err("prepared origin does not belong to this result".into());
+            }
             if old.action != "prepare"
                 || origin["run_id"] != old.run_id
                 || origin["entries"]
@@ -547,14 +597,14 @@ pub(crate) fn cleanup_held(
             return Err("raw evidence changed after report publication; retained".into());
         }
         let cache = crate::workspace::cache_for_cleanup(&path, &record, &report)?;
-        targets.push((path, cache));
+        targets.push((path, cache, record.configuration.workspace.is_some()));
     }
     // Origin first: retain the current batch and its recovery index if cleanup fails partway.
-    for (path, cache) in targets.into_iter().rev() {
+    for (path, cache, preserve_root) in targets.into_iter().rev() {
         if let Some(cache) = cache {
-            crate::workspace::remove(&cache, &report)?;
+            crate::workspace::remove(&cache, &report, preserve_root)?;
         }
-        crate::workspace::remove(&path, &report)?;
+        crate::workspace::remove(&path, &report, preserve_root)?;
     }
     Ok(())
 }

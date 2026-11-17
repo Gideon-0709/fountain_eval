@@ -4,33 +4,55 @@
 
 The project is an unreleased internal **0.1.0** candidate. Its formal content covers validation tests (V), operation tests (O), link tests (L) and workflow tests (W). Encoding-plan construction and operation-list cloning and recorded execution belong to link testing; plan reuse across blocks belongs to workflow testing. See the [test guide](docs/TEST.md) for contracts and interpretation and the automatically generated reports for executed coverage and limitations. No release or performance ranking is implied.
 
-## Install and run
+## Install and initialize a workspace
 
 Requirements: Linux or macOS, Git, `tar`, a native linker/C toolchain and Rust managed by rustup. The generated drivers use Rust 1.89.0, release optimization and the host CPU. Positive native construction coverage uses authorized local Arena and product checkouts on ARM64. Public Slab/Simd currently fail the formal GF check; the pinned operator also has an AVX2 compile error on x86_64. CI verifies these rejections and records the remaining coverage gaps.
 
 ```bash
 cargo install --path . --locked
+cd /path/to/experiments
+feval init
+feval workspace
 feval inspect
 feval run
+feval report <result-id>
 ```
 
-Run these commands from the repository directory. Edit [fountain-eval.toml](fountain-eval.toml) to select the components, scheme and test version. The checked-in configuration compares the public engine with Slab and Arena and writes reports under `report/`. The Arena entry expects the `fountain-arena-operator` checkout beside this repository.
+Run the installation command from the repository. The subsequent commands work from any directory after activation. Edit `feval_workspace/fountain-eval.toml` to select the components, scheme and test version. The starter uses the public engine's standalone encoding-plan tests. Add a compatible operator to evaluate a pair. The repository's [configuration](fountain-eval.toml) is a pair comparison you can copy into a workspace. Adjust its Arena path for the new config location.
 
-In a new experiment directory, run `feval init` to create an editable `fountain-eval.toml`. The starter selects the public engine and exercises standalone encoding-plan tests. Add a compatible operator to evaluate a pair. An existing configuration is protected from replacement.
+```text
+feval_workspace/
+  fountain-eval.toml
+  results/
+    <result-id>/
+  reports/
+    <result-id>/report.md
+  .fountain-eval/
+    cache/
+    prepared/
+```
 
-Use `feval --help` to list commands and `feval run --help` or `feval help init` for command-specific options.
+| Command | Effect |
+|---|---|
+| `feval init` | Create and activate a new `feval_workspace` in the current directory. If it already exists, use `feval activate ./feval_workspace` to reopen it. |
+| `feval init DIR` | **Empty the existing directory in place**, including all hidden files, then recreate and activate the workspace. This is also how to reset an existing workspace. The filesystem root is rejected. |
+| `feval activate DIR` | Select an initialized workspace for future commands across shells. |
+| `feval workspace` | Print the active workspace's absolute path. |
+| `feval clean` | Empty raw results, pending preparations and build cache in the active workspace. Keep its configuration and reports. |
 
-`test` selects the **entire content version**. Users cannot select individual cases or disable checks. Every registered case is considered. Inapplicable cases remain in the report with a machine-readable reason and explanation. A fatal failure stops that C; later cases in that C remain `not_executed`. Independent Cs continue. An interrupt stops the batch and leaves subsequent Cs unexecuted.
+The activation record is stored at `$XDG_STATE_HOME/feval/active.json` or `~/.local/state/feval/active.json`. Use `feval --help` for a command list and `feval run --help` or `feval help init` for command-specific options.
 
-`inspect`, `prepare` and `run` default to `fountain-eval.toml` in the current directory. An installed CLI also works from another directory using `--config` to select the file:
+`test` selects the **entire content version**. Every registered case is considered. Inapplicable cases appear with a machine-readable reason and explanation. A fatal failure stops that C and leaves its later cases `not_executed`. Independent Cs continue. An interrupt stops the batch and leaves subsequent Cs unexecuted.
+
+`inspect`, `prepare` and `run` use the active workspace's `fountain-eval.toml`. Use `--config` for another file inside that workspace. A relative `--config` is resolved from the workspace root. Local component paths are always relative to the selected config's directory.
 
 ```bash
-feval inspect --config /path/to/experiment.toml
-feval prepare --config /path/to/experiment.toml --json > prepared.json
-feval run --config /path/to/experiment.toml
+feval inspect --config alternatives/r10.toml
+feval prepare --config alternatives/r10.toml --json > prepared.json
+feval run --config alternatives/r10.toml
 ```
 
-All relative paths are resolved from the selected config file's directory. Unknown fields, duplicate keys and malformed references are configuration errors.
+Unknown fields, duplicate keys and malformed references are configuration errors. When moving an older config into a workspace, remove its `[run]` section. The workspace determines all output paths.
 
 ## Terminal progress
 
@@ -38,7 +60,7 @@ All relative paths are resolved from the selected config file's directory. Unkno
 
 A component heading such as `C1 [2/2]` identifies the active selection. Numbered headings show preparation, validation, performance and diagnostics. Preparation names the source, build and probe steps. During driver execution, subheadings identify the latest observed test group, such as encoding plans, operation tests, link tests or workflow tests. Measurement and diagnostic groups also identify the worker.
 
-A terminal refreshes one progress line with the observed count, percentage and stage elapsed time. CI and redirected stderr use plain lines at group changes and at 30-second intervals during long stages. A fatal error appears immediately. The final summary gives each component's outcome and the report path. `NO_COLOR` disables color.
+A terminal refreshes one progress line with the observed count, percentage and stage elapsed time. CI and redirected stderr use plain lines at group changes and at 30-second intervals during long stages. A fatal error appears immediately. The final summary gives each component's outcome, the sealed result path and the command to generate a report. `NO_COLOR` disables color.
 
 Live counts and stage completion describe work performed. The whole C passes only after final protocol, coverage, correctness and evidence validation. Incomplete recovery outcomes are counted separately; the terminal does not aggregate throughput across different workloads. Read the report for operation, link and workflow test results, detailed warning observations and performance dispersion.
 
@@ -74,7 +96,7 @@ test = "0.1.0"
 
 Indices are nonnegative integers, may be sparse, and execute in numeric order. There is no implicit pairing across indices and no cross-product. Every C receives the complete T; unsupported cases stay visible with a reason. Engine-only runs test standalone plan generation/export. Operator-only runs test the pure-operator surface. The missing production component is never added to enable codec tests. Supporting trait dependencies and the engine-only scalar validation helper are recorded separately from selected components. A product engine alone currently has no exposed standalone planning API and is reported unsupported with explicit skipped cases.
 
-One C is also written with indexed keys (`engine0` and/or `operator0`). Unindexed `engine`/`operator` fields are rejected. All Cs share scheme, test version and storage settings. To test another scheme, use another config.
+One C is also written with indexed keys (`engine0` and/or `operator0`). Unindexed `engine`/`operator` fields are rejected. All Cs share the scheme and test version. To test another scheme, use another config.
 
 ## Component references
 
@@ -154,16 +176,7 @@ Product runs execute codec, source-replacement and lifecycle checks through the 
 
 Test content derives K, symbol width, repair budget, seeds, ordering, warmup/repetition counts, severity and timing. The config selects component build features alongside component references. I derives the native bindings and diagnostic build requirements. E captures actual common build and runtime conditions.
 
-Optional storage settings belong in the same file:
-
-```toml
-[run]
-report = "reports" # human-readable reports
-output = "runs"    # temporary execution evidence
-cache = ".fountain-eval"
-```
-
-The defaults are the paths above, relative to the config. Set `run.report` to the folder where you want to read reports. Every completed test reserves a unique `<report>/<run-id>/` directory and writes exactly one `report.md` containing every C. Raw evidence is temporary under `<output>/<run-id>/` and is deleted after verified report publication; per-batch cache files under `<cache>/<run-id>/` are removed at the same time. These directories serve different purposes. Report paths do not affect E or comparability. Normal execution never overwrites an existing report. Explicit `report --replace` can update the layout of the same historical run. The original config and its resolved request/settings are retained in the report index. Their location and comments do not affect experiment equality.
+Storage paths are fixed by the workspace. The original config and its resolved settings are retained in the result and report index. Their location and comments do not affect experiment equality.
 
 `prepare` leaves a pending workspace and its frozen cache, without publishing a final report. Its JSON response contains `prepared` and `batch`. Prepared execution consumes those inputs without rereading the original config:
 
@@ -172,7 +185,7 @@ PREPARED=$(python3 -c 'import json; print(json.load(open("prepared.json"))["prep
 feval run --prepared "$PREPARED"
 ```
 
-The pending workspace is single-use: after the run publishes its report, both that workspace and its cache are removed. Its output directory comes from the frozen configuration. Current runtime conditions are observed again; the prepared native binary requires its original CPU and OS family. `--prepared` cannot be combined with `--config`.
+A pending preparation can be consumed once. `run --prepared` writes a normal result under `results/`. Generating its report removes both the run and consumed preparation data by default. Prepared binaries require the original CPU and OS family. `--prepared` and `--config` are mutually exclusive.
 
 ## What the formal content runs
 
@@ -195,33 +208,22 @@ Crashes, timeouts, build conflicts, malformed evidence and missing applicable re
 
 ## Reading results and comparing
 
-A normal run automatically writes **one Markdown report for the entire batch**:
+`feval run` seals the entire batch under `results/<result-id>/` and prints the ID. `feval report <result-id>` generates **one Markdown file for the entire batch** at `reports/<result-id>/report.md` in the active workspace. After verified publication, it removes the raw result and its private build cache. Use `--keep` to retain that data, including any consumed preparation. The same result ID can be reported again while its raw result is available.
 
-```text
-reports/
-  <run-id>/
-    report.md
-```
-
-The terminal prints the report path and confirms cleanup. With `--json`, the response contains `report` and `batch`. No HTML/CSV files, per-C reports or permanent raw result directories are generated.
+Result IDs use the UTC start time in `YYYY-MM-DD_HH-MM-SSZ` format. A collision adds a numeric suffix starting at `-2`. The report uses the same ID.
 
 ```bash
-REPORT=$(python3 -c 'import json; print(json.load(open("run.json"))["report"])')
-# Verify and read the saved Markdown file:
-feval report "$REPORT"
-# Read its compact structured result index for automation:
+feval run --json > run.json
+RESULT=$(python3 -c 'import json; print(json.load(open("run.json"))["result"])')
+feval report "$RESULT" --keep --json > report-path.json
+REPORT=$(python3 -c 'import json; print(json.load(open("report-path.json"))["report"])')
 feval report "$REPORT" --json
-# Select one C from each report; a single-C report needs no selector:
 feval compare "$REPORT#C0" /path/to/candidate/report.md#C0 > comparison.md
-# Migrate an existing raw batch without repeating measurements:
-feval report /path/to/runs/run-id --output ./reports
-# Update an existing report for that same run, then clean its raw batch:
-feval report /path/to/runs/run-id --output ./reports --replace
 ```
 
-The report opens with component outcomes, fatal errors and grouped semantic warnings. Its performance tables show source-equivalent codec throughput at K=512/5008 and B=128/1016, plan construction and operation-list clone time, dominant diagnostic stages and seven core operations in ns/call. A dagger flags a displayed median with CV above 10%. Coverage counts explain skipped and unfinished work.
+The `run --json` response contains `result` and `batch`. Use the printed ID even when a run exits with a component failure. `report --json` emits `report` and `result_id` when generating from a raw result. Pass a published Markdown path to display the report or read its stored index with `--json`. Relative report and comparison paths are resolved from the active workspace root. Multi-C comparisons use the `#C<N>` selector. Single-C reports can be passed directly.
 
-`feval report REPORT.md` prints the readable summary. To refresh an older report in place, run `feval report REPORT.md --output REPORT_ROOT --replace`. The renderer reads the verified result index, so refreshing the layout also works after cache cleanup. `feval report REPORT.md --json` returns every case and diagnostic, and `feval compare LEFT RIGHT --json` returns all validated comparison rows.
+The report opens with component outcomes, fatal errors and grouped semantic warnings. Its performance tables show source-equivalent codec throughput at K=512/5008 and B=128/1016, plan construction and operation-list clone time, dominant diagnostic stages and seven core operations in ns/call. A dagger flags a displayed median with CV above 10%. Coverage counts explain skipped and unfinished work.
 
 The file includes a checksummed, compressed result index in a Markdown comment. It contains the original config, C/I/T/E, resolved test plan, build/source provenance, complete per-case coverage, correctness findings, grouped warning observations, aggregate performance results and per-metric diagnostic summaries. It contains no individual timing samples or raw log files. This index keeps `report`, `compare` usable after cleanup. Visible text and the index are checked together; checksums detect changes, not authenticate a publisher. `report --json` exposes the index without creating another file. Removing it disables structured reading and comparison.
 
@@ -229,9 +231,9 @@ The file includes a checksummed, compressed result index in a Markdown comment. 
 
 ## Evidence, failures and retention
 
-During execution the workspace contains configuration, plan, source/build provenance, validation, raw samples, diagnostics and subprocess logs. On completion the framework verifies these inputs, publishes the single Markdown file atomically, reads it back, then removes that invocation's raw batch, source snapshots, native build products and cache, including a consumed preparation workspace. C entries share cache only during that invocation; subsequent runs build afresh. The same rule applies to successful, failed, unsupported and interrupted batches. Their completed prefixes, errors, warning findings and exact coverage remain in the report; failed runs never become passes. Failure diagnostics retain labelled excerpts where needed. Large byte-array assertions retain lengths, the first differing offset/values, total differing offsets, short prefixes and SHA-256 hashes instead of full payload dumps.
+Each run retains its config, plan, provenance, validation, samples, diagnostics and subprocess logs. This includes completed prefixes from failed, unsupported and interrupted batches. Their report preserves outcome, errors, warnings and exact coverage. Large byte-array assertions retain lengths, the first differing offset and values, the total number of differences, short prefixes and SHA-256 hashes.
 
-A write, verification or cleanup failure is reported explicitly. Unpublished evidence is retained; it is never discarded to make an attempt appear successful. Cleanup rejects report/cache overlap and evidence changed after publication. Cleanup uses ownership records and exclusive workspace locks. User config/source trees, other active or pending invocations, prior reports and system-wide Cargo/Rust installations are untouched. Empty storage roots are removed. `report --output DIR` provides explicit recovery after a failed publication. Without durable output, `report` only reads and does not clean its input.
+`report` verifies the sealed result and reads back the published Markdown before cleaning raw data. A publication or verification error retains the raw result. A cleanup error identifies the affected paths. Cleanup uses result ownership and locks so other runs and preparations can continue. `clean` and explicit directory reset require exclusive access to the workspace. Keep the result with `--keep` when you need its individual samples or full logs.
 
 | Exit | Meaning |
 |---|---|
@@ -241,7 +243,7 @@ A write, verification or cleanup failure is reported explicitly. Unpublished evi
 | 4 | At least one failed or unexecuted C; inspect every batch entry |
 | 130 | Interrupted run |
 
-Start failures with the report outcome, fatal findings and the diagnostic excerpts in the result index. Incomplete/corrupt build entries fail without rebuilding or retrying silently. A completed failed run cleans its cache after recording the failure; a pending preparation with a corrupt cache fails without silently rebuilding. The CLI never uploads or archives results. A verified Markdown report is the retained result; all of its temporary run records and cache are removed automatically. Default reports/results/caches are ignored by Git; custom storage outside those directories is the user's responsibility.
+Start failures with the component outcome, fatal findings and diagnostic excerpts in the report index. A preparation with a corrupt cache fails explicitly. Execution and publication are local operations. The verified Markdown report survives cleanup and can be shared as a single file.
 
 ## Maintainer references
 

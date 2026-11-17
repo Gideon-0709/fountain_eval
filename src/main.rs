@@ -1,9 +1,6 @@
 use clap::{Args, Parser, Subcommand};
 use fountain_eval::{
-    batch, catalog,
-    config::{Configuration, DEFAULT_CONFIG_NAME},
-    evidence, runner,
-    util::Result,
+    artifact, batch, catalog, evidence, progress, runner, util::Result, workspace::Workspace,
 };
 use serde_json::json;
 use std::{
@@ -23,13 +20,23 @@ struct Cli {
 }
 #[derive(Args)]
 struct Input {
-    #[arg(long, default_value = DEFAULT_CONFIG_NAME)]
-    config: PathBuf,
+    /// Configuration inside the active workspace. Defaults to fountain-eval.toml.
+    #[arg(long)]
+    config: Option<PathBuf>,
 }
 #[derive(Subcommand)]
 enum Command {
-    /// Create an editable fountain-eval.toml in the current directory.
-    Init,
+    /// Create and activate a workspace.
+    Init {
+        /// Empty this existing directory before initializing it. Omit to create ./feval_workspace.
+        directory: Option<PathBuf>,
+    },
+    /// Select the workspace for subsequent commands.
+    Activate { directory: PathBuf },
+    /// Print the active workspace path.
+    Workspace,
+    /// Clear results and temporary data from the active workspace.
+    Clean,
     /// Offline configuration and local declaration checks.
     Inspect(Input),
     /// List the full test content and interface registrations.
@@ -52,17 +59,14 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Read a sealed result including warnings and complete coverage.
+    /// Generate a Markdown report from a sealed result, or read a published report.
     Report {
-        run: PathBuf,
-        /// Export to `OUTPUT/<run-id>/report.md` instead of stdout.
+        result: PathBuf,
+        /// Keep the raw result after publishing its report.
         #[arg(long)]
-        output: Option<PathBuf>,
-        /// Replace the existing report for this exact run after verification.
-        #[arg(long, requires = "output")]
-        replace: bool,
-        /// Read the compact result index instead of Markdown.
-        #[arg(long, conflicts_with = "output")]
+        keep: bool,
+        /// Emit the published report path or the stored report index as JSON.
+        #[arg(long)]
         json: bool,
     },
     /// Compare common measured cases and report coverage differences.
@@ -84,25 +88,47 @@ fn emit(value: &impl serde::Serialize) -> Result<()> {
     serde_json::to_writer_pretty(&mut out, value).map_err(|e| e.to_string())?;
     writeln!(out).map_err(|e| e.to_string())
 }
-fn outcome(report: PathBuf, record: batch::Record, machine: bool) -> Result<u8> {
+fn outcome(path: PathBuf, record: batch::Record, machine: bool) -> Result<u8> {
     let code = batch::exit_code(&record);
     if machine {
         if record.action == "prepare" {
-            emit(&json!({"prepared":report,"batch":record}))?;
+            emit(&json!({"prepared":path,"batch":record}))?;
         } else {
-            emit(&json!({"report":report,"batch":record}))?;
+            emit(&json!({"result":path,"batch":record}))?;
         }
     } else {
-        emit_text(&fountain_eval::progress::summary(&record, &report))?;
+        emit_text(&progress::summary(&record, &path))?;
     }
     Ok(code)
 }
 fn execute(command: Command) -> Result<u8> {
     match command {
-        Command::Init => {
-            let dir = std::env::current_dir().map_err(|e| e.to_string())?;
-            let path = Configuration::initialize(&dir)?;
-            emit_text(&format!("Created {}\n", path.display()))?;
+        Command::Init { directory } => {
+            let workspace = Workspace::initialize(directory.as_deref())?;
+            emit_text(&format!(
+                "Initialized and activated {}\n",
+                workspace.root().display()
+            ))?;
+            Ok(0)
+        }
+        Command::Activate { directory } => {
+            let workspace = Workspace::activate(&directory)?;
+            emit_text(&format!("Activated {}\n", workspace.root().display()))?;
+            Ok(0)
+        }
+        Command::Workspace => {
+            let workspace = Workspace::active()?;
+            let _guard = workspace.lock()?;
+            emit_text(&format!("{}\n", workspace.root().display()))?;
+            Ok(0)
+        }
+        Command::Clean => {
+            let workspace = Workspace::active()?;
+            workspace.clean()?;
+            emit_text(&format!(
+                "Cleared results and temporary data in {}\n",
+                workspace.root().display()
+            ))?;
             Ok(0)
         }
         Command::List => {
@@ -110,7 +136,9 @@ fn execute(command: Command) -> Result<u8> {
             Ok(0)
         }
         Command::Inspect(input) => {
-            let configuration = Configuration::load(&input.config)?;
+            let workspace = Workspace::active()?;
+            let _guard = workspace.lock()?;
+            let configuration = workspace.configuration(input.config.as_deref())?;
             let reports: Vec<_> = configuration
                 .selections
                 .iter()
@@ -123,8 +151,12 @@ fn execute(command: Command) -> Result<u8> {
             Ok(if failed { 2 } else { 0 })
         }
         Command::Prepare { input, json } => {
-            fountain_eval::progress::set_enabled(true);
-            let (path, record) = batch::run(Configuration::load(&input.config)?, true)?;
+            let workspace = Workspace::active()?;
+            let _guard = workspace.lock()?;
+            progress::set_enabled(true);
+            progress::line(format!("Workspace: {}", workspace.root().display()));
+            let (path, record) =
+                batch::run(workspace.configuration(input.config.as_deref())?, true)?;
             outcome(path, record, json)
         }
         Command::Run {
@@ -132,62 +164,50 @@ fn execute(command: Command) -> Result<u8> {
             prepared,
             json,
         } => {
-            fountain_eval::progress::set_enabled(true);
+            let workspace = Workspace::active()?;
+            let _guard = workspace.lock()?;
+            progress::set_enabled(true);
+            progress::line(format!("Workspace: {}", workspace.root().display()));
             let (path, record) = if let Some(path) = prepared {
-                batch::from_prepared(&path)?
+                batch::from_prepared_in(&workspace.prepared_input(&path)?, Some(workspace.root()))?
             } else {
-                batch::run(Configuration::load(&input.config)?, false)?
+                batch::run(workspace.configuration(input.config.as_deref())?, false)?
             };
             outcome(path, record, json)
         }
-        Command::Report {
-            run,
-            output,
-            replace,
-            json,
-        } => {
-            let run = run.canonicalize().map_err(|e| e.to_string())?;
-            let (body, saved, raw) = if run.is_file() || run.join("report.md").is_file() {
-                let (_, saved) = fountain_eval::artifact::load(&run)?;
-                (fountain_eval::report::snapshot(&saved), saved, false)
-            } else if run.join("batch.json").is_file() {
-                let saved = fountain_eval::artifact::Snapshot::capture(&run)?;
-                let body = fountain_eval::report::snapshot(&saved);
-                (body, saved, true)
-            } else {
-                if output.is_some() || replace || json {
-                    return Err(
-                        "use the complete batch to publish, clean or inspect a stored result"
-                            .into(),
-                    );
+        Command::Report { result, keep, json } => {
+            let workspace = Workspace::active()?;
+            let _guard = workspace.lock()?;
+            let path = workspace.root().join(&result);
+            if path.extension().is_some_and(|extension| extension == "md")
+                || path.join("report.md").is_file()
+            {
+                if keep {
+                    return Err("--keep applies when generating a report from a run result".into());
                 }
-                let r = evidence::load(&run)?;
-                let text = fountain_eval::report::markdown(&r);
-                emit_text(&text)?;
-                return Ok(0);
-            };
-            if json {
-                emit(&saved)?;
-            } else if let Some(root) = output {
-                let directory = if replace {
-                    root.join(&saved.batch.run_id)
+                let (body, saved) = artifact::load(&path)?;
+                if json {
+                    emit(&saved)?;
                 } else {
-                    fountain_eval::artifact::reserve(&root, &saved.batch.run_id)?
-                };
-                let report = fountain_eval::artifact::publish(&directory, &body, &saved, replace)?;
-                if raw {
-                    fountain_eval::artifact::cleanup(&run, &report)?;
+                    emit_text(&body)?;
                 }
-                emit_text(&format!("{}\n", report.display()))?;
             } else {
-                emit_text(&body)?;
+                let raw = workspace.result_input(&result)?;
+                let report = artifact::generate(&raw, &workspace.reports(), keep)?;
+                if json {
+                    emit(&json!({"report":report,"result_id":raw.file_name()}))?;
+                } else {
+                    emit_text(&format!("Report: {}\n", report.display()))?;
+                }
             }
             Ok(0)
         }
         Command::Compare { left, right, json } => {
+            let workspace = Workspace::active()?;
+            let _guard = workspace.lock()?;
             let r = evidence::compare_summaries(
-                &fountain_eval::artifact::select(&left)?,
-                &fountain_eval::artifact::select(&right)?,
+                &artifact::select(&workspace.root().join(left))?,
+                &artifact::select(&workspace.root().join(right))?,
             )?;
             if json {
                 emit(&r)?;

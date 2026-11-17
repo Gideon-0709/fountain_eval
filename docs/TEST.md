@@ -43,7 +43,7 @@ A warning cannot be promoted to fatal merely because two operators disagree. It 
 
 Reference-matching and reference-deviating implementations are both timed. The framework does not equalize their internal work, suppress a fast no-op result, or reject a comparison solely because warning observations differ.
 
-A fatal validation stops measurement for the affected C; other configured C entries still execute. Completed checks and unfinished cases remain visible in the final report index. Temporary evidence and the invocation-owned cache are cleaned after verified report publication. No automatic retry, enlarged repair budget or relaxed timeout turns that attempt into a pass.
+A fatal validation stops measurement for the affected C; other configured C entries still execute. Completed checks and unfinished cases remain visible in the final report index. No automatic retry, enlarged repair budget or relaxed timeout turns that attempt into a pass.
 
 ## Validation tests (V01–V11)
 
@@ -348,7 +348,7 @@ Warnings do not change denominators. A boundary call that returns immediately st
 
 ### Deliverables
 
-The framework automatically produces one Markdown report for the entire configured batch. It embeds every C, groups results by test category, and separates execution wall time from benchmark time. The retained report index preserves validated aggregate results and exact per-case coverage; temporary observations are cleaned after publication. The report is derived from that evidence and is readable locally without uploading component information or results.
+The Markdown report for a selected run includes every C, groups results by test category, and separates execution wall time from benchmark time. Its index preserves validated aggregate results and exact per-case coverage.
 
 The retained index includes completed codec validation observations, bounded regression evidence and observed work/digest summaries. Comparison exposes when the offered stream, consumed counts or recorded trace differ across C entries. The [artifact contracts](../specs/README.md) define temporary execution evidence and the retained Markdown result index. `result.json`, raw samples, logs and build cache are working files, not additional final reports. Framework checks detect missing observations, inconsistent work counts and invalid diagnostic accounting before cleanup.
 

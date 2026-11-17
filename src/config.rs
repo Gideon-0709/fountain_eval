@@ -33,7 +33,7 @@ struct Input {
     scheme: SchemeInput,
     test: String,
     #[serde(default)]
-    run: RunSettings,
+    run: Option<RunSettings>,
 }
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
@@ -120,6 +120,8 @@ pub struct Configuration {
     pub digest: String,
     pub selections: Vec<Selection>,
     pub run: RunSettings,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<PathBuf>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Selection {
@@ -139,14 +141,11 @@ pub struct RunConfiguration {
 }
 impl Configuration {
     /// Write an editable starter configuration into the given directory.
-    pub fn initialize(directory: &Path) -> Result<PathBuf> {
+    pub(crate) fn initialize(directory: &Path) -> Result<PathBuf> {
         let path = directory.join(DEFAULT_CONFIG_NAME);
         let mut file = fs::File::create_new(&path).map_err(|e| {
             if e.kind() == ErrorKind::AlreadyExists {
-                format!(
-                    "{} already exists. Edit that file or run feval init in another directory.",
-                    path.display()
-                )
+                format!("configuration already exists: {}", path.display())
             } else {
                 format!("cannot create configuration {}: {e}", path.display())
             }
@@ -181,15 +180,34 @@ impl Configuration {
         }
     }
     pub fn load(path: &Path) -> Result<Self> {
+        Self::load_at(path, None)
+    }
+    pub(crate) fn load_at(path: &Path, workspace: Option<PathBuf>) -> Result<Self> {
         let path = path
             .canonicalize()
             .map_err(|e| format!("configuration {}: {e}", path.display()))?;
         let original = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-        Self::parse(path, original)
+        Self::parse_at(path, original, workspace)
     }
     pub fn parse(path: PathBuf, original: String) -> Result<Self> {
+        Self::parse_at(path, original, None)
+    }
+    pub(crate) fn reparse(&self) -> Result<Self> {
+        Self::parse_at(
+            self.path.clone(),
+            self.original.clone(),
+            self.workspace.clone(),
+        )
+    }
+    fn parse_at(path: PathBuf, original: String, workspace: Option<PathBuf>) -> Result<Self> {
         if !path.is_absolute() {
             return Err("configuration location must be absolute".into());
+        }
+        if workspace
+            .as_ref()
+            .is_some_and(|root| !root.is_absolute() || !path.starts_with(root))
+        {
+            return Err("configuration must be inside its workspace".into());
         }
         let input: Input = toml::from_str(&original).map_err(|e| format!("configuration: {e}"))?;
         let scheme = match input.scheme {
@@ -261,15 +279,22 @@ impl Configuration {
                 },
             })
             .collect();
-        let run = RunSettings {
-            report: input
-                .run
-                .report
-                .as_deref()
-                .map(|p| resolve(base, p))
-                .transpose()?,
-            output: resolve(base, &input.run.output)?,
-            cache: resolve(base, &input.run.cache)?,
+        let run = if let Some(root) = &workspace {
+            if input.run.is_some() {
+                return Err("The active workspace manages storage. Remove the [run] section from the config.".into());
+            }
+            crate::workspace::storage(root)
+        } else {
+            let settings = input.run.unwrap_or_default();
+            RunSettings {
+                report: settings
+                    .report
+                    .as_deref()
+                    .map(|p| resolve(base, p))
+                    .transpose()?,
+                output: resolve(base, &settings.output)?,
+                cache: resolve(base, &settings.cache)?,
+            }
         };
         Ok(Self {
             path,
@@ -277,6 +302,7 @@ impl Configuration {
             original,
             selections,
             run,
+            workspace,
         })
     }
 }

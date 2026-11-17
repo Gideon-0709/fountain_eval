@@ -10,6 +10,3 @@ operator0 = { source = "registry:fountain_operators@2.0.0#SlabDataOperator", fea
 # Resolve relative paths from this file's directory.
 engine1 = "registry:fountain_engine@2.1.0"
 operator1 = "path:../fountain-arena-operator#MemoryDataOperator"
-
-[run]
-report = "report"

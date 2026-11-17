@@ -10,13 +10,15 @@ fn failures(t: &Temp, prepare: bool) -> (std::path::PathBuf, batch::Record) {
     batch::run(Configuration::load(&path).unwrap(), prepare).unwrap()
 }
 #[test]
-fn independent_failures_continue_and_automatic_reports_retain_each_c() {
+fn independent_failures_continue_and_explicit_reports_retain_each_c() {
     let t = Temp::new();
-    let (path, r) = failures(&t, false);
+    let (raw, r) = failures(&t, false);
     assert_eq!(r.status, "completed_with_failures");
     assert_eq!(batch::exit_code(&r), 4);
     assert_eq!(r.entries.len(), 2);
-    let (body, saved) = artifact::load(&path).unwrap();
+    assert!(!t.0.join("reports").exists());
+    let path = artifact::generate(&raw, &t.0.join("reports"), false).unwrap();
+    let (_, saved) = artifact::load(&path).unwrap();
     assert_eq!(saved.components.len(), 2);
     for c in &saved.components {
         assert_eq!(c.status, "failed");
@@ -31,12 +33,6 @@ fn independent_failures_continue_and_automatic_reports_retain_each_c() {
     );
     assert!(!r.configuration.run.output.join(&r.run_id).exists());
     assert!(!r.configuration.run.cache.exists());
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_feval"))
-        .args(["report", path.to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert!(output.status.success());
-    assert_eq!(String::from_utf8(output.stdout).unwrap(), body);
     assert!(artifact::load(&path).is_ok());
     std::fs::write(&path, report.replace("Key findings", "Changed findings")).unwrap();
     assert!(artifact::load(&path).is_err());
@@ -52,18 +48,26 @@ fn prepared_failures_are_not_retried_and_their_provenance_is_retained() {
             .iter()
             .all(|e| e.status == "not_executed" && e.elapsed_ns.is_none() && e.directory.is_none())
     );
-    let (_, saved) = artifact::load(&second).unwrap();
+    assert!(first.is_dir());
+    assert!(
+        batch::from_prepared(&first)
+            .unwrap_err()
+            .contains("consumed")
+    );
+    let report = artifact::generate(&second, &t.0.join("reports"), false).unwrap();
+    let (_, saved) = artifact::load(&report).unwrap();
     let origin = saved.prepared_from.unwrap();
     assert_eq!(origin["entries"][0]["status"], "failed");
     assert!(origin["entries"][0]["error"].is_string());
     assert!(!first.exists());
     assert!(!t.0.join(".fountain-eval").exists());
-    assert!(artifact::load(&second).is_ok());
+    assert!(artifact::load(&report).is_ok());
 }
 #[test]
 fn report_rejects_component_identity_and_count_changes() {
     let t = Temp::new();
-    let (path, _) = failures(&t, false);
+    let (raw, _) = failures(&t, false);
+    let path = artifact::generate(&raw, &t.0.join("reports"), false).unwrap();
     let (text, saved) = artifact::load(&path).unwrap();
     for field in ["samples", "skipped", "component_id", "elapsed_ns"] {
         let mut v = serde_json::to_value(&saved).unwrap();
@@ -87,13 +91,21 @@ fn interrupt_stops_the_batch_and_leaves_later_c_unexecuted() {
         time::{Duration, Instant},
     };
     let t = Temp::new();
+    let feval = || {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_feval"));
+        command
+            .current_dir(&t.0)
+            .env("XDG_STATE_HOME", t.0.join("state"));
+        command
+    };
+    assert!(feval().arg("init").output().unwrap().status.success());
     let config = t.write(
-        "eval.toml",
+        "feval_workspace/fountain-eval.toml",
         "engine0=\"git+https://example.invalid/engine.git?package=fountain_engine&rev=1111111111111111111111111111111111111111\"\nengine1=\"path:missing1\"\nscheme=\"rq\"\ntest=\"0.1.0\"\n",
     );
     let git = t.write("bin/git", "#!/bin/sh\nexec sleep 60\n");
     std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_feval"))
+    let mut child = feval()
         .args(["run", "--config", config.to_str().unwrap()])
         .env(
             "PATH",
@@ -111,7 +123,7 @@ fn interrupt_stops_the_batch_and_leaves_later_c_unexecuted() {
     let root = loop {
         assert!(Instant::now() < deadline, "child did not enter its first C");
         assert!(child.try_wait().unwrap().is_none());
-        let found = std::fs::read_dir(t.0.join("runs"))
+        let found = std::fs::read_dir(t.0.join("feval_workspace/results"))
             .ok()
             .and_then(|mut paths| paths.next())
             .and_then(Result::ok)
@@ -129,6 +141,20 @@ fn interrupt_stops_the_batch_and_leaves_later_c_unexecuted() {
         thread::sleep(Duration::from_millis(20));
     };
     assert!(
+        String::from_utf8_lossy(&feval().arg("clean").output().unwrap().stderr)
+            .contains("workspace is in use")
+    );
+    assert!(
+        String::from_utf8_lossy(
+            &feval()
+                .args(["init", "feval_workspace"])
+                .output()
+                .unwrap()
+                .stderr
+        )
+        .contains("workspace is in use")
+    );
+    assert!(
         Command::new("kill")
             .args(["-INT", &child.id().to_string()])
             .status()
@@ -142,10 +168,20 @@ fn interrupt_stops_the_batch_and_leaves_later_c_unexecuted() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    assert!(root.exists());
+    let id = root.file_name().unwrap().to_str().unwrap();
+    assert!(
+        feval()
+            .args(["report", id])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
     assert!(!root.exists());
     let report =
-        t.0.join("reports")
-            .join(root.file_name().unwrap())
+        t.0.join("feval_workspace/reports")
+            .join(id)
             .join("report.md");
     let (_, saved) = artifact::load(&report).unwrap();
     let record = saved.batch;
@@ -174,10 +210,12 @@ fn one_batch_never_cleans_another_preparation_and_busy_preparation_is_rejected()
             .unwrap_err()
             .contains("in use")
     );
-    let (report, _) = failures(&t, false);
+    let (raw, _) = failures(&t, false);
+    let report = artifact::generate(&raw, &t.0.join("reports"), false).unwrap();
     assert!(report.is_file() && pending.is_dir() && cache.is_dir());
     drop(lock);
-    let (report, _) = batch::from_prepared(&pending).unwrap();
+    let (raw, _) = batch::from_prepared(&pending).unwrap();
+    let report = artifact::generate(&raw, &t.0.join("reports"), false).unwrap();
     assert!(report.is_file() && !pending.exists() && !cache.exists());
     assert!(!t.0.join("runs").exists());
     assert!(!t.0.join(".fountain-eval").exists());

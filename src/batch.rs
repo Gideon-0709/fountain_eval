@@ -8,7 +8,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
-    fs,
+    fs, io,
     path::{Path, PathBuf},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
@@ -102,7 +102,15 @@ pub fn run(configuration: Configuration, prepare_only: bool) -> Result<(PathBuf,
     execute(configuration, prepare_only, None)
 }
 pub fn from_prepared(path: &Path) -> Result<(PathBuf, Record)> {
+    from_prepared_in(path, None)
+}
+
+/// Consume a preparation, checking its workspace when invoked with an active one.
+pub fn from_prepared_in(path: &Path, workspace: Option<&Path>) -> Result<(PathBuf, Record)> {
     let lease = crate::workspace::Lease::acquire(path)?;
+    if lease.directory.join("consumed.tmp").exists() {
+        return Err("this preparation was already consumed; run feval prepare again".into());
+    }
     let mut components = BTreeMap::new();
     let old = load_with_children(&lease.directory, |entry, _, child| {
         if entry.status == "prepared" {
@@ -113,6 +121,13 @@ pub fn from_prepared(path: &Path) -> Result<(PathBuf, Record)> {
     let origin = util::file_hash(&lease.directory.join("seal.json"))?;
     if old.action != "prepare" {
         return Err("expected a prepared batch".into());
+    }
+    if workspace.is_some_and(|root| old.configuration.workspace.as_deref() != Some(root))
+        || old.configuration.workspace.as_ref().is_some_and(|root| {
+            lease.directory.parent() != Some(&crate::workspace::prepared_root(root))
+        })
+    {
+        return Err("preparation does not belong to this workspace".into());
     }
     execute(
         old.configuration.clone(),
@@ -134,12 +149,8 @@ fn execute(
     let started = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|e| e.to_string())?;
-    let id = format!("{}-{}", started.as_nanos(), std::process::id());
-    let directory = configuration.run.output.join(&id);
-    fs::create_dir_all(&configuration.run.output).map_err(|e| e.to_string())?;
-    fs::create_dir(&directory).map_err(|e| e.to_string())?;
-    let directory = directory.canonicalize().map_err(|e| e.to_string())?;
-    let lease = crate::workspace::Lease::acquire(&directory)?;
+    let (id, directory) = reserve(&configuration, prepare_only)?;
+    let _lease = crate::workspace::Lease::acquire(&directory)?;
     let cache = if prepared.is_none() {
         Some(crate::workspace::create_cache(
             &directory,
@@ -186,6 +197,11 @@ fn execute(
                 "run_id":old.run_id,"seal":origin,
                 "entries":old.entries,"directory":prepared_lease.directory
             }),
+        )?;
+        // This marker is outside the preparation's seal and protected by its lease.
+        util::write_json(
+            &prepared_lease.directory.join("consumed.tmp"),
+            &record.run_id,
         )?;
     }
     checkpoint(&directory, &record)?;
@@ -264,29 +280,51 @@ fn execute(
     record.status = status(&record.entries, prepare_only, record.interrupted);
     record.elapsed_ns = clock.elapsed().as_nanos() as u64;
     checkpoint(&directory, &record)?;
-    if !prepare_only {
-        crate::progress::publication();
-    }
     evidence::seal(&directory)?;
     if prepare_only {
         crate::progress::line(
             "READY   Frozen workspace retained for run --prepared; no final report yet",
         );
-        return Ok((directory, record));
+    } else {
+        crate::progress::line("READY   Sealed results saved for feval report");
     }
-    crate::progress::line("REPORT  Writing Markdown report and sealing evidence");
-    let report_directory =
-        crate::artifact::reserve(&record.configuration.report_root(), &record.run_id)?;
-    let saved = crate::artifact::Snapshot::capture(&directory)?;
-    let body = crate::report::snapshot(&saved);
-    let report = crate::artifact::publish(&report_directory, &body, &saved, false)?;
-    let mut held = vec![&lease];
-    if let Some((_, _, _, prepared_lease)) = &prepared {
-        held.push(prepared_lease);
+    Ok((directory, record))
+}
+
+fn reserve(configuration: &Configuration, prepare: bool) -> Result<(String, PathBuf)> {
+    let output = if prepare && let Some(root) = &configuration.workspace {
+        crate::workspace::prepared_root(root)
+    } else {
+        configuration.run.output.clone()
+    };
+    fs::create_dir_all(&output).map_err(|e| e.to_string())?;
+    let date = process::output("date", &["-u", "+%Y-%m-%d_%H-%M-%SZ"])?;
+    let kind = if prepare { "-prepare" } else { "" };
+    let base = format!("{}{kind}", date.trim());
+    if !crate::artifact::valid_run_id(&base) {
+        return Err("could not construct a run identifier from the system clock".into());
     }
-    crate::artifact::cleanup_held(&directory, &report, &held)?;
-    crate::progress::line("REPORT  Verified Markdown report; run records and build cache removed");
-    Ok((report, record))
+    let reports = configuration.report_root();
+    for sequence in 1u64.. {
+        let id = if sequence == 1 {
+            base.clone()
+        } else {
+            format!("{base}-{sequence}")
+        };
+        let path = output.join(&id);
+        match fs::create_dir(&path) {
+            Ok(()) => {
+                if reports.join(&id).exists() || configuration.run.cache.join(&id).exists() {
+                    fs::remove_dir(&path).map_err(|e| e.to_string())?;
+                    continue;
+                }
+                return Ok((id, path.canonicalize().map_err(|e| e.to_string())?));
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("cannot create batch {}: {e}", path.display())),
+        }
+    }
+    unreachable!("unbounded run identifier sequence")
 }
 fn checkpoint(directory: &Path, record: &Record) -> Result<()> {
     fs::write(
@@ -330,10 +368,7 @@ pub(crate) fn load_with_children(
     if record.format_version != 1 || !matches!(record.action.as_str(), "run" | "prepare") {
         return Err("unsupported batch record".into());
     }
-    let parsed = Configuration::parse(
-        record.configuration.path.clone(),
-        record.configuration.original.clone(),
-    )?;
+    let parsed = record.configuration.reparse()?;
     if util::digest(&parsed) != util::digest(&record.configuration)
         || record.entries.len() != parsed.selections.len()
     {

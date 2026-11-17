@@ -12,7 +12,8 @@ The execution sequence is:
 4. Generate an isolated Cargo build view, check version constraints, build, and probe the actual process/library.
 5. Validate fixed test inputs independently of the tested operator's arithmetic, then collect the prescribed samples.
 6. Seal a unique local result, preserving any failure stage and partial evidence.
-7. Compare only complete results with compatible identities and conditions.
+7. Publish the selected result with `report` and optionally retain its raw evidence.
+8. Compare only complete results with compatible identities and conditions.
 
 `prepare` stops after step 4. `run --prepared` repeats steps 5–6 against that fixed input, observing current runtime conditions. Offline `inspect` only reads declarations; it is not a shortened correctness gate.
 
@@ -48,7 +49,8 @@ flowchart TD
   View --> Product[Product shared library when selected]
   Product --> Driver
   Driver --> Evidence[Validation, raw samples and sealed results]
-  Evidence --> Compare[T/E and I-equivalence checks]
+  Evidence --> Report[Explicit Markdown publication]
+  Report --> Compare[T/E and I-equivalence checks]
 ```
 
 Component authors keep their normal repositories and Cargo manifests. They do not copy code into eval, write target manifests, select I, or manually reproduce K/width/repair settings. Changes to registered package identity, workspace layout, features, traits, constructors, operation semantics or product ABI must be communicated to the eval maintainer when the existing mapping cannot compile or preserve the contract.
@@ -57,7 +59,9 @@ A stable trait is necessary but not sufficient: its semantics, lifecycle, requir
 
 ## Configuration and complete test execution
 
-`src/config.rs` is the sole user configuration boundary. The CLI reads `fountain-eval.toml` from the current directory by default. An explicit `--config` selects another file. The config contains engine/operator references, a scheme name or detailed source selection, the complete content version, and optional storage paths. Relative paths use the config directory. Unknown fields and user case filters are rejected. All settings are normalized once and stored before execution. Prepared execution uses the stored configuration.
+The workspace owns the default config and all run storage. `init` creates and activates a new `feval_workspace` or empties and initializes a supplied existing directory. `activate` persists the canonical workspace path in user state. Each command resolves this path once. Shared directory locks allow concurrent evaluations. `clean` and explicit reset require an exclusive workspace lock.
+
+`src/config.rs` is the user configuration boundary. The CLI reads the active workspace's `fountain-eval.toml` or another workspace file named by `--config`. The config contains component references, scheme selection and the complete content version. Relative component paths use the config directory. Storage paths are derived from the workspace. Unknown fields and user case filters are rejected. The normalized configuration is sealed before execution. Prepared execution uses the stored configuration.
 
 Config is an input to `(C,I,T,E)`, not an additional identity axis. Raw text, comments and filesystem location do not participate in experiment equality. Scheme implementation changes belong to C; the requested scheme algorithm/mode belongs to E. Each operator reference identifies its Rust type in the selected crate. Requested engine/operator Cargo features and default-feature settings belong to C. T owns workload parameters and severity. I owns invocation and diagnostic build requirements. Source forms (path/Git/registry) are independent of invocation forms (Rust API/product ABI).
 
@@ -79,21 +83,15 @@ Operator-only selections execute the pure-operator surface. Their actual engine 
 
 The full original configuration is retained in both the batch and derived per-C inputs. Each C retains its own C/I/T/E, status, coverage and evidence seal. Sharing a batch does not establish comparability: `compare` selects two component results and applies the ordinary compatibility checks.
 
-## Automatic reports and completion time
+## Run results, report publication and completion time
 
-The reporting destination is configured by optional `[run].report`, defaulting to `reports` relative to the configuration file. Each completed execution reserves `<report>/<run-id>/` at publication and publishes exactly one `report.md` containing all Cs. The destination cannot overwrite an existing run. Human reports use Markdown only. `report` can regenerate a view from sealed evidence; `--output` places it under a new report root without repeating measurements.
+Execution returns the batch status and sealed result directory `results/<result-id>/`. The `report` command takes a result ID or path, validates the full evidence and publishes `reports/<result-id>/report.md` with one section per C. Concurrent attempts to publish the same run are serialized by its result lease. Re-publication while raw data remains is allowed only for the same source seal.
 
-Raw execution evidence under `[run].output` is a temporary workspace. Publication first validates its seals, full samples, correctness and accounting, then derives the compact result index. `src/artifact.rs` stores that index in the same Markdown file using zlib/base64 in a comment; the checksum covers visible text and index together. It preserves config, resolved plans, identities/build provenance, exact coverage, fatal witnesses, warning variants, aggregate timing statistics and per-metric diagnostic summaries. Individual timing samples and raw logs are excluded. Existing evidence can be rendered into this format without repeating measurement.
+`src/artifact.rs` embeds a zlib/base64 index in a Markdown comment. The checksum covers the visible text and index together. The index preserves config, resolved plans, identities, build provenance, coverage, fatal witnesses, warning variants, aggregate timings and diagnostic summaries. Individual timing samples and raw logs remain in the sealed result. `report` on an existing Markdown report verifies and displays it or exposes the index with `--json`. `compare` selects components using `report.md#C<N>` and checks retained T/E/I, whole-plan aggregate coverage and fatal witnesses.
 
-The renderer takes a verified result index as input for both new runs and historical reports. The visible report gives outcomes, grouped warnings, fixed codec workloads, plan timings, dominant stages, core operator timings and coverage. Complete case data remains available through the structured view. Rendering a shorter body has no effect on test applicability or comparison validation.
+Publication is atomic. After read-back verification, publication rechecks the raw seal and removes that batch, its private cache and any consumed preparation unless `--keep` is supplied. A publication failure preserves the raw result. Cleanup failures name the retained data. The same lifecycle applies to successful, failed, unsupported and interrupted runs.
 
-After atomic publication and read-back verification, cleanup verifies the raw source seal again and removes that batch directory, its private cache and a consumed preparation workspace. Report/cache overlap is rejected. Failed publication preserves the raw workspace; cleanup errors identify the retained report and workspace. Success, failure, unsupported and interrupted outcomes retain their completed results and unexecuted coverage in the Markdown artifact. Normal execution never overwrites a prior report; explicit same-run replacement is atomic.
-
-The batch API returns the report path and batch status for execution, or a pending directory and batch status for preparation. `report` can read the artifact or expose its result index with `--json`. `compare` selects components using `report.md#C<N>` and verifies retained T/E/I, whole-plan aggregate coverage and fatal witnesses. This uses the validated aggregate result, without claiming to revalidate disposed samples. Preparation returns a sealed pending directory rather than a report. Execution exclusively consumes its frozen metadata and cache without reopening the original source workspace; publication then cleans both the prepared and executing directories. Final reports support reading/comparison independently of the removed cache.
-
-Per-C elapsed wall time covers its full invocation, including resolution, construction, validation, measurement, diagnostics and evidence/seal processing. A failed row reports time to failure. Host phase times include orchestration and evidence work within each phase, not just timed driver work. Batch elapsed time includes sequential children and checkpoints, excluding its final seal, report publication and cleanup. Older records retain their original elapsed-time boundary, including the old child report generation. None of these operational durations is an E equality field.
-
-`report` verifies the retained artifact checksum, or verifies batch/child seals when migrating raw evidence. A failed publication retains raw evidence for explicit recovery; report reading/comparison remains independent of cache availability.
+Per-C wall time covers execution phases through the final checkpoint. The batch entry time includes child sealing. The batch total covers the `run` command through evidence collection, with report generation and cleanup performed separately. These times describe progress and are separate from the workload's benchmark clocks.
 
 ## Source freezing and build composition
 
@@ -137,9 +135,9 @@ A C-only change is attributed to the selected component combination, including c
 
 ## Evidence lifecycle and ownership
 
-Each invocation creates a unique output directory. Checkpoints record stage state; failures retain completed phases and sample prefixes until verified report publication. `config.toml` and `config-resolved.json` retain the supplied and normalized input. `test-plan.json` and `coverage.json` account for every registered case. `correctness.json` and the result record distinguish fatal failures from semantic warnings; a successful run with warnings remains eligible for measurement and comparison. Seals detect accidental evidence modification. `report` and `compare` can operate after build cache deletion. Preparation is a pending workspace with a verified, private cache; it does not publish a final report. The subsequent run consumes and cleans that workspace after publication.
+Each invocation creates a unique managed directory. Checkpoints record partial execution and preserve evidence until report publication or explicit cleanup. `config.toml` and `config-resolved.json` retain the supplied and normalized input. `test-plan.json` and `coverage.json` account for every registered case. `correctness.json` distinguishes fatal failures from semantic warnings. Seals detect evidence modification. Preparations retain a verified private cache and can be consumed once. Their output is a normal sealed result.
 
-The CLI does not upload, archive or retry into success. Normal execution preserves existing reports. Verified publication removes its temporary raw batch, owned cache and consumed preparation workspace; explicit same-run report replacement is atomic. Git ignores `runs/` and `.fountain-eval/`. Implementation acceptance artifacts are temporary: maintainers write an acceptance summary, then clean their explicitly identified test work directories. Private source access does not authorize upstream writes.
+`clean` empties `results/`, `.fountain-eval/cache/` and `.fountain-eval/prepared/` while retaining the config and `reports/`. Explicit `init DIR` clears the entire target. Implementation acceptance uses a separate workspace and activation state. Maintainers verify its outcomes before removing its temporary data.
 
 Linux/macOS CI checks the framework and publicly accessible native combinations. Private Arena and monorepo combinations are checked on an authorized local host. Platform coverage is explicit; missing CI credentials do not count as private-component coverage. The formal content and applicability rules are specified in the test guide; an unexecuted private or fatal-blocked combination is not positive coverage.
 
@@ -153,7 +151,7 @@ Linux/macOS CI checks the framework and publicly accessible native combinations.
 | `src/runner.rs` | Offline declaration inspection |
 | `src/source.rs` | Immutable local/Git/registry snapshots and path dependency closure |
 | `src/content.rs` | Pure T-owned expanded case definitions and deterministic matrix |
-| `src/workspace.rs` | Temporary cache ownership, workspace leases and bounded removal |
+| `src/workspace.rs` | Workspace initialization and activation, storage ownership, leases and bounded removal |
 | `src/artifact.rs` | Durable Markdown result index, verified publication, cleanup and component selection |
 | `src/report.rs` | Single Markdown batch/per-C reports and grouped comparison views |
 | `src/catalog.rs` | I/T registrations, supported families and embedded assets |

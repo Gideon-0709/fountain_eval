@@ -21,4 +21,4 @@ pub mod validation;
 
 pub mod report;
 
-mod workspace;
+pub mod workspace;

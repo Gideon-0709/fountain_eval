@@ -216,9 +216,6 @@ pub fn stage(name: &str) -> &'static str {
         _ => "Preparation",
     }
 }
-pub fn publication() {
-    heading("Report · verify and clean");
-}
 pub fn phase_started(name: &str) {
     reset_activity();
     let label = stage(name);
@@ -381,7 +378,7 @@ pub fn component_finished(r: &Record) {
         ));
     }
 }
-pub fn summary(r: &batch::Record, report: &Path) -> String {
+pub fn summary(r: &batch::Record, path: &Path) -> String {
     let mut text = format!(
         "\n━━ Evaluation summary ━━\nRESULT: {} | {:.1} s\n",
         status(&r.status, r.entries.iter().map(|e| e.warnings).sum()),
@@ -401,14 +398,15 @@ pub fn summary(r: &batch::Record, report: &Path) -> String {
         let _ = writeln!(
             text,
             "\nPrepared workspace: {}\nContinue: feval run --prepared '{}'",
-            clean(&report.display().to_string()),
-            clean(&report.display().to_string())
+            clean(&path.display().to_string()),
+            clean(&r.run_id)
         );
     } else {
         let _ = writeln!(
             text,
-            "\nReport: {}\nTemporary evidence and build cache: cleaned after report verification",
-            clean(&report.display().to_string())
+            "\nResult: {}\nGenerate report: feval report {}",
+            clean(&path.display().to_string()),
+            clean(&r.run_id)
         );
     }
     text

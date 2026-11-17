@@ -6,6 +6,7 @@ component defects count as verified rejection, never as positive test coverage.
 """
 import argparse
 import json
+import os
 from pathlib import Path
 import shutil
 import signal
@@ -49,7 +50,10 @@ def main():
     work.mkdir(parents=True)
     cli = work / "feval"
     shutil.copy2(args.cli.resolve(), cli)
-    runs, cache = work / "runs", work / "cache"
+    env = {**os.environ, "XDG_STATE_HOME": str(work / "state")}
+    subprocess.run([str(cli), "init"], cwd=work, env=env, check=True, stdout=subprocess.DEVNULL)
+    workspace = work / "feval_workspace"
+    runs, cache, reports = workspace / "results", workspace / ".fountain-eval/cache", workspace / "reports"
     ledger, results, attempts = [], {}, []
 
     def command(label, arguments, expected=None, interrupt=False):
@@ -58,7 +62,7 @@ def main():
         started = time.monotonic()
         before = set(runs.glob("*"))
         with (work / (label + ".stdout")).open("w") as out, (work / (label + ".stderr")).open("w") as err:
-            process = subprocess.Popen([str(cli), *map(str, arguments)], cwd=work, stdout=out, stderr=err)
+            process = subprocess.Popen([str(cli), *map(str, arguments)], cwd=work, env=env, stdout=out, stderr=err)
             if interrupt:
                 deadline = time.monotonic() + 180
                 while process.poll() is None and time.monotonic() < deadline:
@@ -69,9 +73,12 @@ def main():
             code = process.wait(timeout=7200)
         text = (work / (label + ".stdout")).read_text()
         body = json.loads(text) if text.strip() and arguments[0] not in ["report", "compare"] else {}
-        if "report" in body:
-            report = Path(body["report"])
-            saved = json.loads(subprocess.check_output([str(cli), "report", str(report), "--json"], text=True))
+        if "result" in body:
+            raw = Path(body["result"])
+            assert raw.is_dir() and not (reports / raw.name).exists()
+            published = json.loads(subprocess.check_output([str(cli), "report", raw.name, "--json"], cwd=work, env=env, text=True))
+            report = Path(published["report"])
+            saved = json.loads(subprocess.check_output([str(cli), "report", str(report), "--json"], cwd=work, env=env, text=True))
             entries = saved["batch"]["entries"]
             assert len(entries) == 1, "This helper inspects one C; multi-C contracts are in tests/batch.rs"
             assert len(saved["components"]) == 1
@@ -80,18 +87,18 @@ def main():
             assert not (runs / saved["batch"]["run_id"]).exists(), "Verified reports must clean temporary raw evidence"
             assert not (cache / saved["batch"]["run_id"]).exists(), "Batch cache must be removed"
             body = {"report":str(report), "batch":saved["batch"], "result_ref":str(report)+"#C0", "result":saved["components"][0]}
-            subprocess.run([str(cli),"report",str(report)],stdout=subprocess.DEVNULL,check=True)
+            subprocess.run([str(cli),"report",str(report)],cwd=work,env=env,stdout=subprocess.DEVNULL,check=True)
         elif "prepared" in body:
             directory = Path(body["prepared"])
             entry = body["batch"]["entries"][0]
             record = json.loads((directory / entry["directory"] / "result.json").read_text())
             body.update(result=record, result_ref=str(directory), prepared=str(directory))
-            assert not (work / "reports" / body["batch"]["run_id"]).exists()
+            assert not (reports / body["batch"]["run_id"]).exists()
         row = dict(label=label, exit=code, seconds=round(time.monotonic()-started, 3))
         if "result" in body:
             progress = (work / (label + ".stderr")).read_text()
             record = body["result"]
-            assert "C0 [1/1]" in progress and ("READY   " if arguments[0] == "prepare" else "REPORT  ") in progress, label
+            assert "C0 [1/1]" in progress and "READY   " in progress, label
             state = "PASSED" if record["status"] == "succeeded" else record["status"].replace("_", " ").upper()
             assert f"C0 {state}" in progress, label
             assert "[VALIDATE" not in progress and "[MEASURE" not in progress, label
@@ -117,8 +124,8 @@ def main():
         return body, code
 
     def run(label, engine, operator, scheme="rq", action="run", expected=None, interrupt=False, test="0.1.0"):
-        config = work / (label + ".toml")
-        config.write_text((f"engine0={reference_toml(engine)}\n" if engine else "") + (f"operator0={reference_toml(operator)}\n" if operator else "") + f"scheme={json.dumps(scheme)}\ntest={json.dumps(test)}\n[run]\ncache={json.dumps(str(cache))}\noutput={json.dumps(str(runs))}\n")
+        config = workspace / (label + ".toml")
+        config.write_text((f"engine0={reference_toml(engine)}\n" if engine else "") + (f"operator0={reference_toml(operator)}\n" if operator else "") + f"scheme={json.dumps(scheme)}\ntest={json.dumps(test)}\n")
         body, code = command(label, [action, "--config", config], expected, interrupt)
         if "result" in body: attempts.append(body)
         if body.get("result", {}).get("status") == "succeeded":
