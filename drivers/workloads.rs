@@ -1,4 +1,5 @@
 //! T-owned correctness, individual-operation, chain and integrated workloads.
+use crate::findings::{self, Contract, FailureKind as Kind};
 use crate::{
     Probe, Stages, api,
     content::{Action, Case},
@@ -9,6 +10,24 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::{cell::RefCell, collections::BTreeMap, sync::Arc, time::Instant};
+
+macro_rules! require {
+    (($id:expr,$requirement:expr),$kind:ident,$condition:expr,$($message:tt)+) => {
+        if !$condition { findings::fail(Contract::new($id,$requirement),Kind::$kind,json!({}),None,format!($($message)+)); }
+    };
+    (($id:expr,$requirement:expr),$kind:ident,$condition:expr $(,)?) => {
+        if !$condition { findings::fail(Contract::new($id,$requirement),Kind::$kind,json!({}),None,stringify!($condition).into()); }
+    };
+}
+macro_rules! require_eq {
+    (($id:expr,$requirement:expr),$kind:ident,$actual:expr,$expected:expr,$($message:tt)+) => {
+        { let (actual,expected)=(&$actual,&$expected); if actual!=expected {findings::equal(Contract::new($id,$requirement),Kind::$kind,actual,expected,||format!($($message)+));} }
+    };
+    (($id:expr,$requirement:expr),$kind:ident,$actual:expr,$expected:expr $(,)?) => {
+        { let (actual,expected)=(&$actual,&$expected); if actual!=expected {findings::equal(Contract::new($id,$requirement),Kind::$kind,actual,expected,||stringify!($actual == $expected).into());} }
+    };
+}
+
 #[derive(Clone)]
 pub struct Validation {
     pub witness: String,
@@ -80,7 +99,16 @@ fn packets(c: &Case, bytes: &[u8]) -> Vec<(usize, Vec<u8>)> {
     let mut encoder =
         (c.missing > 0).then(|| api::Encoder::new(scheme(c), c.k, c.width, bytes, None));
     let base = encoder.as_ref().map_or(c.k, api::Encoder::repair_base);
-    assert!(base >= c.k, "{}: invalid repair base {base}", c.id);
+    require!(
+        (
+            "codec.repair-domain",
+            "Repair IDs must begin after the source symbol domain."
+        ),
+        AssertionFailed,
+        base >= c.k,
+        "{}: invalid repair base {base}",
+        c.id
+    );
     let mut stream: Vec<_> = offered_ids(c, base)
         .into_iter()
         .map(|id| {
@@ -89,7 +117,17 @@ fn packets(c: &Case, bytes: &[u8]) -> Vec<(usize, Vec<u8>)> {
             } else {
                 encoder.as_mut().unwrap().encode(id)
             };
-            assert_eq!(data.len(), c.width, "{}: offered symbol {id} width", c.id);
+            require_eq!(
+                (
+                    "codec.symbol-width",
+                    "Every supplied symbol must have the configured byte width."
+                ),
+                LengthMismatch,
+                data.len(),
+                c.width,
+                "{}: offered symbol {id} width",
+                c.id
+            );
             (id, data)
         })
         .collect();
@@ -170,28 +208,44 @@ pub fn prepare(c: &Case) -> Prepared {
     }
 }
 fn checked_state(op: &Operator, expected: &State, context: &str) {
-    assert_eq!(op.snapshot(expected), *expected, "{context}");
+    findings::states(
+        Contract::new(
+            "operator.result",
+            "The prepared operator call must produce the required live symbol bytes.",
+        ),
+        expected,
+        &op.snapshot(expected),
+        ("Expected", "Observed"),
+        Kind::ValueMismatch,
+        context,
+    );
 }
-fn check_bytes(expected: &[u8], actual: &[u8], context: impl FnOnce() -> String) {
-    if expected != actual {
-        let offset = expected
-            .iter()
-            .zip(actual)
-            .position(|(a, b)| a != b)
-            .unwrap_or(expected.len().min(actual.len()));
-        panic!(
-            "{}; byte {offset}, expected {:?}, actual {:?}; lengths {} and {}",
-            context(),
-            expected.get(offset),
-            actual.get(offset),
-            expected.len(),
-            actual.len()
-        );
-    }
+fn check_bytes(
+    contract_id: &str,
+    expected: &[u8],
+    actual: &[u8],
+    context: impl FnOnce() -> String,
+) {
+    findings::bytes(
+        Contract::new(
+            contract_id,
+            "The output bytes must match the registered reference.",
+        ),
+        expected,
+        actual,
+        context,
+    );
 }
 
 fn basis_encoder(c: &Case) -> api::Encoder {
-    assert!(c.width >= c.k);
+    require!(
+        (
+            "fixture.basis-width",
+            "A coefficient basis fixture must fit all K basis bytes."
+        ),
+        AssertionFailed,
+        c.width >= c.k
+    );
     let mut basis = vec![0; c.k * c.width];
     for i in 0..c.k {
         basis[i * c.width + i] = 1;
@@ -201,8 +255,23 @@ fn basis_encoder(c: &Case) -> api::Encoder {
 
 fn coefficients(generator: &mut api::Encoder, c: &Case, id: usize) -> Vec<u8> {
     let mut row = generator.encode(id);
-    assert_eq!(row.len(), c.width, "{}: basis symbol {id} width", c.id);
-    assert!(
+    require_eq!(
+        (
+            "codec.symbol-width",
+            "Every coefficient symbol must have the configured byte width."
+        ),
+        LengthMismatch,
+        row.len(),
+        c.width,
+        "{}: basis symbol {id} width",
+        c.id
+    );
+    require!(
+        (
+            "codec.basis-inactive",
+            "Coefficient symbols must have zero bytes outside their active basis."
+        ),
+        ValueMismatch,
         row[c.k..].iter().all(|&b| b == 0),
         "{}: basis symbol {id} has nonzero inactive lanes",
         c.id
@@ -226,7 +295,12 @@ fn linear_reference(c: &Case) -> Value {
     let mut generator = basis_encoder(c);
     let mut encoder = api::Encoder::new(scheme(c), c.k, c.width, &bytes, None);
     let base = encoder.repair_base();
-    assert_eq!(
+    require_eq!(
+        (
+            "codec.repair-domain",
+            "Equivalent encoders must expose the same repair domain."
+        ),
+        ValueMismatch,
         base,
         generator.repair_base(),
         "{}: basis repair domain",
@@ -235,7 +309,16 @@ fn linear_reference(c: &Case) -> Value {
     let mut rows = Vec::new();
     let mut rank = reference::Rank::new(c.k);
     let mut decoder = api::Decoder::new(scheme(c), c.k, c.width, None);
-    assert!(!decoder.decoded(), "{}: decoded before input", c.id);
+    require!(
+        (
+            "codec.initial-incomplete",
+            "A decoder must be incomplete before receiving input."
+        ),
+        PrematureCompletion,
+        !decoder.decoded(),
+        "{}: decoded before input",
+        c.id
+    );
     let mut completion = None;
     let mut repair_rank = None;
     let offered = (0..c.k)
@@ -246,7 +329,12 @@ fn linear_reference(c: &Case) -> Value {
     for (index, id) in offered.chain((0..c.k).step_by(3)).enumerate() {
         if index == repair_end {
             repair_rank = Some(rank.value());
-            assert!(
+            require!(
+                (
+                    "codec.full-rank-completion",
+                    "Rank-K input must complete recovery within the fixed stream."
+                ),
+                IncompleteRecovery,
                 rank.value() < c.k,
                 "{}: rank K after repair budget without completion",
                 c.id
@@ -254,15 +342,23 @@ fn linear_reference(c: &Case) -> Value {
         }
         let mut row = coefficients(&mut generator, c, id);
         let actual = encoder.encode(id);
-        check_bytes(&linear_symbol(&row, &bytes, c.width), &actual, || {
-            format!("{}: V09 linear encoding, symbol {id}", c.id)
-        });
+        check_bytes(
+            "codec.linear-symbol",
+            &linear_symbol(&row, &bytes, c.width),
+            &actual,
+            || format!("{}: V09 linear encoding, symbol {id}", c.id),
+        );
         rank.insert(row.clone());
         row.extend_from_slice(&actual);
         rows.push(row);
         decoder.add(id, &actual);
         if decoder.decoded() {
-            assert_eq!(
+            require_eq!(
+                (
+                    "codec.completion-rank",
+                    "Reported completion requires rank K."
+                ),
+                PrematureCompletion,
                 rank.value(),
                 c.k,
                 "{}: V09 false completion at input {}, symbol {id}",
@@ -273,14 +369,34 @@ fn linear_reference(c: &Case) -> Value {
             break;
         }
     }
-    let solved = reference::solve(rows, c.k, c.width)
-        .unwrap_or_else(|| panic!("{}: V09 positive control lacks rank K", c.id));
-    check_bytes(&bytes, &solved, || {
+    let solved = reference::solve(rows, c.k, c.width).unwrap_or_else(|| {
+        findings::fail(
+            Contract::new(
+                "reference.linear-recovery",
+                "The independent positive-control input must have rank K.",
+            ),
+            Kind::IncompleteRecovery,
+            json!({}),
+            None,
+            format!("{}: V09 positive control lacks rank K", c.id),
+        )
+    });
+    check_bytes("reference.linear-recovery", &bytes, &solved, || {
         format!("{}: V09 independent recovery", c.id)
     });
-    let count =
-        completion.unwrap_or_else(|| panic!("{}: V09 full-rank input did not complete", c.id));
-    check_bytes(&bytes, &decoder.result(), || {
+    let count = completion.unwrap_or_else(|| {
+        findings::fail(
+            Contract::new(
+                "codec.full-rank-completion",
+                "Rank-K input must complete recovery within the fixed stream.",
+            ),
+            Kind::IncompleteRecovery,
+            json!({}),
+            None,
+            format!("{}: V09 full-rank input did not complete", c.id),
+        )
+    });
+    check_bytes("codec.recovered-payload", &bytes, &decoder.result(), || {
         format!("{}: V09 decoder recovery at input {count}", c.id)
     });
     json!({"coefficient_source":"basis payloads at the same symbol width through the selected encoder", "independent_solver":"scalar Gauss-Jordan over GF(256)", "rank":rank.value(), "completion_input":count, "rank_at_exhausted_repair_budget":repair_rank})
@@ -289,7 +405,12 @@ fn linear_reference(c: &Case) -> Value {
 fn scheme_contract(c: &Case, bytes: &[u8]) -> Value {
     let (padded, repair_base) = reference::geometry(scheme(c), c.k);
     let mut encoder = api::Encoder::new(scheme(c), c.k, c.width, bytes, None);
-    assert_eq!(
+    require_eq!(
+        (
+            "codec.scheme.repair-domain",
+            "The first repair ID must match the selected scheme."
+        ),
+        ValueMismatch,
         encoder.repair_base(),
         repair_base,
         "{}: V07 first internal repair ID",
@@ -297,23 +418,38 @@ fn scheme_contract(c: &Case, bytes: &[u8]) -> Value {
     );
     let geometry = encoder.diagnostics();
     if let Some(actual) = geometry["block_k"].as_u64() {
-        assert_eq!(actual, padded as u64, "{}: V07 padded geometry", c.id);
+        require_eq!(
+            (
+                "codec.scheme.padding",
+                "Padded K must match the selected scheme geometry."
+            ),
+            ValueMismatch,
+            actual,
+            padded as u64,
+            "{}: V07 padded geometry",
+            c.id
+        );
     }
     let mut decoder = api::Decoder::new(scheme(c), c.k, c.width, None);
     for (id, expected) in bytes.chunks_exact(c.width).enumerate() {
         let actual = encoder.encode(id);
-        check_bytes(expected, &actual, || {
+        check_bytes("codec.systematic-symbol", expected, &actual, || {
             format!("{}: V07 systematic symbol {id}", c.id)
         });
         decoder.add(id, &actual);
     }
-    assert!(
+    require!(
+        (
+            "codec.all-source-completion",
+            "A complete source set must make the application output available."
+        ),
+        IncompleteRecovery,
         decoder.decoded(),
         "{}: V07 application output unavailable",
         c.id
     );
     let output = decoder.result();
-    check_bytes(bytes, &output, || {
+    check_bytes("codec.recovered-payload", bytes, &output, || {
         format!("{}: V07 application output boundary", c.id)
     });
     json!({"source_symbols":c.k,"expected_block_k":padded,"observed_block_k":geometry["block_k"],"padding_symbols":padded-c.k,"padding_provider":geometry["padding_provider"],"first_internal_repair_id":repair_base,"output_bytes":output.len()})
@@ -326,7 +462,12 @@ fn plan_contract(c: &Case) -> Value {
         plan.load(c.width, &fresh, None, &mut Stages::disabled());
         let mut rebuilt = api::Encoder::new(scheme(c), c.k, c.width, &fresh, None);
         let base = plan.repair_base();
-        assert_eq!(
+        require_eq!(
+            (
+                "codec.plan.repair-domain",
+                "Reused and rebuilt plans must expose the same repair domain."
+            ),
+            ValueMismatch,
             base,
             rebuilt.repair_base(),
             "{}: V08 load {round} repair domain",
@@ -335,13 +476,18 @@ fn plan_contract(c: &Case) -> Value {
         for id in (0..c.k).chain(base..base + c.repairs) {
             let expected = rebuilt.encode(id);
             let actual = plan.encode(id);
-            assert_eq!(
+            require_eq!(
+                (
+                    "codec.symbol-width",
+                    "Every reused-plan symbol must have the configured byte width."
+                ),
+                LengthMismatch,
                 actual.len(),
                 c.width,
                 "{}: V08 load {round}, symbol {id} width",
                 c.id
             );
-            check_bytes(&expected, &actual, || {
+            check_bytes("codec.plan.reuse-output", &expected, &actual, || {
                 format!("{}: V08 load {round}, symbol {id}", c.id)
             });
         }
@@ -353,7 +499,12 @@ fn receive_contract(c: &Case, bytes: &[u8]) -> Value {
     let mut encoder = api::Encoder::new(scheme(c), c.k, c.width, bytes, None);
     let mut basis = basis_encoder(c);
     let base = encoder.repair_base();
-    assert_eq!(
+    require_eq!(
+        (
+            "codec.repair-domain",
+            "Basis and payload encoders must expose the same repair domain."
+        ),
+        ValueMismatch,
         base,
         basis.repair_base(),
         "{}: V10 basis repair domain",
@@ -364,9 +515,12 @@ fn receive_contract(c: &Case, bytes: &[u8]) -> Value {
         .map(|id| {
             let row = coefficients(&mut basis, c, id);
             let payload = encoder.encode(id);
-            check_bytes(&linear_symbol(&row, bytes, c.width), &payload, || {
-                format!("{}: V10 repair fixture symbol {id}", c.id)
-            });
+            check_bytes(
+                "codec.linear-symbol",
+                &linear_symbol(&row, bytes, c.width),
+                &payload,
+                || format!("{}: V10 repair fixture symbol {id}", c.id),
+            );
             (id, (row, payload))
         })
         .collect();
@@ -398,7 +552,12 @@ fn receive_contract(c: &Case, bytes: &[u8]) -> Value {
         let mut rank = reference::Rank::new(c.k);
         let mut seen = std::collections::BTreeSet::new();
         let mut decoder = api::Decoder::new(scheme(c), c.k, c.width, None);
-        assert!(
+        require!(
+            (
+                "codec.initial-incomplete",
+                "A decoder must be incomplete before receiving input."
+            ),
+            PrematureCompletion,
             !decoder.decoded(),
             "{}: V10 {name} decoded before input",
             c.id
@@ -423,22 +582,48 @@ fn receive_contract(c: &Case, bytes: &[u8]) -> Value {
             } else {
                 duplicates += 1;
             }
-            decoder.add(id, payload);
+            findings::scope(
+                Contract::new(
+                    "codec.receive-input",
+                    "The decoder must accept valid offered symbols, including repeated inputs.",
+                ),
+                json!({"scenario":name,"input_count":consumed,"input_symbol":id}),
+                || decoder.add(id, payload),
+            );
             if decoder.decoded() {
-                assert_eq!(
+                require_eq!(
+                    (
+                        "codec.completion-rank",
+                        "Reported completion requires rank K."
+                    ),
+                    PrematureCompletion,
                     rank.value(),
                     c.k,
                     "{}: V10 {name} false completion at input {consumed}, symbol {id}",
                     c.id
                 );
-                check_bytes(bytes, &decoder.result(), || {
-                    format!("{}: V10 {name} input {consumed}, symbol {id}", c.id)
-                });
+                findings::scope(
+                    Contract::new(
+                        "codec.recovered-payload",
+                        "Recovered application bytes must equal the original source bytes.",
+                    ),
+                    json!({"scenario":name,"input_count":consumed,"input_symbol":id}),
+                    || {
+                        check_bytes("codec.recovered-payload", bytes, &decoder.result(), || {
+                            format!("{}: V10 {name} input {consumed}, symbol {id}", c.id)
+                        });
+                    },
+                );
                 complete = true;
                 break;
             }
         }
-        assert!(
+        require!(
+            (
+                "codec.full-rank-completion",
+                "Rank-K input must complete recovery within the fixed stream."
+            ),
+            IncompleteRecovery,
             complete || rank.value() < c.k,
             "{}: V10 {name} exhausted {consumed} inputs at rank K, last symbol {:?}",
             c.id,
@@ -454,7 +639,16 @@ fn source_roundtrip(c: &Case, bytes: &[u8], probe: Option<Arc<Probe>>) -> Vec<u8
     for (id, data) in bytes.chunks_exact(c.width).enumerate() {
         decoder.add(id, data);
     }
-    assert!(decoder.decoded(), "{}: all-source control", c.id);
+    require!(
+        (
+            "codec.all-source-completion",
+            "A complete source set must decode."
+        ),
+        IncompleteRecovery,
+        decoder.decoded(),
+        "{}: all-source control",
+        c.id
+    );
     decoder.result()
 }
 
@@ -463,15 +657,30 @@ fn participation_contract(c: &Case, bytes: &[u8]) -> Value {
     let decode_probe = Arc::new(Probe::default());
     let mut encoder = api::Encoder::new(scheme(c), c.k, c.width, bytes, Some(encode_probe.clone()));
     let repair = encoder.encode(encoder.repair_base());
-    assert_eq!(repair.len(), c.width, "{}: V01 repair width", c.id);
+    require_eq!(
+        (
+            "codec.symbol-width",
+            "Every selected-operator repair must have the configured byte width."
+        ),
+        LengthMismatch,
+        repair.len(),
+        c.width,
+        "{}: V01 repair width",
+        c.id
+    );
     let output = source_roundtrip(c, bytes, Some(decode_probe.clone()));
-    check_bytes(bytes, &output, || {
+    check_bytes("codec.recovered-payload", bytes, &output, || {
         format!("{}: V01 selected decode operator", c.id)
     });
     let encode_evidence = encode_probe.snapshot();
     let decode_evidence = decode_probe.snapshot();
     for (label, evidence) in [("encode", &encode_evidence), ("decode", &decode_evidence)] {
-        assert!(
+        require!(
+            (
+                "codec.operator-participation",
+                "The selected encoder and decoder operator must receive the expected read and write calls."
+            ),
+            MissingParticipation,
             evidence["reads"].as_u64().unwrap() > 0 && evidence["writes"].as_u64().unwrap() > 0,
             "{}: V01 selected {label} operator did not participate",
             c.id
@@ -486,30 +695,55 @@ fn lifecycle_contract(c: &Case, bytes: &[u8]) -> Value {
     let mut encoder = api::Encoder::new(scheme(c), c.k, c.width, bytes, Some(encode_probe.clone()));
     let repair = encoder.encode(encoder.repair_base());
     drop(encoder);
-    assert_eq!(
+    require_eq!(
+        (
+            "codec.encoder-ownership",
+            "The encoder must release its selected operator exactly once."
+        ),
+        OwnershipMismatch,
         encode_probe.snapshot()["drops"],
         1,
         "{}: V11 encoder ownership",
         c.id
     );
-    assert_eq!(repair.len(), c.width, "{}: V11 handoff width", c.id);
+    require_eq!(
+        (
+            "codec.output-ownership",
+            "Caller-owned output must retain the configured width after release."
+        ),
+        LengthMismatch,
+        repair.len(),
+        c.width,
+        "{}: V11 handoff width",
+        c.id
+    );
     let mut abandoned = api::Decoder::new(scheme(c), c.k, c.width, Some(decode_probe.clone()));
     abandoned.add(0, &bytes[..c.width]);
     drop(abandoned);
-    assert_eq!(
+    require_eq!(
+        (
+            "codec.decoder-ownership",
+            "An abandoned decoder must release its selected operator exactly once."
+        ),
+        OwnershipMismatch,
         decode_probe.snapshot()["drops"],
         1,
         "{}: V11 partially loaded decoder ownership",
         c.id
     );
     let output = source_roundtrip(c, bytes, Some(decode_probe.clone()));
-    assert_eq!(
+    require_eq!(
+        (
+            "codec.decoder-ownership",
+            "A completed decoder must release its selected operator exactly once."
+        ),
+        OwnershipMismatch,
         decode_probe.snapshot()["drops"],
         2,
         "{}: V11 completed decoder ownership",
         c.id
     );
-    check_bytes(bytes, &output, || {
+    check_bytes("codec.output-ownership", bytes, &output, || {
         format!("{}: V11 caller-owned output after component release", c.id)
     });
     json!({"encoder_drops":1,"abandoned_decoder_drops":1,"completed_decoder_drops":1,"output_verified_after_release":true,"error_contract":api::error_contract(scheme(c),c.k,c.width,bytes)})
@@ -613,7 +847,7 @@ fn primitive(c: &Case, p: &Prepared) -> Outcome {
     }
     if let Some(id) = read_id {
         for bytes in reads {
-            check_bytes(&p.expected[&id], bytes, || {
+            check_bytes("operator.read", &p.expected[&id], bytes, || {
                 format!("{}: timed read of symbol {id}", c.id)
             });
         }
@@ -634,7 +868,7 @@ fn primitive(c: &Case, p: &Prepared) -> Outcome {
         let key = digest(&serde_json::to_vec(&value).unwrap());
         outcomes.entry(key).or_insert((0, value)).0 += 1;
     }
-    let observation = json!({"calls":instances,"outcomes":outcomes.into_values().map(|(count,actual)|json!({"count":count,"actual":actual})).collect::<Vec<_>>()});
+    let observation = json!({"calls":instances,"outcomes":outcomes.into_values().map(|(count,actual)|json!({"count":count,"finding":findings::boundary_violation(c,&reference::compact(&p.expected),&actual),"actual":actual})).collect::<Vec<_>>()});
     let witness = if c.warning {
         digest(&serde_json::to_vec(&observation).unwrap())
     } else {
@@ -686,11 +920,21 @@ pub fn run(c: &Case, p: &Prepared, diagnostic: bool) -> Outcome {
         let plan = created.as_mut().or(existing.as_mut()).unwrap();
         let mut details = plan.diagnostics();
         if let Some(operations) = exported {
-            assert_eq!(
+            require_eq!(
+                (
+                    "plan.export-count",
+                    "Exported operation count must match the retained plan."
+                ),
+                ValueMismatch,
                 operations.len() as u64,
                 details["operations"].as_u64().unwrap()
             );
-            assert_eq!(
+            require_eq!(
+                (
+                    "plan.export-bytes",
+                    "Exported operations must match the retained plan digest."
+                ),
+                ValueMismatch,
                 digest(format!("{operations:?}").as_bytes()),
                 details["program_digest"]
             );
@@ -702,7 +946,12 @@ pub fn run(c: &Case, p: &Prepared, diagnostic: bool) -> Outcome {
         plan.load(31, bytes, None, &mut Stages::disabled());
         let mut encoder = api::Encoder::new(scheme(c), c.k, 31, bytes, None);
         let base = plan.repair_base();
-        assert_eq!(
+        require_eq!(
+            (
+                "plan.repair-domain",
+                "An applied plan must match the encoder repair domain."
+            ),
+            ValueMismatch,
             base,
             encoder.repair_base(),
             "{}: planning repair domain",
@@ -710,7 +959,7 @@ pub fn run(c: &Case, p: &Prepared, diagnostic: bool) -> Outcome {
         );
         for id in base..base + c.repairs {
             let expected = encoder.encode(id);
-            check_bytes(&expected, &plan.encode(id), || {
+            check_bytes("plan.applied-output", &expected, &plan.encode(id), || {
                 format!("{}: applied plan repair {id}", c.id)
             });
         }
@@ -778,7 +1027,7 @@ fn link_coverage(c: &Case, stages: &Value, diagnostic: bool) -> Value {
         ]
     };
     let map: BTreeMap<_, _> = rows.iter().map(|(family, stage, combined)| {
-        assert!(stages["exclusive_ns"][stage].as_u64().is_some(),
+        require!(("measurement.stage-coverage","Every promised exclusive stage must be observed."), AssertionFailed, stages["exclusive_ns"][stage].as_u64().is_some(),
             "{}: required stage {stage} missing for {family}", c.id);
         (*family, json!({"interval":stage,"scope":if *combined { "combined parent" } else { "exclusive interval" }}))
     }).collect();
@@ -804,7 +1053,12 @@ fn decode(c: &Case, p: &Prepared, diagnostic: bool) -> Outcome {
     }
     stages.mark("ingestion-and-solve");
     let complete = decoder.decoded();
-    assert!(
+    require!(
+        (
+            "codec.all-source-completion",
+            "A complete source set must decode."
+        ),
+        IncompleteRecovery,
         complete || c.missing > 0,
         "{}: W04 complete source set did not decode",
         c.id
@@ -827,7 +1081,7 @@ fn decode(c: &Case, p: &Prepared, diagnostic: bool) -> Outcome {
     let lifecycle = elapsed(start);
     let resources = telemetry::finish(before);
     if complete {
-        check_bytes(&p.source, &output, || {
+        check_bytes("codec.recovered-payload", &p.source, &output, || {
             format!("{}: output after {consumed} inputs", c.id)
         });
     }
@@ -951,14 +1205,24 @@ fn encode(c: &Case, p: &Prepared, diagnostic: bool) -> Outcome {
     let expected_count = if source_outputs { c.k } else { c.repairs };
     let mut generated = 0;
     for (block, result) in outputs.iter().enumerate() {
-        assert_eq!(
+        require_eq!(
+            (
+                "codec.output-count",
+                "The encoder must produce the requested number of output symbols."
+            ),
+            LengthMismatch,
             result.len(),
             expected_count,
             "{}: output count for block {block}",
             c.id
         );
         for (id, data) in result.iter().enumerate() {
-            assert_eq!(
+            require_eq!(
+                (
+                    "codec.symbol-width",
+                    "Every encoded output must have the configured byte width."
+                ),
+                LengthMismatch,
                 data.len(),
                 c.width,
                 "{}: output width for block {block} symbol {id}",
@@ -969,7 +1233,7 @@ fn encode(c: &Case, p: &Prepared, diagnostic: bool) -> Outcome {
             } else {
                 &repair_reference.as_ref().unwrap()[block][id]
             };
-            check_bytes(expected, data, || {
+            check_bytes("codec.encoded-output", expected, data, || {
                 format!("{}: block {block} output {id}", c.id)
             });
             generated += data.len();
@@ -1036,11 +1300,16 @@ fn round_trip(c: &Case, p: &Prepared, diagnostic: bool) -> Outcome {
     let lifecycle = elapsed(start);
     let resources = telemetry::finish(before);
     if complete {
-        check_bytes(&p.source, &output, || {
+        check_bytes("codec.recovered-payload", &p.source, &output, || {
             format!("{}: round trip after {received} inputs", c.id)
         });
     }
-    assert!(
+    require!(
+        (
+            "codec.symbol-width",
+            "Every round-trip symbol must have the configured byte width."
+        ),
+        LengthMismatch,
         stream.iter().all(|(_, data)| data.len() == c.width),
         "{}: round-trip symbol width",
         c.id

@@ -85,7 +85,9 @@ The full original configuration is retained in both the batch and derived per-C 
 
 ## Run results, report publication and completion time
 
-Execution returns the batch status and sealed result directory `results/<result-id>/`. The `report` command validates the full evidence and publishes `reports/<result-id>/`. Each report has a plain `report.md` with one section per C and a sibling `index.json.lzma`. Concurrent publication for one run is controlled by its result lease.
+Execution returns the batch status and sealed result directory `results/<result-id>/`. The `report` command validates the full evidence and publishes `reports/<result-id>/`. Each report has a plain `report.md` covering the entire batch, with component results shown together, and a sibling `index.json.lzma`. Concurrent publication for one run is controlled by its result lease.
+
+The readable report starts with configuration, environment, versions and outcome tables, followed by V/O/L/W. V contains its own correctness summary, Fatal and Warning findings grouped by their emitted contract ID and failure kind, and the complete detailed execution, exclusion and V01–V11 family tables in that order. Problems can span component selections and test families; their counts refer to affected cases. A single representative fatal diagnostic explains each problem, while every case observation remains in the index. Empty finding types state that none were detected. O/L/W show their family coverage and detailed performance observations. Unexecuted checks remain visible alongside completed work.
 
 The compressed index binds the two files with SHA-256 hashes for the Markdown and the retained snapshot. The snapshot preserves config, resolved plans, identities, build provenance, coverage, fatal witnesses, warning variants, aggregate timings and diagnostic summaries. Individual timing samples and raw logs remain in the sealed result. `report REPORT_DIR` verifies and displays the Markdown and `--json` reads the tracked snapshot. `compare` selects components using `REPORT_DIR#C<N>` and checks retained T/E/I, whole-plan aggregate coverage and fatal witnesses.
 
@@ -119,11 +121,13 @@ The three integration families share the same T-owned input generation, scalar o
 
 ## Validation and measurement ownership
 
-T owns deterministic inputs, the scalar reference, fatal/warning severity, workloads, timers and sampling. I owns calls and observable boundaries. The [test guide](TEST.md) defines concrete cases and methodology; `src/content.rs` and `drivers/workloads.rs` implement that content.
+T owns deterministic inputs, the scalar reference, fatal/warning severity, workloads, timers and sampling. `src/findings.rs` defines the shared T-owned violation model and source-side check helpers, embedded with the isolated driver. Check code assigns contract IDs and failure kinds; reports consume those fields and never infer grouping from error text. Context and exact differences remain structured data. Missing identities in legacy artifacts are displayed as unclassified; missing identities in new failed check evidence are rejected. I owns calls and observable boundaries. The [test guide](TEST.md) defines concrete cases and methodology; `src/content.rs` and `drivers/workloads.rs` implement that content.
 
 Defined-domain errors are fatal. Registered ambiguous boundaries produce warnings alongside their actual performance. Diagnostic instrumentation is separate from ordinary performance measurement. Exclusive intervals can add up only within the same observed flow; inclusive counters and independent microbenchmarks cannot be summed into another sample's total.
 
-Every successful C requires its complete applicable validation, sample and diagnostic coverage. Failed or interrupted Cs retain their prefixes and unexecuted cases. A valid bounded recovery observation can be incomplete without claiming successful throughput.
+V runs first, in V01–V11 family order with stable case IDs within each family. Each independent V case owns its fixture; a caught case failure is retained and does not stop other V cases. Any V fatal blocks O/L/W prechecks and measurements after V completes. Warnings do not block them. Successful V is followed by applicable performance prechecks and measurement. Crashes, timeouts and interruption retain completed observations and explicitly unexecuted cases.
+
+Every successful C requires its complete applicable validation, sample and diagnostic coverage. A valid bounded recovery observation can be incomplete without claiming successful throughput.
 
 ## Comparability and attribution
 
@@ -160,6 +164,7 @@ Linux/macOS CI checks the framework and publicly accessible native combinations.
 | `src/progress.rs` | Stage-level progress, shared heartbeat throttling and final CLI summaries |
 | `src/batch.rs` | Ordered multi-C execution, checkpoints and child-evidence verification |
 | `src/execution.rs` | Stage orchestration, prepared replay, capability and protocol checks |
+| `src/findings.rs` | Source-owned contract identities, violation kinds, structured differences and scoped failure context |
 | `src/validation.rs` | Registered fatal/warning severity, evidence checks and correctness reports |
 | `src/measurement.rs` | Raw sample schema, units and deterministic summaries; part of T identity |
 | `src/evidence.rs` | Common conditions, result records, seals and comparability |

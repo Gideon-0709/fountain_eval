@@ -27,14 +27,14 @@ fn independent_failures_continue_and_explicit_reports_retain_each_c() {
     }
     let markdown = path.join("report.md");
     let report = std::fs::read_to_string(&markdown).unwrap();
-    assert!(report.contains("C0") && report.contains("C2") && report.contains("Key findings"));
+    assert!(report.contains("C0") && report.contains("C2") && report.contains("## Summary"));
     assert_eq!(std::fs::read_dir(&path).unwrap().count(), 2);
     assert!(!r.configuration.run.output.join(&r.run_id).exists());
     assert!(!r.configuration.run.cache.exists());
     assert!(artifact::load(&path).is_ok());
     std::fs::write(
         &markdown,
-        report.replace("Key findings", "Changed findings"),
+        report.replace("## Summary", "## Changed summary"),
     )
     .unwrap();
     assert!(artifact::load(&path).is_err());

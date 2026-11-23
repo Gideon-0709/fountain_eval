@@ -59,6 +59,40 @@ fn fatal_errors_are_immediate_concise_and_not_repeated() {
     assert!(p.heartbeat().contains("error"));
 }
 #[test]
+fn v_fatals_do_not_suppress_later_progress_or_repeat_diagnostics() {
+    let r = record();
+    let mut p = DriverProgress::new(&r, "validate", 0, None);
+    p.observe(&hello(&r, 0, false));
+    let mut count = 0;
+    let mut fatal = 0;
+    for case in r.recipe.as_ref().unwrap().validation_cases() {
+        let c = &r.recipe.as_ref().unwrap().checks[&case];
+        if c.spec.validation_family().is_none() {
+            break;
+        }
+        let event = if matches!(c.spec.validation_family(), Some("V01" | "V11")) {
+            fatal += 1;
+            json!({"event":"validation","case":case,"severity":"fatal","status":"failed","rule":"execution-integrity","message":"independent contract failure"})
+        } else {
+            json!({"event":"validation","case":case,"severity":c.severity,"status":"passed","rule":c.rule})
+        };
+        let output = p.observe(&event.to_string());
+        if count == 0 {
+            assert!(output.unwrap().contains("continuing remaining V checks"));
+        } else {
+            assert!(output.is_none());
+        }
+        count += 1;
+    }
+    let text = p.heartbeat();
+    assert!(text.contains(&format!("{count}/")), "{text}");
+    assert!(
+        text.contains(&format!("{fatal} fatal; continuing V checks")),
+        "{text}"
+    );
+    assert!(!text.contains("waiting for process exit"));
+}
+#[test]
 fn sampling_aggregates_across_workers_without_printing_cases_or_rates() {
     let mut r = record();
     let case = "chain/plan-build/rq/k64";

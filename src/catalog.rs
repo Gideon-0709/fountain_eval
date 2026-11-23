@@ -13,6 +13,7 @@ pub const WORKLOADS: &str = include_str!("../drivers/workloads.rs");
 pub const CONTRACTS: &str = include_str!("../drivers/contracts.rs");
 pub const TELEMETRY: &str = include_str!("../drivers/telemetry.rs");
 pub const COMMON: &str = include_str!("../drivers/common.rs");
+pub const FINDINGS: &str = include_str!("findings.rs");
 pub const OPERATOR: &str = include_str!("../drivers/operator.rs");
 pub const NATIVE: &str = include_str!("../drivers/native.rs");
 pub const PRODUCT: &str = include_str!("../drivers/product.rs");
@@ -37,11 +38,9 @@ impl Recipe {
         self.checks.get(case).cloned()
     }
     pub fn validation_cases(&self) -> Vec<String> {
-        self.checks
-            .iter()
-            .filter(|(_, c)| c.skip.is_none())
-            .map(|(name, _)| name.clone())
-            .collect()
+        let mut checks: Vec<_> = self.checks.values().filter(|c| c.skip.is_none()).collect();
+        checks.sort_by(|a, b| a.spec.validation_key().cmp(&b.spec.validation_key()));
+        checks.into_iter().map(|c| c.spec.id.clone()).collect()
     }
 }
 pub fn recipe(test: &TestReference) -> Result<Recipe> {
@@ -75,6 +74,8 @@ pub fn recipe(test: &TestReference) -> Result<Recipe> {
     let definition = json!({"purpose":"formal","selection":"all applicable cases","workers":crate::content::WORKERS,
         "samples_per_worker":crate::content::SAMPLES_PER_WORKER,"warmups_per_worker":1,
         "case_order":"within each category: sorted, reversed, then rotated halfway across workers",
+        "validation_order":"V01 through V11, stable case IDs within each family; then performance prechecks",
+        "validation_failure":"complete all independent applicable V checks; any V fatal blocks all O/L/W prechecks and measurements; warnings do not block",
         "seeds":crate::content::SEEDS,"random_generator":"splitmix64-low-byte-v1",
         "build":{"toolchain":"1.89.0","profile":"release","opt_level":3,"codegen_units":1,"lto":false,"target_cpu":"native"},
         "timeout_seconds":600,"fresh_case_timeout_seconds":60,
@@ -87,6 +88,7 @@ pub fn recipe(test: &TestReference) -> Result<Recipe> {
         &checks,
         CONTENT,
         COMMON,
+        FINDINGS,
         REFERENCE,
         WORKLOADS,
         CONTRACTS,

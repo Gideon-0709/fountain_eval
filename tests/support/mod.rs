@@ -138,3 +138,49 @@ pub fn built(directory: &Path) -> Built {
         product_library: None,
     }
 }
+
+pub fn violation(
+    case: &str,
+    contract: &str,
+    kind: fountain_eval::findings::FailureKind,
+) -> serde_json::Value {
+    json!(fountain_eval::findings::Violation {
+        contract_id: contract.into(),
+        failure_kind: kind,
+        requirement: "The fixture must satisfy its explicit contract.".into(),
+        context: json!({"case":case}),
+        difference: None
+    })
+}
+pub fn attach_warning_findings(r: &mut Record) {
+    let plan = r.recipe.as_ref().unwrap();
+    for event in &mut r.validation {
+        if event["severity"] == "warning" {
+            let c = &plan.checks[event["case"].as_str().unwrap()].spec;
+            event["finding"] = json!(fountain_eval::findings::boundary_violation(
+                c,
+                &event["expected"],
+                &event["actual"]
+            ));
+        }
+    }
+    for sample in &mut r.samples {
+        let Some(observation) = sample.observation.as_mut() else {
+            continue;
+        };
+        let c = &plan.checks[&sample.case].spec;
+        let event = r
+            .validation
+            .iter()
+            .find(|e| e["case"] == sample.case)
+            .unwrap();
+        for outcome in observation["outcomes"].as_array_mut().unwrap() {
+            outcome["finding"] = json!(fountain_eval::findings::boundary_violation(
+                c,
+                &event["expected"],
+                &outcome["actual"]
+            ));
+        }
+        sample.witness = util::digest(observation);
+    }
+}

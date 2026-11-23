@@ -26,6 +26,8 @@ pub struct Check {
 /// Verify the registered check coverage. Only fatal mismatches reject execution.
 pub fn verify(recipe: &Recipe, events: &[Value]) -> Result<()> {
     let mut seen = BTreeSet::new();
+    let mut fatal = 0;
+    let mut v_fatal = false;
     for event in events {
         let case = event["case"].as_str().ok_or("validation case missing")?;
         let check = recipe.check(case).ok_or("unregistered correctness check")?;
@@ -35,13 +37,27 @@ pub fn verify(recipe: &Recipe, events: &[Value]) -> Result<()> {
         if !seen.insert(case.to_owned()) {
             return Err("duplicate validation case".into());
         }
-        if event["severity"] != serde_json::to_value(check.severity).unwrap()
-            || event["rule"] != check.rule
+        if event["status"] == "failed" {
+            let violation: crate::findings::Violation =
+                serde_json::from_value(event["finding"].clone())
+                    .map_err(|_| "failed check is missing its structured contract/failure kind")?;
+            if !violation.validate(case) {
+                return Err("invalid structured correctness finding".into());
+            }
+        }
+        let integrity_failure = event["rule"] == "execution-integrity"
+            && event["severity"] == "fatal"
+            && event["status"] == "failed"
+            && event["message"].as_str().is_some();
+        if (!integrity_failure
+            && (event["severity"] != serde_json::to_value(check.severity).unwrap()
+                || event["rule"] != check.rule))
             || !matches!(event["status"].as_str(), Some("passed" | "failed"))
         {
             return Err("correctness result does not match its registered severity/rule".into());
         }
         if check.severity == Severity::Warning
+            && !integrity_failure
             && (event.get("expected").is_none()
                 || event.get("actual").is_none()
                 || event["status"]
@@ -54,15 +70,50 @@ pub fn verify(recipe: &Recipe, events: &[Value]) -> Result<()> {
         {
             return Err("inconsistent semantic warning evidence".into());
         }
-        if check.severity == Severity::Fatal && event["status"] == "failed" {
-            return Err(format!("fatal correctness check failed: {case}"));
+        if check.severity == Severity::Warning
+            && !integrity_failure
+            && !crate::findings::verify_boundary(
+                &check.spec,
+                &event["expected"],
+                &event["actual"],
+                &event["finding"],
+            )
+        {
+            return Err("boundary observation does not match its structured finding".into());
+        }
+        if (check.severity == Severity::Fatal || integrity_failure) && event["status"] == "failed" {
+            fatal += 1;
+            v_fatal |= check.spec.validation_family().is_some();
         }
         if event["witness"].as_str().is_none() {
             return Err("validation witness missing".into());
         }
     }
-    if seen != recipe.validation_cases().into_iter().collect() {
-        return Err("incomplete correctness evidence".into());
+    let expected: Vec<_> = recipe
+        .validation_cases()
+        .into_iter()
+        .filter(|case| !v_fatal || recipe.checks[case].spec.validation_family().is_some())
+        .collect();
+    if events
+        .iter()
+        .map(|e| e["case"].as_str().unwrap())
+        .ne(expected.iter().map(String::as_str))
+    {
+        return Err(if v_fatal {
+            "incomplete or out-of-order V evidence, or O/L/W executed after V fatal".into()
+        } else {
+            "incomplete or out-of-order correctness evidence".into()
+        });
+    }
+    if fatal > 0 {
+        return Err(if v_fatal {
+            format!(
+                "{fatal} fatal correctness checks failed; all {} applicable V checks completed; O/L/W were not executed",
+                expected.len()
+            )
+        } else {
+            format!("{fatal} fatal performance prechecks failed")
+        });
     }
     Ok(())
 }
@@ -121,6 +172,21 @@ pub fn report(record: &Record) -> Report {
                 let mut warning = event.clone();
                 warning["status"] = json!("failed");
                 warning["measured_observations"] = json!(observations);
+                let mut findings = BTreeMap::new();
+                for finding in
+                    std::iter::once(&event["finding"]).chain(observations.iter().flat_map(|o| {
+                        o["actual"]["outcomes"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .map(|o| &o["finding"])
+                    }))
+                {
+                    if !finding.is_null() {
+                        findings.insert(crate::util::digest(finding), finding.clone());
+                    }
+                }
+                warning["findings"] = json!(findings.into_values().collect::<Vec<_>>());
                 warnings.insert(case.to_owned(), warning);
             }
         }
@@ -130,7 +196,9 @@ pub fn report(record: &Record) -> Report {
         && matches!(record.stage.as_str(), "validate" | "measure" | "diagnose")
         && out.fatal_failures.is_empty()
     {
-        out.fatal_failures.push(json!({"severity":"fatal","rule":"execution-integrity","phase":record.stage,"message":error}));
+        out.fatal_failures.push(json!({"severity":"fatal","rule":"execution-integrity","phase":record.stage,"message":error,
+            "finding":crate::findings::Violation {contract_id:format!("execution.{}",record.stage),failure_kind:crate::findings::FailureKind::ExecutionFailure,
+                requirement:"The driver must complete the requested execution stage.".into(),context:json!({"case":"","phase":record.stage}),difference:None}}));
     }
     out.status = if !out.fatal_failures.is_empty() {
         "failed"

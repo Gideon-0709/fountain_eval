@@ -1,4 +1,5 @@
 //! T-owned operator contracts. Value oracles and equivalence relations have separate owners.
+use crate::findings::{self, Contract, FailureKind as Kind};
 use crate::{
     content::{self, Action, Case},
     reference::{self, State},
@@ -31,8 +32,22 @@ fn oracle_step<S: Subject>(
     context: &str,
 ) {
     reference::apply(state, action, c.width, seed);
-    subject.apply(action, c.width, seed, true);
-    assert_eq!(subject.observe(state), *state, "{context}: {action:?}");
+    let contract = findings::operator_contract(action);
+    findings::scope(
+        contract.clone(),
+        json!({"operation":action,"input_seed":seed,"dispatch":"direct"}),
+        || {
+            subject.apply(action, c.width, seed, true);
+            findings::states(
+                contract,
+                state,
+                &subject.observe(state),
+                ("Expected", "Observed"),
+                Kind::ValueMismatch,
+                &format!("{context}: {action:?}"),
+            );
+        },
+    );
 }
 
 fn arithmetic<S: Subject>(c: &Case) -> Value {
@@ -165,8 +180,25 @@ fn storage<S: Subject>(c: &Case) -> Value {
                     // A zero-write after copy checks the copied storage state,
                     // including deferred writes, without another GF value matrix.
                     state.get_mut(id).unwrap().fill(0);
-                    subject.apply(next, c.width, seed, true);
-                    assert_eq!(subject.observe(&state), state, "{context}: {next:?}");
+                    let contract = Contract::new(
+                        "storage.copy.isolation",
+                        "Writes to copied storage must take effect and preserve the other symbol.",
+                    );
+                    findings::scope(
+                        contract.clone(),
+                        json!({"operation":next,"input_seed":seed,"probe":"copy-isolation","dispatch":"direct"}),
+                        || {
+                            subject.apply(next, c.width, seed, true);
+                            findings::states(
+                                contract,
+                                &state,
+                                &subject.observe(&state),
+                                ("Expected", "Observed"),
+                                Kind::ValueMismatch,
+                                &format!("{context}: {next:?}"),
+                            );
+                        },
+                    );
                 } else {
                     oracle_step(&mut subject, &mut state, next, c, seed, &context);
                 }
@@ -283,16 +315,51 @@ fn equivalent<S: Subject>(c: &Case, action: &Action, pattern: usize, singles: Op
     );
     let mut live: State = state.keys().map(|&id| (id, Vec::new())).collect();
     observe_after(&mut live, action);
-    assert_eq!(left.observe(&live), right.observe(&live), "{context}");
+    let contract = Contract::new(
+        if singles.is_some() {
+            "composition.equivalence"
+        } else {
+            "dispatch.equivalence"
+        },
+        "The compared public execution paths must produce identical live symbol bytes.",
+    );
+    let labels = if singles.is_some() {
+        ("Batch", "Elementary calls")
+    } else {
+        ("Direct", "Execute")
+    };
+    findings::scope(
+        contract.clone(),
+        json!({"operation":action,"comparison":[labels.0,labels.1],"dispatch":format!("{} versus {}",labels.0,labels.1)}),
+        || {
+            findings::states(
+                contract.clone(),
+                &left.observe(&live),
+                &right.observe(&live),
+                labels,
+                Kind::PathMismatch,
+                &context,
+            );
+        },
+    );
     for (index, next) in followups(action).iter().enumerate() {
         let seed = c.seed.wrapping_add(index as u64 + 1);
         left.apply(next, c.width, seed, true);
         right.apply(next, c.width, seed, true);
         observe_after(&mut live, next);
-        assert_eq!(
-            left.observe(&live),
-            right.observe(&live),
-            "{context}, independence/reuse step={index}"
+        findings::scope(
+            contract.clone(),
+            json!({"operation":action,"probe_operation":next,"comparison":[labels.0,labels.1],"step":index+1,"dispatch":format!("{} versus {}",labels.0,labels.1)}),
+            || {
+                findings::states(
+                    contract.clone(),
+                    &left.observe(&live),
+                    &right.observe(&live),
+                    labels,
+                    Kind::PathMismatch,
+                    &format!("{context}, independence/reuse step={index}"),
+                );
+            },
         );
     }
 }
@@ -328,13 +395,17 @@ fn dispatch<S: Subject>(c: &Case) -> Value {
 }
 
 pub fn validate<S: Subject>(c: &Case) -> Value {
-    match c.workload.as_str() {
-        "operator-reference" => arithmetic::<S>(c),
-        "storage-ownership" => storage::<S>(c),
-        "dispatch-equivalence" => dispatch::<S>(c),
-        "mixed-sequence" => mixed_sequence::<S>(c),
-        _ => panic!("unknown operator contract {}", c.workload),
-    }
+    findings::scope(
+        findings::case_contract(c),
+        findings::case_context(c),
+        || match c.workload.as_str() {
+            "operator-reference" => arithmetic::<S>(c),
+            "storage-ownership" => storage::<S>(c),
+            "dispatch-equivalence" => dispatch::<S>(c),
+            "mixed-sequence" => mixed_sequence::<S>(c),
+            _ => panic!("unknown operator contract {}", c.workload),
+        },
+    )
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -493,41 +564,15 @@ pub fn sequence_steps(c: &Case) -> Vec<SequenceStep> {
         .collect()
 }
 
-fn panic_text(error: Box<dyn std::any::Any + Send>) -> String {
-    error
-        .downcast_ref::<String>()
-        .cloned()
-        .or_else(|| error.downcast_ref::<&str>().map(|s| s.to_string()))
-        .unwrap_or_else(|| "non-string panic".into())
-}
-
 /// Bounded, exact first-difference diagnostics; never dump the whole state.
-fn require_state(actual: &State, expected: &State, context: &str) {
-    for (id, bytes) in expected {
-        if actual.get(id) == Some(bytes) {
-            continue;
-        }
-        let observed = actual.get(id);
-        let offset = observed.map_or(0, |v| {
-            v.iter()
-                .zip(bytes)
-                .position(|(a, b)| a != b)
-                .unwrap_or(v.len().min(bytes.len()))
-        });
-        panic!(
-            "{context}\nFirst difference: symbol {id}, byte {offset}; expected {}; actual {}; expected length {}; actual length {}.",
-            bytes.get(offset).map_or("missing".into(), u8::to_string),
-            observed
-                .and_then(|v| v.get(offset))
-                .map_or("missing".into(), u8::to_string),
-            bytes.len(),
-            observed.map_or("missing".into(), |v| v.len().to_string())
-        );
-    }
-    assert_eq!(
-        actual.len(),
-        expected.len(),
-        "{context}: unexpected observation keys"
+fn require_state(actual: &State, expected: &State, context: &str, contract: Contract, kind: Kind) {
+    findings::states(
+        contract,
+        expected,
+        actual,
+        ("Expected", "Observed"),
+        kind,
+        context,
     );
 }
 
@@ -574,17 +619,23 @@ fn mixed_sequence<S: Subject>(c: &Case) -> Value {
             step.action
         );
         reference::apply(&mut state, &step.action, c.width, step.seed);
-        let observed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            subject.apply(&step.action, c.width, step.seed, direct);
-            subject.observe(&state)
-        }))
-        .unwrap_or_else(|e| {
-            panic!(
-                "{context}\nComponent call or observation panicked: {}",
-                panic_text(e)
-            )
-        });
-        require_state(&observed, &state, &context);
+        let contract = findings::operator_contract(&step.action);
+        findings::scope(
+            contract.clone(),
+            json!({"operation":step.action,"scenario":spec.scenario,"route":spec.dispatch.name(),
+            "step":index+1,"total_steps":steps.len(),"dispatch":if direct{"direct"}else{"execute"},"input_seed":step.seed,
+            "trace_sha256":trace_digest,"pre_state_sha256":before,"previous_steps":recent,"diagnostic":context}),
+            || {
+                subject.apply(&step.action, c.width, step.seed, direct);
+                require_state(
+                    &subject.observe(&state),
+                    &state,
+                    &context,
+                    contract,
+                    Kind::ValueMismatch,
+                );
+            },
+        );
         peak_live = peak_live.max(state.len());
         max_id = max_id.max(*state.keys().next_back().unwrap());
         paths[usize::from(!direct)] += 1;
@@ -599,7 +650,7 @@ fn mixed_sequence<S: Subject>(c: &Case) -> Value {
 
 /// Apply the boundary's scope rule even when its semantic outcome is only a warning.
 /// This is called outside the timer, for validation and every measured instance.
-pub fn boundary_observation<S: Subject>(
+fn boundary_observation_inner<S: Subject>(
     subject: &S,
     c: &Case,
     initial: &State,
@@ -607,9 +658,15 @@ pub fn boundary_observation<S: Subject>(
     rejected: bool,
 ) -> Value {
     let contract = c.boundary.as_ref().expect("V06 contract missing");
-    assert_eq!(
-        c.warning, !contract.defined,
-        "V06 severity/contract mismatch"
+    findings::equal(
+        Contract::new(
+            format!("boundary.{}.policy", c.workload),
+            "The registered boundary severity must match its defined/ambiguous contract.",
+        ),
+        Kind::AssertionFailed,
+        &c.warning,
+        &!contract.defined,
+        || "V06 severity/contract mismatch".into(),
     );
     let context = format!(
         "V06 {}: width={}, dispatch={}; {} Basis: {}",
@@ -624,40 +681,96 @@ pub fn boundary_observation<S: Subject>(
         .filter(|(id, _)| !contract.affected_ids.contains(id))
         .map(|(&id, bytes)| (id, bytes.clone()))
         .collect();
+    let scope_contract = Contract::new(
+        format!("boundary.{}.scope", c.workload),
+        "Symbols outside the boundary operation's affected set must remain readable and unchanged.",
+    );
     let actual =
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| subject.observe(&protected)))
             .unwrap_or_else(|e| {
-                panic!(
-                    "{context}\nProtected symbols became unreadable: {}",
-                    panic_text(e)
+                findings::fail(
+                    scope_contract.clone(),
+                    Kind::OutputUnreadable,
+                    json!({}),
+                    None,
+                    format!(
+                        "{context}\nProtected symbols became unreadable: {}",
+                        findings::panic_message(e.as_ref())
+                    ),
                 )
             });
     require_state(
         &actual,
         &protected,
         &format!("{context}\nProtected-symbol corruption (fatal even for an ambiguous boundary)."),
+        scope_contract,
+        Kind::ScopeCorruption,
     );
     if rejected {
-        assert!(
+        findings::require(
+            Contract::new(
+                format!("boundary.{}.defined", c.workload),
+                &contract.expectation,
+            ),
+            Kind::CallRejected,
             !contract.defined,
-            "{context}\nDefined boundary call was rejected."
+            || format!("{context}\nDefined boundary call was rejected."),
         );
         return json!({"status":"rejected_by_panic","scope":"boundary call rejection latency; no completed operation"});
     }
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| subject.observe(expected))) {
         Ok(actual) => {
             if contract.defined {
-                require_state(&actual, expected, &context);
+                require_state(
+                    &actual,
+                    expected,
+                    &context,
+                    Contract::new(
+                        format!("boundary.{}.defined", c.workload),
+                        &contract.expectation,
+                    ),
+                    Kind::ValueMismatch,
+                );
             }
             reference::compact(&actual)
         }
         Err(error) => {
-            assert!(
+            findings::require(
+                Contract::new(
+                    format!("boundary.{}.defined", c.workload),
+                    &contract.expectation,
+                ),
+                Kind::OutputUnreadable,
                 !contract.defined,
-                "{context}\nDefined boundary output unreadable: {}",
-                panic_text(error)
+                || {
+                    format!(
+                        "{context}\nDefined boundary output unreadable: {}",
+                        findings::panic_message(error.as_ref())
+                    )
+                },
             );
             json!({"status":"output_unreadable_after_boundary_call"})
         }
     }
+}
+
+pub fn boundary_observation<S: Subject>(
+    subject: &S,
+    c: &Case,
+    initial: &State,
+    expected: &State,
+    rejected: bool,
+) -> Value {
+    findings::scope(
+        Contract::new(
+            format!("boundary.{}.defined", c.workload),
+            c.boundary
+                .as_ref()
+                .map_or("The boundary must satisfy its registered contract.", |b| {
+                    b.expectation.as_str()
+                }),
+        ),
+        findings::case_context(c),
+        || boundary_observation_inner(subject, c, initial, expected, rejected),
+    )
 }

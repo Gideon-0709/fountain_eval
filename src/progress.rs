@@ -236,11 +236,36 @@ pub fn phase_started(name: &str) {
         false,
     );
 }
+fn v_failed(r: &Record) -> bool {
+    r.validation.iter().any(|e| {
+        e["severity"] == "fatal"
+            && e["status"] == "failed"
+            && r.recipe
+                .as_ref()
+                .and_then(|p| p.checks.get(e["case"].as_str().unwrap_or("")))
+                .is_some_and(|c| c.spec.validation_family().is_some())
+    })
+}
 fn totals(r: &Record, name: &str) -> (usize, usize, &'static str) {
     let Some(p) = &r.recipe else {
         return (0, 0, "");
     };
     match name {
+        "validate" if v_failed(r) => (
+            r.validation
+                .iter()
+                .filter(|e| {
+                    p.checks
+                        .get(e["case"].as_str().unwrap_or(""))
+                        .is_some_and(|c| c.spec.validation_family().is_some())
+                })
+                .count(),
+            p.checks
+                .values()
+                .filter(|c| c.skip.is_none() && c.spec.validation_family().is_some())
+                .count(),
+            "V checks",
+        ),
         "validate" => (r.validation.len(), p.validation_cases().len(), "checks"),
         "measure" | "first-use" => (r.samples.len(), p.cases.len() * p.repetitions, "samples"),
         "diagnose" | "complete" => (
@@ -280,6 +305,13 @@ pub fn phase_finished(r: &Record, name: &str, success: bool) {
     if name == "validate" && !r.correctness.warnings.is_empty() {
         let _ = write!(text, " | {} warnings", r.correctness.warnings.len());
     }
+    if name == "validate" && v_failed(r) {
+        let _ = write!(
+            text,
+            " | {} fatal | O/L/W blocked",
+            r.correctness.fatal_failures.len()
+        );
+    }
     if name == "measure" {
         let incomplete = r
             .samples
@@ -300,9 +332,14 @@ pub fn plan(r: &Record) {
     let Some(plan) = &r.recipe else {
         return;
     };
+    let v = plan
+        .checks
+        .values()
+        .filter(|c| c.skip.is_none() && c.spec.validation_family().is_some())
+        .count();
     line(format!(
-        "  PLAN  {} checks | {} measured cases",
-        plan.validation_cases().len(),
+        "  PLAN  {v} V checks | {} performance prechecks | {} measured cases",
+        plan.validation_cases().len() - v,
         plan.cases.len()
     ));
     let mut reasons = BTreeMap::<String, usize>::new();
@@ -351,11 +388,8 @@ pub fn component_finished(r: &Record) {
         );
     }
     if !success {
-        let missing = r
-            .recipe
-            .as_ref()
-            .map_or(0, |p| p.validation_cases().len())
-            .saturating_sub(r.validation.len());
+        let (done, total, _) = totals(r, "validate");
+        let missing = total.saturating_sub(done);
         if missing > 0 {
             let _ = write!(text, " | {missing} checks not executed");
         }
@@ -421,6 +455,7 @@ pub struct DriverProgress<'a> {
     seen: BTreeSet<(String, usize)>,
     received: usize,
     warnings: usize,
+    fatals: usize,
     incomplete: usize,
     hello: bool,
     invalid: bool,
@@ -470,6 +505,7 @@ impl<'a> DriverProgress<'a> {
             seen: BTreeSet::new(),
             received: 0,
             warnings: 0,
+            fatals: 0,
             incomplete: 0,
             hello: false,
             invalid: false,
@@ -517,13 +553,24 @@ impl<'a> DriverProgress<'a> {
         if self.mode == "describe" {
             return "  LIVE  Preparation: checking native capabilities".into();
         }
-        let (previous, total, unit) = totals(self.record, self.mode);
+        let (previous, mut total, unit) = totals(self.record, self.mode);
+        if self.mode == "validate" && self.fatals > 0 {
+            total = self.record.recipe.as_ref().map_or(0, |p| {
+                p.checks
+                    .values()
+                    .filter(|c| c.skip.is_none() && c.spec.validation_family().is_some())
+                    .count()
+            });
+        }
         let mut text = format!(
             "  LIVE  {label}: {}/{total} {unit} observed",
             previous + self.received
         );
         if self.warnings > 0 {
             let _ = write!(text, " | {} warnings", self.warnings);
+        }
+        if self.fatals > 0 {
+            let _ = write!(text, " | {} fatal; continuing V checks", self.fatals);
         }
         let incomplete = self.incomplete
             + if matches!(self.mode, "measure" | "first-use") {
@@ -605,10 +652,13 @@ impl<'a> DriverProgress<'a> {
             "workflow" => "Workflow tests",
             _ => "Other workloads",
         };
-        if kind == "validation"
+        let integrity_failure = kind == "validation"
             && event["severity"] == "fatal"
             && event["status"] == "failed"
             && event["rule"] == "execution-integrity"
+            && event["message"].as_str().is_some();
+        if integrity_failure
+            && (self.mode != "validate" || check.spec.validation_family().is_none())
         {
             self.invalid = true;
             return Some(format!(
@@ -622,8 +672,9 @@ impl<'a> DriverProgress<'a> {
             ));
         }
         if self.mode == "validate" && kind == "validation" {
-            if event["severity"] != serde_json::to_value(check.severity).unwrap()
-                || event["rule"] != check.rule
+            if (!integrity_failure
+                && (event["severity"] != serde_json::to_value(check.severity).unwrap()
+                    || event["rule"] != check.rule))
                 || !matches!(event["status"].as_str(), Some("passed" | "failed"))
                 || !self.seen.insert((case.into(), 0))
             {
@@ -631,14 +682,27 @@ impl<'a> DriverProgress<'a> {
             }
             self.received += 1;
             if event["status"] == "failed" {
-                if check.severity == Severity::Warning {
+                if check.severity == Severity::Warning && !integrity_failure {
                     self.warnings += 1;
                 } else {
-                    self.invalid = true;
-                    return Some("  FATAL Validation check failed; details in report".into());
+                    self.fatals += 1;
+                    if self.fatals == 1 {
+                        return Some(format!(
+                            "  FATAL Validation: {}; continuing remaining V checks",
+                            concise(
+                                event["message"]
+                                    .as_str()
+                                    .unwrap_or("check failed; details in report")
+                            )
+                        ));
+                    }
                 }
             }
-            self.section(category);
+            self.section(if check.spec.validation_family().is_some() {
+                "Validation tests (V01–V11)"
+            } else {
+                category
+            });
             return None;
         }
         if matches!(self.mode, "measure" | "first-use") && kind == "sample" {

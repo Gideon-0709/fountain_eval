@@ -168,6 +168,7 @@ fn semantic_warnings_preserve_success_measurements_and_comparison() {
         sample.witness = util::digest(sample.observation.as_ref().unwrap());
         sample.elapsed_ns /= 2;
     }
+    support::attach_warning_findings(&mut right);
     evidence::validate_samples(&right).unwrap();
     let report = fountain_eval::validation::report(&right);
     assert_eq!(report.status, "passed_with_warnings");
@@ -200,6 +201,7 @@ fn measured_boundary_variation_is_reported_without_becoming_fatal() {
     sample.observation =
         Some(json!({"calls":64,"outcomes":[{"count":1,"actual":[99]},{"count":63,"actual":[0]}]}));
     sample.witness = util::digest(sample.observation.as_ref().unwrap());
+    support::attach_warning_findings(&mut r);
     evidence::validate_samples(&r).unwrap();
     let report = fountain_eval::validation::report(&r);
     assert_eq!(report.status, "passed_with_warnings");

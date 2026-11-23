@@ -170,6 +170,18 @@ pub struct Case {
     pub requires: Vec<String>,
 }
 impl Case {
+    /// V checks run first, in family order, including timed boundary checks.
+    pub fn validation_family(&self) -> Option<&str> {
+        self.family.split(',').find(|family| {
+            family.strip_prefix('V').is_some_and(|number| {
+                !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())
+            })
+        })
+    }
+    pub fn validation_key(&self) -> (bool, &str, &str) {
+        let family = self.validation_family();
+        (family.is_none(), family.unwrap_or(""), self.id.as_str())
+    }
     fn new(category: &str, family: &str, workload: &str) -> Self {
         Self {
             id: String::new(),

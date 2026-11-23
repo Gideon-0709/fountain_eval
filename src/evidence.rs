@@ -388,6 +388,17 @@ pub fn validate_samples(record: &Record) -> Result<()> {
                     .as_ref()
                     .ok_or("missing measured semantic observation")?;
                 crate::validation::verify_observation(actual, sample.operations)?;
+                let check = recipe.check(case).unwrap();
+                for outcome in actual["outcomes"].as_array().into_iter().flatten() {
+                    if !crate::findings::verify_boundary(
+                        &check.spec,
+                        &event["expected"],
+                        &outcome["actual"],
+                        &outcome["finding"],
+                    ) {
+                        return Err("timed boundary outcome is missing or inconsistent with its structured finding".into());
+                    }
+                }
                 if sample.witness != util::digest(actual) {
                     return Err("measured observation checksum mismatch".into());
                 }

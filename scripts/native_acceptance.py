@@ -142,11 +142,22 @@ def main():
             assert all(c["validation"]["status"] != "not_executed" for c in record["coverage"]["cases"])
             command(label+"-report", ["report", body["report"]], 0)
             markdown = (work / (label + "-report.stdout")).read_text()
-            assert "## Validation and warnings" in markdown and "## Coverage and measurement context" in markdown
+            assert "## Summary" in markdown and "## Validation tests (V)" in markdown
+            assert "## Fatal and warning findings" not in markdown
+            assert "### Fatal" in markdown and "### Warning" in markdown and "### Detailed results" in markdown
             results[label] = body
         elif body.get("result", {}).get("status") != "prepared":
             assert not body.get("result", {}).get("summary"), "Failure published a complete performance summary"
         return body, code
+
+    def complete_failed_v(record):
+        assert record["stage"] == "validate" and record["sample_count"] == 0
+        applicable = [c for c in record["coverage"]["cases"] if c["validation"]["status"] != "skipped"]
+        v = [c for c in applicable if any(f.startswith("V") for f in c["family"].split(","))]
+        other = [c for c in applicable if c not in v]
+        assert v and all(c["validation"]["status"] in ("passed", "failed") for c in v)
+        assert all(c["validation"]["status"] == "not_executed" for c in other)
+        assert "all " in record["error"] and "applicable V checks completed" in record["error"]
 
     def known_operator(label, engine, operator, scheme):
         body, code = run(label, engine, operator, scheme)
@@ -158,8 +169,9 @@ def main():
         record = body["result"]
         failures = record["correctness"]["fatal_failures"]
         assert code == 4 and record["stage"] == "validate", ledger[-1]
-        assert any("MulAdd" in v.get("message", "") and "scalar: 0" in v.get("message", "") for v in failures), failures
-        ledger[-1]["classification"] = "Verified fatal GF mul-add-zero defect; later cases remain not executed; no positive whole-suite coverage"
+        assert any(v.get("finding", {}).get("contract_id") == "operator.mul_add.zero" and v["finding"].get("failure_kind") == "value_mismatch" for v in failures), failures
+        complete_failed_v(record)
+        ledger[-1]["classification"] = "All applicable V checks completed, including fatal GF mul-add-zero findings; O/L/W not executed"
         (work / "ledger.json").write_text(json.dumps(ledger, indent=2)+"\n")
 
     def known_arena(label, engine, arena, scheme):
@@ -170,12 +182,13 @@ def main():
             assert record["stage"] == "validate" and record["sample_count"] == 0, ledger[-1]
             assert any(
                 v.get("case", "").startswith("correctness/receive-contract/")
-                and "V10 missing-with-duplicates" in v.get("message", "")
-                and "expected Some(" in v.get("message", "")
-                and "actual Some(" in v.get("message", "")
+                and v.get("finding", {}).get("contract_id") == "codec.recovered-payload"
+                and v["finding"].get("failure_kind") == "value_mismatch"
+                and v["finding"]["context"].get("scenario") == "missing-with-duplicates"
                 for v in failures
             ), failures
-            ledger[-1]["classification"] = "V10 repeated-input corruption; no measured coverage"
+            complete_failed_v(record)
+            ledger[-1]["classification"] = "All applicable V checks completed, including V10 repeated-input corruption; O/L/W not executed"
             (work / "ledger.json").write_text(json.dumps(ledger, indent=2)+"\n")
         else:
             assert code == 0, ledger[-1]

@@ -657,6 +657,7 @@ pub fn prepare(
         ),
         ("selected.rs", selected.as_str()),
         ("content.rs", catalog::CONTENT),
+        ("findings.rs", catalog::FINDINGS),
         ("reference.rs", catalog::REFERENCE),
         ("workloads.rs", catalog::WORKLOADS),
         ("contracts.rs", catalog::CONTRACTS),

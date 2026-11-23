@@ -185,7 +185,7 @@ fn failed_invalid_sample_prefix_still_has_a_publishable_failure_report() {
     assert!(saved.components[0].aggregation_error.is_some());
     assert!(saved.components[0].summary.is_empty());
     let body = report::snapshot(&saved);
-    assert!(body.contains("Partial samples could not be aggregated"));
+    assert!(body.contains("Sample aggregation issue"));
     let path = artifact::publish(&t.0.join("reports"), &body, &saved).unwrap();
     artifact::cleanup(&raw, &path).unwrap();
     assert_eq!(

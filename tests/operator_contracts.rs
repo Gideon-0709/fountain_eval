@@ -1,5 +1,5 @@
 //! Fault injection runs the exact embedded contract checks without a production codec dependency.
-pub use fountain_eval::content;
+pub use fountain_eval::{content, findings};
 #[path = "../drivers/contracts.rs"]
 mod contracts;
 #[allow(dead_code)]
@@ -115,12 +115,7 @@ fn run(workload: &str, fault: Fault) -> Result<serde_json::Value, String> {
     FAULT.set(fault);
     let result = std::panic::catch_unwind(|| contracts::validate::<Fixture>(&case(workload, 31)));
     FAULT.set(Fault::None);
-    result.map_err(|e| {
-        e.downcast_ref::<String>()
-            .cloned()
-            .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
-            .unwrap()
-    })
+    result.map_err(|e| findings::panic_message(e.as_ref()))
 }
 
 #[test]
@@ -134,6 +129,39 @@ fn independent_values_storage_and_equivalence_pass_on_valid_behavior() {
     }
     let checks = contracts::validate::<Fixture>(&case("operator-reference", 1));
     assert_eq!(checks["exhaustive_scalar_checks"], 65536);
+}
+
+#[test]
+fn actual_check_sites_emit_the_same_zero_mul_add_contract_across_families() {
+    use findings::{Failure, FailureKind};
+    FAULT.set(Fault::ArithmeticBothPaths);
+    let arithmetic =
+        std::panic::catch_unwind(|| contracts::validate::<Fixture>(&case("operator-reference", 1)))
+            .unwrap_err()
+            .downcast::<Failure>()
+            .unwrap()
+            .violation;
+    let history = content::cases()
+        .into_iter()
+        .find(|c| {
+            c.width == 1
+                && c.workload == "mixed-sequence"
+                && c.sequence.as_ref().is_some_and(|s| s.scenario == "seeded")
+        })
+        .unwrap();
+    let sequence = std::panic::catch_unwind(|| contracts::validate::<Fixture>(&history))
+        .unwrap_err()
+        .downcast::<Failure>()
+        .unwrap()
+        .violation;
+    FAULT.set(Fault::None);
+    assert_eq!(arithmetic.contract_id, "operator.mul_add.zero");
+    assert_eq!(arithmetic.context["dispatch"], "direct");
+    assert_eq!(arithmetic.contract_id, sequence.contract_id);
+    assert_eq!(sequence.failure_kind, FailureKind::ValueMismatch);
+    assert!(sequence.context["step"].as_u64().unwrap() > 0);
+    assert_eq!(sequence.context["operation"]["op"], "mul_add");
+    assert_eq!(sequence.difference.unwrap().right, serde_json::json!(0));
 }
 
 #[test]
@@ -230,7 +258,7 @@ fn history(c: &Case, fault: Fault) -> Result<serde_json::Value, String> {
     FAULT.set(fault);
     let result = std::panic::catch_unwind(|| contracts::validate::<HistoryFixture>(c));
     FAULT.set(Fault::None);
-    result.map_err(|e| e.downcast_ref::<String>().cloned().unwrap())
+    result.map_err(|e| findings::panic_message(e.as_ref()))
 }
 #[test]
 fn histories_are_reproducible_valid_and_identical_across_routes() {
@@ -413,7 +441,7 @@ fn ambiguous_boundaries_never_excuse_unrelated_symbol_corruption() {
                 contracts::boundary_observation(&bad, &c, &initial, &expected, rejected)
             }))
             .unwrap_err();
-            let text = error.downcast_ref::<String>().unwrap();
+            let text = findings::panic_message(error.as_ref());
             assert!(
                 text.contains("Protected-symbol corruption") && text.contains("symbol 15, byte 0")
             );

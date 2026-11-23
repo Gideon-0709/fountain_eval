@@ -1,7 +1,10 @@
 //! Markdown reports: one self-contained reading surface, backed by sealed evidence.
 use crate::{artifact::Component, evidence::Record, measurement::Summary};
 use serde_json::Value;
-use std::{collections::BTreeMap, fmt::Write as _};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt::Write as _,
+};
 
 const PAGE: usize = 12;
 const CATEGORIES: [(&str, &str); 4] = [
@@ -324,100 +327,283 @@ fn important(c: &crate::content::Case) -> bool {
         _ => false,
     }
 }
+fn report_metadata(
+    run: &str,
+    config: &std::path::Path,
+    request: &crate::protocol::EvaluationRequest,
+    elapsed: u64,
+    status: &str,
+) -> Vec<Vec<String>> {
+    vec![
+        vec!["Run".into(), run.into()],
+        vec!["Configuration".into(), config.display().to_string()],
+        vec![
+            "Scheme".into(),
+            format!(
+                "{} · {}",
+                request.scheme.name.to_uppercase(),
+                request.scheme.mode
+            ),
+        ],
+        vec!["Test content version".into(), request.test.version.clone()],
+        vec!["Run wall time".into(), seconds(elapsed)],
+        vec!["Overall result".into(), title(status)],
+    ]
+}
+
+fn summary(
+    out: &mut String,
+    components: &[Component],
+    requests: &[(u32, &crate::protocol::EvaluationRequest)],
+    metadata: Vec<Vec<String>>,
+) {
+    out.push_str("## Summary\n\n### Test configuration\n\n");
+    table(out, &["Setting", "Value"], metadata);
+    table(
+        out,
+        &["C", "Engine", "Operator", "Interface", "Cargo options"],
+        requests
+            .iter()
+            .map(|(id, request)| {
+                let component = components.iter().find(|c| c.component_id == *id);
+                let options =
+                    |role: &str, reference: Option<&crate::protocol::ComponentReference>| {
+                        reference.map(|r| {
+                            format!(
+                                "{role} · features [{}], defaults {}",
+                                r.build.features.join(", "),
+                                r.build.default_features
+                            )
+                        })
+                    };
+                let cargo: Vec<_> = [
+                    options("engine", request.components.engine.as_ref()),
+                    options("operator", request.components.operator.as_ref()),
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
+                vec![
+                    format!("C{id}"),
+                    component.map_or_else(
+                        || crate::progress::source(request.components.engine.as_ref()),
+                        |c| identity(c, "engine"),
+                    ),
+                    component.map_or_else(
+                        || crate::progress::source(request.components.operator.as_ref()),
+                        |c| identity(c, "operator"),
+                    ),
+                    component
+                        .and_then(|c| c.quadruple.as_ref())
+                        .map_or_else(|| "Unavailable".into(), |q| q.i.id.clone()),
+                    cargo.join(" / "),
+                ]
+            })
+            .collect(),
+    );
+    out.push_str("### Test environment\n\n");
+    let mut environments = BTreeMap::<&str, Vec<&Component>>::new();
+    for c in components {
+        if let Some(q) = &c.quadruple {
+            environments.entry(&q.e.digest).or_default().push(c);
+        }
+    }
+    for group in environments.values() {
+        let q = group[0].quadruple.as_ref().unwrap();
+        let runtime = &q.e.conditions["runtime"];
+        let build = &q.e.conditions["build"];
+        let cpu = &runtime["cpu"];
+        let model = cpu["brand"]
+            .as_str()
+            .or_else(|| cpu["cpu"]["model name"].as_str())
+            .or_else(|| cpu["model"].as_str())
+            .or_else(|| cpu.as_str())
+            .unwrap_or("Recorded in index");
+        let memory = cpu["memory"]
+            .as_str()
+            .map(|memory| {
+                memory.parse::<u64>().map_or_else(
+                    |_| memory.to_owned(),
+                    |bytes| format!("{:.1} GiB", bytes as f64 / 1073741824.0),
+                )
+            })
+            .unwrap_or_else(|| "Unavailable".into());
+        let rustc = build["rustc"]
+            .as_str()
+            .and_then(|text| text.lines().next())
+            .unwrap_or("Unavailable");
+        let names = group
+            .iter()
+            .map(|c| format!("C{}", c.component_id))
+            .collect::<Vec<_>>()
+            .join(", ");
+        table(
+            out,
+            &["Environment", &names],
+            vec![
+                vec![
+                    "Host".into(),
+                    format!("{} / {}", string(&runtime["os"]), string(&runtime["arch"])),
+                ],
+                vec!["CPU".into(), model.into()],
+                vec!["Memory".into(), memory],
+                vec!["Rust compiler".into(), rustc.into()],
+                vec![
+                    "Build".into(),
+                    format!(
+                        "{} · {}",
+                        string(&build["profile"]),
+                        string(&build["rustflags"])
+                    ),
+                ],
+            ],
+        );
+    }
+    let unresolved: Vec<_> = components
+        .iter()
+        .filter(|c| c.quadruple.is_none())
+        .map(|c| {
+            vec![
+                format!("C{}", c.component_id),
+                "Unavailable · stopped before environment/interface identity was completed".into(),
+            ]
+        })
+        .collect();
+    table(out, &["C", "Environment"], unresolved);
+    out.push_str("### Test results\n\n");
+}
+
+fn result_row(c: &Component) -> Vec<String> {
+    vec![
+        format!("C{}", c.component_id),
+        outcome(c),
+        c.correctness.fatal_failures.len().to_string(),
+        c.correctness.warnings.len().to_string(),
+        if c.sample_count == 0 {
+            "Not measured".into()
+        } else {
+            performance_summary(c)
+        },
+    ]
+}
+
 pub fn snapshot(saved: &crate::artifact::Snapshot) -> String {
     let b = &saved.batch;
-    let mut out = format!(
-        "# Fountain evaluation report\n\nRun: `{}` · **{}** · wall time {} · test {} · {}\n\n",
-        cell(&b.run_id),
-        title(&b.status),
-        seconds(b.elapsed_ns),
-        b.configuration.selections[0].request.test.version,
-        b.configuration.selections[0]
-            .request
-            .scheme
-            .name
-            .to_uppercase()
+    let mut out = "# Fountain evaluation report\n\n".to_owned();
+    summary(
+        &mut out,
+        &saved.components,
+        &b.configuration
+            .selections
+            .iter()
+            .map(|s| (s.id, &s.request))
+            .collect::<Vec<_>>(),
+        report_metadata(
+            &b.run_id,
+            &b.configuration.path,
+            &b.configuration.selections[0].request,
+            b.elapsed_ns,
+            &b.status,
+        ),
     );
-    out.push_str("## Key findings\n");
     table(
         &mut out,
-        &["C", "Engine / operator", "Outcome", "Performance"],
+        &["C", "Result", "Fatal", "Warning", "Performance"],
         b.entries
             .iter()
-            .map(|e| {
-                if let Some(c) = saved
+            .map(|entry| {
+                saved
                     .components
                     .iter()
-                    .find(|c| c.component_id == e.component_id)
-                {
-                    vec![
-                        format!("C{}", e.component_id),
-                        format!("{} + {}", identity(c, "engine"), identity(c, "operator")),
-                        outcome(c),
-                        if c.sample_count == 0 {
-                            "Not measured".into()
-                        } else {
-                            performance_summary(c)
+                    .find(|c| c.component_id == entry.component_id)
+                    .map_or_else(
+                        || {
+                            vec![
+                                format!("C{}", entry.component_id),
+                                format!(
+                                    "{} · {}",
+                                    title(&entry.status),
+                                    entry
+                                        .error
+                                        .as_deref()
+                                        .unwrap_or("No completed component record")
+                                ),
+                                "Not checked".into(),
+                                "Not checked".into(),
+                                "Not measured".into(),
+                            ]
                         },
-                    ]
-                } else {
-                    vec![
-                        format!("C{}", e.component_id),
-                        format!(
-                            "{} + {}",
-                            crate::progress::source(e.request.components.engine.as_ref()),
-                            crate::progress::source(e.request.components.operator.as_ref())
-                        ),
-                        format!(
-                            "{} · {}",
-                            title(&e.status),
-                            e.error.as_deref().unwrap_or("No child result")
-                        ),
-                        "Not measured".into(),
-                    ]
-                }
+                        result_row,
+                    )
             })
             .collect(),
     );
     sections(&mut out, &saved.components);
     out
 }
+
 pub fn markdown(r: &Record) -> String {
     match crate::artifact::Component::from_record(r) {
         Ok(mut c) => {
-            // The record's derived view is also used by callers constructing report previews.
             c.correctness = r.correctness.clone();
-            let mut out = format!(
-                "# Fountain evaluation report\n\nRun `{}` · C{} · **{}**\n\n",
-                cell(&r.run_id),
-                c.component_id,
-                outcome(&c)
+            let mut out = "# Fountain evaluation report\n\n".to_owned();
+            summary(
+                &mut out,
+                std::slice::from_ref(&c),
+                &[(c.component_id, &r.request)],
+                report_metadata(
+                    &r.run_id,
+                    &r.configuration.path,
+                    &r.request,
+                    r.timing.elapsed_ns,
+                    &r.status,
+                ),
+            );
+            table(
+                &mut out,
+                &["C", "Result", "Fatal", "Warning", "Performance"],
+                vec![result_row(&c)],
             );
             sections(&mut out, &[c]);
             out
         }
         Err(e) => format!(
-            "# Fountain evaluation report\n\nRun: `{}` · Report unavailable: {}.\n",
+            "# Fountain evaluation report\n\nRun: {} · Report unavailable: {}.\n",
             cell(&r.run_id),
             cell(&e)
         ),
     }
 }
+
 fn sections(out: &mut String, components: &[Component]) {
-    out.push_str("## Validation and warnings (V)\n\n");
-    for c in components {
-        findings(out, c);
-    }
-    if components
-        .iter()
-        .any(|c| c.status == "succeeded" && !c.summary.is_empty())
-    {
-        out.push_str("† marks benchmark timing CV above 10%.\n\n");
-    }
+    validation_results(out, components);
     operation_results(out, components);
     link_results(out, components);
     workflow_results(out, components);
+}
+
+fn validation_results(out: &mut String, components: &[Component]) {
+    out.push_str("## Validation tests (V)\n\n### Summary\n\n");
+    table(
+        out,
+        &["C", "Correctness", "Fatal cases", "Warning cases"],
+        components
+            .iter()
+            .map(|c| {
+                vec![
+                    format!("C{}", c.component_id),
+                    title(&c.correctness.status),
+                    c.correctness.fatal_failures.len().to_string(),
+                    c.correctness.warnings.len().to_string(),
+                ]
+            })
+            .collect(),
+    );
+    out.push_str("Problems are grouped by observed behavior, with affected components, test families and case counts. Each fatal problem has one representative diagnostic.\n\n");
+    findings(out, components);
+    out.push_str("### Detailed results\n\n");
     coverage(out, components);
+    family_coverage(out, components, "V");
 }
 
 fn accepts(c: &Component, prefix: &str) -> bool {
@@ -428,7 +614,7 @@ fn performance_summary(c: &Component) -> String {
     if c.status != "succeeded" {
         return format!("Not measured · {} unaccepted samples", c.sample_count);
     }
-    let count = Counts::collect(case_rows(c), true).accepted;
+    let count = Counts::collect(c, case_rows(c)).accepted;
     let incomplete = c.summary.iter().filter(|s| s.incomplete > 0).count();
     if incomplete == 0 {
         format!("{count} accepted cases · {} samples", c.sample_count)
@@ -439,6 +625,7 @@ fn performance_summary(c: &Component) -> String {
 
 fn operation_results(out: &mut String, components: &[Component]) {
     out.push_str("## Operation tests (O)\n\n");
+    family_coverage(out, components, "O");
     if !components.iter().any(|c| accepts(c, "operation/")) {
         out.push_str("Not measured. See coverage for applicability and execution status.\n\n");
         return;
@@ -471,6 +658,7 @@ fn operation_results(out: &mut String, components: &[Component]) {
 
 fn link_results(out: &mut String, components: &[Component]) {
     out.push_str("## Link tests (L)\n\n");
+    family_coverage(out, components, "L");
     out.push_str("### Encoding plans (L02–L03)\n\n");
     if components.iter().any(|c| accepts(c, "chain/plan-")) {
         let rows: Vec<_> = [64, 512, 5008]
@@ -622,6 +810,7 @@ fn stage_families(metrics: &Value, stage: &str) -> String {
 
 fn workflow_results(out: &mut String, components: &[Component]) {
     out.push_str("## Workflow tests (W)\n\n");
+    family_coverage(out, components, "W");
     if !components.iter().any(|c| accepts(c, "workflow/")) {
         out.push_str("Not measured. See coverage for applicability and execution status.\n\n");
         return;
@@ -750,6 +939,8 @@ fn case_rows(c: &Component) -> impl Iterator<Item = &Value> {
 #[derive(Default)]
 struct Counts {
     validations: usize,
+    validation_fatals: usize,
+    validation_warnings: usize,
     validation_skips: usize,
     validation_pending: usize,
     accepted: usize,
@@ -761,25 +952,41 @@ struct Counts {
     diagnosis_pending: usize,
 }
 impl Counts {
-    fn collect<'a>(rows: impl IntoIterator<Item = &'a Value>, succeeded: bool) -> Self {
+    fn collect<'a>(component: &Component, rows: impl IntoIterator<Item = &'a Value>) -> Self {
         let mut c = Self::default();
         for r in rows {
             match r["validation"]["status"].as_str() {
                 Some("skipped") => c.validation_skips += 1,
                 Some("not_executed") => c.validation_pending += 1,
-                Some("passed" | "failed") => c.validations += 1,
+                Some("passed" | "failed") => {
+                    c.validations += 1;
+                    if r["validation"]["status"] == "failed" {
+                        if r["validation"]["severity"] == "fatal" {
+                            c.validation_fatals += 1;
+                        } else {
+                            c.validation_warnings += 1;
+                        }
+                    }
+                }
                 _ => {}
             }
-            match r["measurement"]["status"].as_str() {
-                Some("recorded") if r["measurement"]["accepted"] == true => c.accepted += 1,
-                Some("recorded") => c.rejected += 1,
-                Some("incomplete") => c.partial += 1,
-                Some("not_executed") => c.measurement_pending += 1,
-                Some("skipped") => c.measurement_skips += 1,
-                _ => {}
+            let measured = component
+                .plan
+                .as_ref()
+                .and_then(|p| p.checks.get(r["case"].as_str().unwrap_or("")))
+                .is_some_and(|c| c.measured);
+            if measured {
+                match r["measurement"]["status"].as_str() {
+                    Some("recorded") if r["measurement"]["accepted"] == true => c.accepted += 1,
+                    Some("recorded") => c.rejected += 1,
+                    Some("incomplete") => c.partial += 1,
+                    Some("not_executed") => c.measurement_pending += 1,
+                    Some("skipped") => c.measurement_skips += 1,
+                    _ => {}
+                }
             }
             match r["diagnostics"]["status"].as_str() {
-                Some("recorded") if succeeded => c.diagnosed += 1,
+                Some("recorded") if component.status == "succeeded" => c.diagnosed += 1,
                 Some("recorded" | "incomplete" | "not_executed") => c.diagnosis_pending += 1,
                 _ => {}
             }
@@ -793,133 +1000,195 @@ impl Counts {
 }
 
 fn coverage(out: &mut String, components: &[Component]) {
-    out.push_str("## Coverage and measurement context\n\n");
+    out.push_str("**V check coverage**\n\n");
     table(
         out,
         &[
             "C",
-            "Validation run / applicable",
-            "Accepted / planned timings",
-            "Partial / rejected",
-            "Timing not run / skipped",
+            "Applicable checks",
+            "Checked",
+            "Not checked",
+            "Excluded",
         ],
         components
             .iter()
             .map(|c| {
-                let id = format!("C{}", c.component_id);
-                if c.coverage["status"] == "not_planned" {
-                    return vec![
-                        id,
-                        "Plan unavailable".into(),
-                        "Not measured".into(),
-                        "—".into(),
-                        "—".into(),
-                    ];
-                }
-                let n = Counts::collect(case_rows(c), c.status == "succeeded");
-                vec![
-                    id,
-                    format!("{}/{}", n.validations, n.validations + n.validation_pending),
-                    if n.planned() == 0 {
-                        "Not measured (0 planned)".into()
-                    } else {
-                        format!("{}/{}", n.accepted, n.planned())
-                    },
-                    format!("{} / {}", n.partial, n.rejected),
-                    format!("{} / {}", n.measurement_pending, n.measurement_skips),
-                ]
-            })
-            .collect(),
-    );
-    out.push_str("Partial timings have fewer than the required samples. Rejected timings have a complete sample set from a run that failed or stopped. An accepted recovery case can contain incomplete attempts.\n\n");
-
-    if components
-        .iter()
-        .any(|c| c.coverage["status"] != "not_planned")
-    {
-        family_coverage(out, components);
-    }
-    for c in components {
-        let mut reasons = BTreeMap::<&str, (usize, usize)>::new();
-        for row in case_rows(c) {
-            for (scope, timing) in [("validation", false), ("measurement", true)] {
-                let entry = &row[scope];
-                if entry["status"] == "skipped" {
-                    let reason = entry["reason"]["reason"]
-                        .as_str()
-                        .unwrap_or("Reason unavailable");
-                    let counts = reasons.entry(reason).or_default();
-                    if timing {
-                        counts.1 += 1;
-                    } else {
-                        counts.0 += 1;
-                    }
-                }
-            }
-        }
-        if !reasons.is_empty() {
-            let _ = writeln!(out, "**C{} skip reasons**\n", c.component_id);
-            for (reason, (checks, timings)) in reasons {
-                let _ = writeln!(
-                    out,
-                    "- {} · {checks} validations, {timings} timings",
-                    cell(reason)
-                );
-            }
-            out.push('\n');
-        }
-    }
-    out.push_str("### Reproduction\n\n");
-    table(
-        out,
-        &["C", "Interface", "Test", "Environment digest"],
-        components
-            .iter()
-            .map(|c| {
                 let mut row = vec![format!("C{}", c.component_id)];
-                if let Some(q) = &c.quadruple {
+                if c.coverage["status"] == "not_planned" {
                     row.extend([
-                        format!("{} · {}", q.i.id, brief(&q.i.digest, 12)),
-                        format!("{} · {}", q.t.id, brief(&q.t.digest, 12)),
-                        brief(&q.e.digest, 12),
+                        "Plan unavailable".into(),
+                        "—".into(),
+                        "—".into(),
+                        "—".into(),
                     ]);
                 } else {
+                    let counts = Counts::collect(
+                        c,
+                        case_rows(c).filter(|row| {
+                            c.plan
+                                .as_ref()
+                                .and_then(|p| p.checks.get(row["case"].as_str().unwrap_or("")))
+                                .is_some_and(|check| check.spec.validation_family().is_some())
+                        }),
+                    );
                     row.extend([
-                        "Unavailable".into(),
-                        c.request.test.version.clone(),
-                        "Unavailable".into(),
+                        (counts.validations + counts.validation_pending).to_string(),
+                        counts.validations.to_string(),
+                        counts.validation_pending.to_string(),
+                        counts.validation_skips.to_string(),
                     ]);
                 }
                 row
             })
             .collect(),
     );
-    if let Some(q) = components.iter().find_map(|c| c.quadruple.as_ref()) {
-        let runtime = &q.e.conditions["runtime"];
-        let cpu = runtime["cpu"]["brand"]
-            .as_str()
-            .or_else(|| runtime["cpu"]["model"].as_str())
-            .or_else(|| runtime["cpu"].as_str())
-            .unwrap_or("recorded in result index");
-        let _ = writeln!(
+
+    out.push_str("**Performance test coverage**\n\n");
+    table(
+        out,
+        &[
+            "C",
+            "Applicable tests",
+            "Accepted results",
+            "Not started",
+            "Excluded",
+        ],
+        components
+            .iter()
+            .map(|c| {
+                let mut row = vec![format!("C{}", c.component_id)];
+                if c.coverage["status"] == "not_planned" {
+                    row.extend([
+                        "Plan unavailable".into(),
+                        "—".into(),
+                        "—".into(),
+                        "—".into(),
+                    ]);
+                } else {
+                    let counts = Counts::collect(c, case_rows(c));
+                    row.extend([
+                        counts.planned().to_string(),
+                        counts.accepted.to_string(),
+                        counts.measurement_pending.to_string(),
+                        counts.measurement_skips.to_string(),
+                    ]);
+                }
+                row
+            })
+            .collect(),
+    );
+
+    let exceptions: Vec<_> = components
+        .iter()
+        .filter_map(|c| {
+            let n = Counts::collect(c, case_rows(c));
+            (n.partial + n.rejected > 0).then(|| {
+                vec![
+                    format!("C{}", c.component_id),
+                    n.partial.to_string(),
+                    n.rejected.to_string(),
+                ]
+            })
+        })
+        .collect();
+    if !exceptions.is_empty() {
+        table(
             out,
-            "Host: {} / {} · {}. Ordinary cases use {} workers × {} samples and one excluded warmup per worker. First use uses {} fresh processes.\n",
-            string(&runtime["os"]),
-            string(&runtime["arch"]),
-            cell(cpu),
-            crate::content::WORKERS,
-            crate::content::SAMPLES_PER_WORKER,
-            crate::content::REPETITIONS
+            &["C", "Incomplete sample sets", "Complete sets not accepted"],
+            exceptions,
+        );
+        out.push_str("Incomplete sample sets ended before all samples were collected. Complete sets from an unsuccessful C are not accepted.\n\n");
+    }
+    out.push_str("V checks run in family order, V01–V11. A fatal does not stop other independent V cases; after V completes, any fatal blocks O/L/W. An aborted, crashed or timed-out driver can leave V cases not checked. Counts are test cases. Excluded cases do not apply to the selected scheme or API. Performance results require all samples and a successful C outcome.\n\n");
+
+    let mut grouped = BTreeMap::<(String, usize, usize), Vec<String>>::new();
+    for c in components {
+        let mut reasons = BTreeMap::<String, (usize, usize)>::new();
+        for row in case_rows(c) {
+            let check = c
+                .plan
+                .as_ref()
+                .and_then(|p| p.checks.get(row["case"].as_str().unwrap_or("")));
+            for scope in ["validation", "measurement"] {
+                let entry = &row[scope];
+                if entry["status"] != "skipped"
+                    || (scope == "measurement" && !check.is_some_and(|c| c.measured))
+                    || (scope == "validation"
+                        && check.is_none_or(|c| c.spec.validation_family().is_none()))
+                {
+                    continue;
+                }
+                let code = entry["reason"]["code"].as_str().unwrap_or("");
+                let raw = entry["reason"]["reason"]
+                    .as_str()
+                    .unwrap_or("Reason unavailable");
+                let reason = if code == "scheme_not_selected" {
+                    check
+                        .and_then(|check| check.spec.scheme.as_ref())
+                        .map_or_else(
+                            || raw.into(),
+                            |scheme| {
+                                format!(
+                                    "{} is selected. {} cases are excluded.",
+                                    c.request.scheme.name.to_uppercase(),
+                                    scheme.to_uppercase()
+                                )
+                            },
+                        )
+                } else if code == "capability_unavailable" && raw.contains("does not expose alias")
+                {
+                    "The selected interface has no alias-operation entry point.".into()
+                } else {
+                    raw.to_owned()
+                };
+                let counts = reasons.entry(reason).or_default();
+                if scope == "validation" {
+                    counts.0 += 1;
+                } else {
+                    counts.1 += 1;
+                }
+            }
+        }
+        for (reason, (checks, timings)) in reasons {
+            grouped
+                .entry((reason, checks, timings))
+                .or_default()
+                .push(format!("C{}", c.component_id));
+        }
+    }
+    if !grouped.is_empty() {
+        out.push_str("**Exclusion reasons**\n\n");
+        table(
+            out,
+            &[
+                "Applies to",
+                "Reason",
+                "V checks per C",
+                "Performance tests per C",
+            ],
+            grouped
+                .into_iter()
+                .map(|((reason, checks, timings), ids)| {
+                    vec![
+                        ids.join(", "),
+                        reason,
+                        checks.to_string(),
+                        timings.to_string(),
+                    ]
+                })
+                .collect(),
         );
     }
-    out.push_str("From the complete report directory, read all case results, diagnostics and provenance with `feval report REPORT_DIR --json`.\n");
 }
 
-fn family_coverage(out: &mut String, components: &[Component]) {
+fn family_coverage(out: &mut String, components: &[Component], selected: &str) {
     // V06 includes timed boundary cases. The L stage families share W cases,
     // so their diagnostic observations belong to each associated family.
-    out.push_str("### Coverage by test family\n\nEach cell counts cases for the selected scheme. Link stage families count accepted diagnostic cases. A case can belong to several families.\n\n");
-    for (prefix, labels) in FAMILIES {
+    out.push_str("Family counts apply to the selected scheme. Link stage families count diagnostic cases.\n\n");
+    for (prefix, labels) in FAMILIES
+        .into_iter()
+        .filter(|(prefix, _)| *prefix == selected)
+    {
         let rows: Vec<_> = labels
             .iter()
             .enumerate()
@@ -936,7 +1205,7 @@ fn family_coverage(out: &mut String, components: &[Component]) {
                     .is_some_and(|f| f.split(',').any(|f| f == family))
                     && r["validation"]["reason"]["code"] != "scheme_not_selected"
             });
-            let rates = Counts::collect(relevant, c.status == "succeeded");
+            let rates = Counts::collect(c, relevant);
             let (recorded, pending, skipped) = match prefix {
                 "V" => (
                     rates.validations,
@@ -969,6 +1238,14 @@ fn family_coverage(out: &mut String, components: &[Component]) {
                 "accepted"
             };
             let mut text = format!("{recorded}/{}, {result}", recorded + pending);
+            if prefix == "V" {
+                if rates.validation_fatals > 0 {
+                    let _ = write!(text, " · {} fatal", rates.validation_fatals);
+                }
+                if rates.validation_warnings > 0 {
+                    let _ = write!(text, " · {} warnings", rates.validation_warnings);
+                }
+            }
             if skipped > 0 {
                 let _ = write!(text, " · {skipped} skipped");
             }
@@ -976,170 +1253,359 @@ fn family_coverage(out: &mut String, components: &[Component]) {
         });
     }
 }
-fn diagnostic_state(message: &str, key: &str) -> Option<BTreeMap<usize, Vec<u8>>> {
-    let line = message.lines().find(|s| s.trim_start().starts_with(key))?;
-    let body = line
-        .split_once(':')?
-        .1
-        .trim()
-        .strip_prefix('{')?
-        .strip_suffix('}')?;
-    body.split("],")
-        .map(|piece| {
-            let (id, bytes) = piece.trim().split_once(':')?;
-            let bytes = bytes.trim().trim_end_matches(']');
-            Some((
-                id.parse().ok()?,
-                serde_json::from_str(&format!("{bytes}]")).ok()?,
-            ))
-        })
-        .collect()
+fn structured_finding(finding: &Value) -> Option<crate::findings::Violation> {
+    serde_json::from_value(finding["finding"].clone()).ok()
 }
-fn findings(out: &mut String, c: &crate::artifact::Component) {
+fn fatal(out: &mut String, c: &Component, finding: &Value) {
+    let case = finding["case"].as_str().unwrap_or("execution integrity");
+    let violation = structured_finding(finding);
+    let check = c.plan.as_ref().and_then(|p| p.checks.get(case));
+    if let Some(v) = &violation {
+        let _ = writeln!(
+            out,
+            "**Fatal** · **{}**\n\n{}\n",
+            v.failure_kind.label(),
+            cell(&v.requirement)
+        );
+        table(
+            out,
+            &["Contract ID", "Failure kind"],
+            vec![vec![
+                v.contract_id.clone(),
+                string(&serde_json::to_value(v.failure_kind).unwrap()),
+            ]],
+        );
+        if let Some(difference) = &v.difference {
+            let value = |v: &Value| {
+                if v.is_null() {
+                    "missing".into()
+                } else {
+                    string(v)
+                }
+            };
+            let mut rows = vec![vec![
+                difference.location.clone(),
+                value(&difference.left),
+                value(&difference.right),
+            ]];
+            if difference.left_length != difference.right_length {
+                rows.push(vec![
+                    "Output length (bytes)".into(),
+                    difference
+                        .left_length
+                        .map_or("missing".into(), |n| n.to_string()),
+                    difference
+                        .right_length
+                        .map_or("missing".into(), |n| n.to_string()),
+                ]);
+            }
+            table(
+                out,
+                &[
+                    "First difference",
+                    &difference.left_label,
+                    &difference.right_label,
+                ],
+                rows,
+            );
+        }
+        if matches!(
+            v.failure_kind,
+            crate::findings::FailureKind::UnexpectedPanic
+                | crate::findings::FailureKind::ExecutionFailure
+        ) {
+            let _ = writeln!(
+                out,
+                "{}\n",
+                cell(&brief(
+                    finding["message"]
+                        .as_str()
+                        .unwrap_or("No diagnostic message"),
+                    350
+                ))
+            );
+        }
+    } else {
+        out.push_str("**Fatal** · **Unclassified diagnostic**\n\nThis result has no structured contract/failure identity. It is shown separately without inferring a problem from its message.\n\n");
+        let _ = writeln!(
+            out,
+            "{}\n",
+            cell(&brief(
+                finding["message"]
+                    .as_str()
+                    .unwrap_or("No diagnostic message"),
+                350
+            ))
+        );
+    }
+    let context = violation.as_ref().map(|v| &v.context);
+    let mut rows = Vec::new();
+    if let Some(check) = check {
+        rows.push(vec![
+            "Test".into(),
+            format!("{} · {}", check.spec.family, title(&check.spec.workload)),
+        ]);
+        let spec = &check.spec;
+        let mut parameters = if let Some(scheme) = &spec.scheme {
+            format!(
+                "{} · K={} · B={} (bytes/symbol)",
+                scheme.to_uppercase(),
+                spec.k,
+                spec.width
+            )
+        } else {
+            format!("B={} (bytes/symbol)", spec.width)
+        };
+        if let Some(dispatch) = context.and_then(|c| c["dispatch"].as_str()) {
+            let _ = write!(parameters, " · {dispatch}");
+        }
+        rows.push(vec!["Parameters".into(), parameters]);
+        let mut seed = spec.seed.to_string();
+        if let Some(input_seed) = context.and_then(|c| c["input_seed"].as_u64()) {
+            let _ = write!(seed, " · step input seed {input_seed}");
+        }
+        rows.push(vec!["Reproduce with seed".into(), seed]);
+    }
+    if let Some(context) = context {
+        if !context["operation"].is_null() {
+            let operation =
+                serde_json::from_value::<crate::content::Action>(context["operation"].clone())
+                    .map_or_else(|_| string(&context["operation"]), |op| format!("{op:?}"));
+            rows.push(vec!["Operation".into(), operation]);
+        }
+        if let Some(step) = context["step"].as_u64() {
+            let mut position = format!("Step {step}");
+            if let Some(total) = context["total_steps"].as_u64() {
+                let _ = write!(position, "/{total}");
+            }
+            rows.push(vec!["Sequence position".into(), position]);
+        }
+        if let Some(scenario) = context["scenario"].as_str() {
+            rows.push(vec!["Scenario".into(), title(scenario)]);
+        }
+        if let Some(count) = context["input_count"].as_u64() {
+            let mut point = format!("After {count} received symbols");
+            if let Some(id) = context["input_symbol"].as_u64() {
+                let _ = write!(point, " · last input symbol ID {id}");
+            }
+            rows.push(vec!["Input at failure".into(), point]);
+        }
+    }
+    table(out, &["Context", "Value"], rows);
     let _ = writeln!(
         out,
-        "**C{} · Validation {}.**\n",
-        c.component_id,
-        title(&c.correctness.status)
+        "Case `{}`. Full diagnostic and replay context are in the index (`feval report REPORT_DIR --json`).\n",
+        cell(case)
     );
-    for f in &c.correctness.fatal_failures {
-        let case = f["case"].as_str().unwrap_or("execution integrity");
-        let message = f["message"].as_str().unwrap_or("No diagnostic message");
-        let _ = writeln!(out, "**Fatal** · `{}`", cell(case));
-        if let Some(context) = message
-            .lines()
-            .find(|line| line.starts_with("V04 ") || line.starts_with("V06 "))
+}
+type Finding<'a> = (&'a Component, &'a Value);
+fn problem_key(c: &Component, finding: &Value) -> String {
+    structured_finding(finding).map_or_else(
+        || {
+            format!(
+                "unclassified:C{}:{}:{}",
+                c.component_id, finding["case"], finding["phase"]
+            )
+        },
+        |v| format!("{}:{:?}", v.contract_id, v.failure_kind),
+    )
+}
+fn affected_cases(out: &mut String, findings: &[Finding<'_>]) {
+    let mut rows = BTreeMap::<u32, (usize, BTreeSet<&str>)>::new();
+    for (c, finding) in findings {
+        let row = rows.entry(c.component_id).or_default();
+        row.0 += 1;
+        if let Some(check) = c
+            .plan
+            .as_ref()
+            .and_then(|p| p.checks.get(finding["case"].as_str().unwrap_or("")))
         {
-            let _ = writeln!(out, "\n{}\n", cell(context));
-            for line in message.lines().filter(|line| {
-                line.starts_with("First difference:")
-                    || line.starts_with("Component call or observation panicked:")
-                    || line.starts_with("Protected-symbol corruption")
-                    || line.starts_with("Protected symbols became unreadable:")
-                    || line.starts_with("Defined boundary")
-                    || line.starts_with("Trace SHA-256:")
-            }) {
-                let _ = writeln!(out, "{}\n", cell(line));
-            }
-            if message.contains("Previous steps:") {
-                out.push_str("The preceding operations and their input seeds are retained in the result index (`feval report REPORT_DIR --json`).\n\n");
-            }
-            continue;
+            row.1.extend(check.spec.family.split(','));
         }
-        if message.contains("V05 direct versus execute")
-            || message.contains("V05 batch versus elementary direct calls")
-        {
-            let context = message.lines().find(|line| line.contains("V05 ")).unwrap();
-            let _ = writeln!(out, "\n{}\n", cell(&brief(context, 500)));
-            out.push_str("The compared paths produced different states. This is an equivalence failure; neither side is an independent scalar reference.\n\n");
-            if let (Some(left), Some(right)) = (
-                diagnostic_state(message, "left:"),
-                diagnostic_state(message, "right:"),
-            ) {
-                let labels = if message.contains("V05 direct versus execute") {
-                    ("direct", "execute")
-                } else {
-                    ("batch", "elementary calls")
-                };
-                if let Some((id, a, b)) = left
-                    .iter()
-                    .filter_map(|(id, a)| right.get(id).filter(|b| *b != a).map(|b| (id, a, b)))
-                    .next()
-                {
-                    let offset = a
-                        .iter()
-                        .zip(b)
-                        .position(|(x, y)| x != y)
-                        .unwrap_or(a.len().min(b.len()));
-                    let value = |bytes: &[u8]| {
-                        bytes
-                            .get(offset)
-                            .map_or_else(|| "missing".into(), u8::to_string)
-                    };
-                    let _ = writeln!(
-                        out,
-                        "Symbol {id}, byte {offset}: {} = {}, {} = {}.\n",
-                        labels.0,
-                        value(a),
-                        labels.1,
-                        value(b)
-                    );
+    }
+    table(
+        out,
+        &["C", "Test families", "Affected cases"],
+        rows.into_iter()
+            .map(|(id, (count, families))| {
+                vec![
+                    format!("C{id}"),
+                    if families.is_empty() {
+                        "Execution integrity".into()
+                    } else {
+                        families.into_iter().collect::<Vec<_>>().join(", ")
+                    },
+                    count.to_string(),
+                ]
+            })
+            .collect(),
+    );
+}
+fn fatal_findings(out: &mut String, components: &[Component]) {
+    let mut problems = BTreeMap::<String, Vec<Finding<'_>>>::new();
+    for c in components {
+        for finding in &c.correctness.fatal_failures {
+            problems
+                .entry(problem_key(c, finding))
+                .or_default()
+                .push((c, finding));
+        }
+    }
+    let mut problems: Vec<_> = problems.into_iter().collect();
+    problems.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(&b.0)));
+    for (index, (_, findings)) in problems.iter().enumerate() {
+        let _ = writeln!(out, "#### Fatal {}\n", index + 1);
+        let (c, finding) = findings[0];
+        fatal(out, c, finding);
+        affected_cases(out, findings);
+        let _ = writeln!(
+            out,
+            "Representative diagnostic: C{}. All case-level evidence remains in the index.\n",
+            c.component_id
+        );
+    }
+}
+fn findings(out: &mut String, components: &[Component]) {
+    out.push_str("### Fatal\n\n");
+    if components
+        .iter()
+        .all(|c| c.correctness.fatal_failures.is_empty())
+    {
+        out.push_str("None detected. Review the executed coverage in V.\n\n");
+    }
+    fatal_findings(out, components);
+    for c in components {
+        if c.correctness.fatal_failures.is_empty() && c.status != "succeeded" {
+            table(
+                out,
+                &["C", "Stopped stage", "Execution issue"],
+                vec![vec![
+                    format!("C{}", c.component_id),
+                    title(&c.stage),
+                    c.error
+                        .clone()
+                        .unwrap_or_else(|| "No completed correctness execution".into()),
+                ]],
+            );
+            let diagnostics: Vec<_> = c
+                .failure_details
+                .iter()
+                .flat_map(|text| text.lines())
+                .filter(|line| {
+                    line.trim_start().starts_with("error") || line.contains("panicked at")
+                })
+                .take(3)
+                .map(|line| vec![format!("C{}", c.component_id), brief(line, 300)])
+                .collect();
+            table(out, &["C", "Compiler/runtime diagnostic"], diagnostics);
+        }
+        if let Some(error) = &c.aggregation_error {
+            table(
+                out,
+                &["C", "Sample aggregation issue"],
+                vec![vec![format!("C{}", c.component_id), error.clone()]],
+            );
+        }
+    }
+    out.push_str("### Warning\n\n");
+    if components.iter().all(|c| c.correctness.warnings.is_empty()) {
+        out.push_str("None detected. Review the executed coverage in V.\n\n");
+    }
+    warning_findings(out, components);
+    if components
+        .iter()
+        .any(|c| c.status == "succeeded" && !c.summary.is_empty())
+    {
+        out.push_str("† marks benchmark timing CV above 10%.\n\n");
+    }
+}
+
+fn warning_findings(out: &mut String, components: &[Component]) {
+    let mut problems =
+        BTreeMap::<String, (Option<crate::findings::Violation>, Vec<Finding<'_>>)>::new();
+    for c in components {
+        for warning in &c.correctness.warnings {
+            let mut identities = BTreeMap::new();
+            let values = warning["findings"].as_array().cloned().unwrap_or_default();
+            for value in values
+                .into_iter()
+                .chain(std::iter::once(warning["finding"].clone()))
+            {
+                if let Ok(v) = serde_json::from_value::<crate::findings::Violation>(value) {
+                    identities.insert(format!("{}:{:?}", v.contract_id, v.failure_kind), Some(v));
                 }
             }
-            continue;
-        }
-        if message.contains("MulAdd { src: 0, scalar: 0, dst: 8 }") {
-            out.push_str(
-                "\nFor GF multiply-add with scalar 0, the destination must stay unchanged.",
-            );
-            if let (Some(actual), Some(expected)) = (
-                diagnostic_state(message, "left:"),
-                diagnostic_state(message, "right:"),
-            ) && let (Some(left), Some(right)) = (actual.get(&8), expected.get(&8))
-            {
-                let _ = writeln!(out, " Symbol 8 expected {right:?}, observed {left:?}.\n");
-                continue;
+            if identities.is_empty() {
+                identities.insert(problem_key(c, warning), None);
+            }
+            for (key, v) in identities {
+                problems
+                    .entry(key)
+                    .or_insert_with(|| (v, Vec::new()))
+                    .1
+                    .push((c, warning));
             }
         }
-        let _ = writeln!(out, "\n{}\n", cell(&brief(message, 500)));
     }
-    if c.correctness.fatal_failures.is_empty() && c.status != "succeeded" {
-        let _ = writeln!(
-            out,
-            "Stopped at {}: {}.\n",
-            cell(&c.stage),
-            cell(c.error.as_deref().unwrap_or("Not executed"))
-        );
-    }
-    if let Some(e) = &c.aggregation_error {
-        let _ = writeln!(
-            out,
-            "Partial samples could not be aggregated: {}.\n",
-            cell(e)
-        );
-    }
-    if c.status != "succeeded" && c.sample_count > 0 {
-        let _ = writeln!(
-            out,
-            "{} samples collected before termination without an accepted performance result.\n",
-            c.sample_count
-        );
-    }
-    let mut warnings = BTreeMap::<String, Vec<&Value>>::new();
-    for w in &c.correctness.warnings {
-        warnings
-            .entry(
-                w["case"]
-                    .as_str()
-                    .unwrap_or("unknown")
-                    .split('/')
-                    .nth(1)
-                    .unwrap_or("unknown")
-                    .into(),
-            )
-            .or_default()
-            .push(w);
-    }
-    if !warnings.is_empty() {
+    for (index, (key, (violation, findings))) in problems.iter().enumerate() {
+        let label = violation
+            .as_ref()
+            .map_or("Unclassified diagnostic", |v| v.failure_kind.label());
+        let _ = writeln!(out, "#### Warning {} · {}\n", index + 1, label);
+        if let Some(v) = violation {
+            table(
+                out,
+                &["Contract", "Meaning"],
+                vec![
+                    vec!["Contract ID".into(), v.contract_id.clone()],
+                    vec![
+                        "Failure kind".into(),
+                        string(&serde_json::to_value(v.failure_kind).unwrap()),
+                    ],
+                    vec!["Reference expectation".into(), v.requirement.clone()],
+                ],
+            );
+            let (c, first) = findings[0];
+            if let Some(contract) = c
+                .plan
+                .as_ref()
+                .and_then(|p| p.checks.get(first["case"].as_str().unwrap_or("")))
+                .and_then(|c| c.spec.boundary.as_ref())
+            {
+                table(out, &["Warning basis"], vec![vec![contract.basis.clone()]]);
+            }
+        } else {
+            out.push_str("No structured identity is available; this case is not merged based on diagnostic text.\n\n");
+        }
+        let mut groups = BTreeMap::<u32, (&Component, Vec<&Value>)>::new();
+        for (c, warning) in findings {
+            groups
+                .entry(c.component_id)
+                .or_insert_with(|| (c, Vec::new()))
+                .1
+                .push(warning);
+        }
         table(
             out,
             &[
-                "Boundary",
+                "C",
                 "Affected cases",
                 "Validation observations",
                 "Timed observations",
                 "Example timings",
             ],
-            warnings
-                .into_iter()
-                .map(|(name, ws)| {
+            groups
+                .into_values()
+                .map(|(c, ws)| {
                     let mut checks = BTreeMap::new();
                     let mut calls = BTreeMap::new();
                     for w in &ws {
                         let expected = &w["expected"];
-                        *checks
-                            .entry(difference(expected, &w["actual"]))
-                            .or_default() += 1;
+                        if violation.is_none() || problem_key(c, w) == *key {
+                            *checks
+                                .entry(difference(expected, &w["actual"]))
+                                .or_default() += 1;
+                        }
                         if let Some(variants) = w["measurement_summary"]["variants"].as_array() {
                             for variant in variants {
                                 count_warning_calls(
@@ -1147,6 +1613,8 @@ fn findings(out: &mut String, c: &crate::artifact::Component) {
                                     expected,
                                     &variant["actual"],
                                     variant["samples"].as_u64().unwrap_or_default(),
+                                    key,
+                                    violation.is_none(),
                                 );
                             }
                         } else if let Some(observations) = w["measured_observations"].as_array() {
@@ -1156,6 +1624,8 @@ fn findings(out: &mut String, c: &crate::artifact::Component) {
                                     expected,
                                     &observation["actual"],
                                     1,
+                                    key,
+                                    violation.is_none(),
                                 );
                             }
                         }
@@ -1171,9 +1641,13 @@ fn findings(out: &mut String, c: &crate::artifact::Component) {
                         }
                     };
                     vec![
-                        title(&name),
+                        format!("C{}", c.component_id),
                         ws.len().to_string(),
-                        list_variants(checks, "case"),
+                        if checks.is_empty() {
+                            "No validation deviation of this kind".into()
+                        } else {
+                            list_variants(checks, "case")
+                        },
                         timed,
                         warning_timings(c, &ws),
                     ]
@@ -1181,28 +1655,8 @@ fn findings(out: &mut String, c: &crate::artifact::Component) {
                 .collect(),
         );
     }
-    if !c.failure_details.is_empty() && c.stage == "build" {
-        let notes = c
-            .failure_details
-            .iter()
-            .flat_map(|s| s.lines())
-            .filter(|s| s.trim_start().starts_with("error") || s.contains("panicked at"))
-            .take(3)
-            .map(|s| brief(s, 300))
-            .collect::<Vec<_>>();
-        if !notes.is_empty() {
-            let _ = writeln!(
-                out,
-                "{}\n",
-                notes
-                    .into_iter()
-                    .map(|s| format!("> {}", cell(&s)))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            );
-        }
-    }
 }
+
 fn warning_timings(c: &Component, warnings: &[&Value]) -> String {
     if c.status != "succeeded" {
         return "Not measured".into();
@@ -1240,8 +1694,17 @@ fn count_warning_calls(
     expected: &Value,
     observation: &Value,
     samples: u64,
+    key: &str,
+    unclassified: bool,
 ) {
     for outcome in observation["outcomes"].as_array().into_iter().flatten() {
+        let identity =
+            serde_json::from_value::<crate::findings::Violation>(outcome["finding"].clone())
+                .ok()
+                .map(|v| format!("{}:{:?}", v.contract_id, v.failure_kind));
+        if !unclassified && outcome["actual"] != *expected && identity.as_deref() != Some(key) {
+            continue;
+        }
         if let Some(count) = outcome["count"].as_u64() {
             let text = difference(expected, &outcome["actual"]);
             *counts.entry(text).or_default() += count * samples;

@@ -3,6 +3,7 @@ mod api;
 mod config;
 mod content;
 mod contracts;
+mod findings;
 mod operator;
 mod reference;
 mod telemetry;
@@ -109,10 +110,20 @@ fn validation(check: &Check, equivalent: &mut BTreeMap<String, workloads::Valida
         let key = c.id.rsplit_once('/').unwrap().0.to_owned();
         equivalent
             .entry(key)
-            .or_insert_with(|| workloads::validate(c))
+            .or_insert_with(|| {
+                findings::scope(
+                    findings::case_contract(c),
+                    findings::case_context(c),
+                    || workloads::validate(c),
+                )
+            })
             .clone()
     } else {
-        workloads::validate(c)
+        findings::scope(
+            findings::case_contract(c),
+            findings::case_context(c),
+            || workloads::validate(c),
+        )
     };
     let mut event = json!({"event":"validation","case":c.id,"rule":check.rule,"severity":check.severity,"status":"passed","witness":result.witness,"details":result.details});
     if c.warning {
@@ -125,24 +136,66 @@ fn validation(check: &Check, equivalent: &mut BTreeMap<String, workloads::Valida
         });
         event["expected"] = expected;
         event["actual"] = actual.clone();
+        event["finding"] = json!(findings::boundary_violation(c, &event["expected"], &actual));
         event["witness"] = json!(digest(&serde_json::to_vec(&actual).unwrap()));
         event["message"] =
             json!("Boundary reference observation; deviations do not block timing or comparison");
     }
     emit(event);
 }
+fn validation_suite(plan: &Plan) {
+    let mut checks: Vec<_> = plan.checks.values().filter(|c| c.skip.is_none()).collect();
+    checks.sort_by(|a, b| a.spec.validation_key().cmp(&b.spec.validation_key()));
+    let mut equivalent = BTreeMap::new();
+    let mut fatal = false;
+    for check in checks {
+        if check.spec.validation_family().is_none() {
+            if fatal {
+                break;
+            }
+            validation(check, &mut equivalent);
+            continue;
+        }
+        // Each V case owns its fixture. A failed case must not suppress other V cases.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            validation(check, &mut equivalent);
+        }));
+        if let Err(error) = result {
+            fatal = true;
+            let failure = findings::from_panic(
+                error,
+                findings::case_contract(&check.spec),
+                findings::case_context(&check.spec),
+            );
+            let message = failure.message;
+            emit(
+                json!({"event":"validation","case":check.spec.id,"severity":"fatal",
+                "status":"failed","rule":"execution-integrity","phase":"validate",
+                "message":message,"witness":digest(message.as_bytes()),"finding":failure.violation}),
+            );
+        }
+    }
+}
 fn measure(check: &Check, worker: usize, cold: bool) {
     let c = &check.spec;
     CURRENT.with(|x| *x.borrow_mut() = c.id.clone());
     let diagnostic = cfg!(feature = "diagnostics");
-    let prepared = workloads::prepare(c);
+    let prepared = findings::scope(
+        findings::case_contract(c),
+        findings::case_context(c),
+        || workloads::prepare(c),
+    );
     let count = if cold || diagnostic {
         1
     } else {
         content::SAMPLES_PER_WORKER + 1
     };
     for iteration in 0..count {
-        let outcome = workloads::run(c, &prepared, diagnostic);
+        let outcome = findings::scope(
+            findings::case_contract(c),
+            findings::case_context(c),
+            || workloads::run(c, &prepared, diagnostic),
+        );
         if !cold && !diagnostic && iteration == 0 {
             continue;
         }
@@ -174,12 +227,7 @@ fn main() {
         let plan: Plan = serde_json::from_str(config::PLAN).unwrap();
         match mode {
             "describe" => {}
-            "validate" => {
-                let mut equivalent = BTreeMap::new();
-                for check in plan.checks.values().filter(|c| c.skip.is_none()) {
-                    validation(check, &mut equivalent);
-                }
-            }
+            "validate" => validation_suite(&plan),
             "measure" | "diagnose" => {
                 assert_eq!(mode == "diagnose", cfg!(feature = "diagnostics"));
                 assert!(worker < content::WORKERS);
@@ -219,14 +267,18 @@ fn main() {
     match result {
         Ok(()) => emit(json!({"event":"done","mode":mode})),
         Err(error) => {
-            let message = error
-                .downcast_ref::<String>()
-                .cloned()
-                .or_else(|| error.downcast_ref::<&str>().map(|s| s.to_string()))
-                .unwrap_or_else(|| "driver panic".into());
             let case = CURRENT.with(|x| x.borrow().clone());
+            let failure = findings::from_panic(
+                error,
+                findings::Contract::new(
+                    "execution.integrity",
+                    "The driver must complete the requested stage.",
+                ),
+                json!({"case":case,"phase":mode}),
+            );
+            let message = failure.message;
             emit(
-                json!({"event":"validation","case":case,"severity":"fatal","status":"failed","rule":"execution-integrity","phase":mode,"message":message}),
+                json!({"event":"validation","case":case,"severity":"fatal","status":"failed","rule":"execution-integrity","phase":mode,"message":message,"finding":failure.violation}),
             );
             emit(json!({"event":"error","message":message}));
             std::process::exit(4);

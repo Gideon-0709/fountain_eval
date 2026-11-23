@@ -43,7 +43,9 @@ A warning cannot be promoted to fatal merely because two operators disagree. It 
 
 Reference-matching and reference-deviating implementations are both timed. The framework does not equalize their internal work, suppress a fast no-op result, or reject a comparison solely because warning observations differ.
 
-A fatal validation stops measurement for the affected C; other configured C entries still execute. Completed checks and unfinished cases remain visible in the final report index. No automatic retry, enlarged repair budget or relaxed timeout turns that attempt into a pass.
+For each C, validation runs in order from **V01 through V11**, with stable case-ID order within a family. All independent applicable V cases execute even if earlier cases report fatal findings. This includes V06 boundary checks whose performance measurements belong to O. A failed case retains its first failing assertion; dependent steps within that case stop there, while the next case starts with its own fixture. The report aggregates every failing V case and all warnings.
+
+After V completes, **any fatal blocks all O/L/W prechecks and measurements for that C**. Warnings alone do not block them. A C without V-applicable capabilities proceeds to its applicable performance prechecks. Other configured Cs still execute. A process abort, crash, timeout or interruption can prevent V completion; remaining checks stay explicitly unexecuted. No automatic retry, enlarged repair budget or relaxed timeout turns an attempt into a pass.
 
 ## Validation tests (V01–V11)
 
@@ -104,7 +106,7 @@ Insertion, lookup and explicit sharing have no instruction-enum counterpart and 
 
 Successful evidence records the number and kind of comparisons and the observation limits. A direct method may delegate to `execute`; agreement still checks the exposed contract, not whether a fast override exists. Two identically wrong primitive implementations can agree here: V02/V03 provide their independent value/ownership checks. Conversely, a batch defect shared by direct and `execute` is detected by comparison with the elementary sequence.
 
-The dependency is explicit: **V02 establishes arithmetic primitives; V03 establishes storage primitives; V05 establishes their alternate entry points and compositions.** These are different assertions, even when a comparison must execute a primitive again. Family numbering does not prescribe execution order; any fatal prevents successful measurement for that C.
+The responsibility is explicit: **V02 checks arithmetic values; V03 checks storage and ownership; V05 checks alternate entry points and compositions.** These are different assertions, even when a comparison must execute a primitive again. Families run in numeric order, and every case starts from its own fixture rather than depending on an earlier family's success. Fatal findings block O/L/W after all applicable V checks complete.
 
 ### V06 — Boundary contracts and semantic observations
 
@@ -352,9 +354,37 @@ The Markdown report for a selected run includes every C, groups results by test 
 
 The retained index includes completed codec validation observations, bounded regression evidence and observed work/digest summaries. Comparison exposes when the offered stream, consumed counts or recorded trace differ across C entries. The [artifact contracts](../specs/README.md) define temporary execution evidence and the retained result index. `result.json`, raw samples, logs and build cache are working files, not additional final reports. Framework checks detect missing observations, inconsistent work counts and invalid diagnostic accounting before cleanup.
 
+### Structured contract violations
+
+Checks emit structured findings at the assertion or observation site. A failed check records `finding.contract_id`, `finding.failure_kind`, `finding.requirement`, `finding.context`, and an optional `finding.difference`. Passed checks have no violation. New failed evidence without a valid identity and matching case context is rejected.
+
+| Field | Meaning |
+| --- | --- |
+| `contract_id` | The semantic requirement being checked, such as `operator.mul_add.zero`, `dispatch.equivalence`, or `codec.recovered-payload`. The same requirement can be checked by multiple families. Different requirements have distinct IDs. |
+| `failure_kind` | The observed violation: for example `value_mismatch`, `length_mismatch`, `path_mismatch`, `scope_corruption`, `call_rejected`, `output_unreadable`, or `unexpected_panic`. |
+| `requirement` | Human-readable explanation supplied by the check. It describes the required behavior. |
+| `context` | Case, parameters and source-generated diagnostic context: operation, dispatch, scenario, sequence position, input symbol/count and replay details when applicable. |
+| `difference` | Exact compared values and labels, first differing location and output lengths. Relational checks explicitly name both compared paths. |
+
+The report groups by **severity, contract ID and failure kind**. Width, seed, route, scenario and component selection remain affected-case dimensions. Diagnostic prose and byte values do not determine identity. For example, V02 and V04 can both emit `operator.mul_add.zero` / `value_mismatch`; the report groups them even if their messages differ. A panic during valid decoder input emits an explicit active input contract and `unexpected_panic`; its message is retained without guessing a more specific cause.
+
+Boundary deviations are classified by the checking code from structured outcomes. A rejected call, unreadable output and other reference deviation have distinct kinds under the boundary's reference contract. The driver emits identities for both validation and timed outcomes, outside the primitive timer. A case may observe multiple kinds across samples; each kind has its own group. Global warning counts count unique cases, so affected-case counts across these groups need not add to the global count. The index retains every identity and observation after raw-result cleanup.
+
+Legacy results without structured fields are displayed as unclassified, separately by component/case/phase. They are never grouped by matching error messages. Contract semantics and their source belong to T; changing them updates the internal content seal. Release version assignment remains a maintainer action.
+
 ### Read the report
 
-Start with each component's outcome. V shows fatal findings and groups the observed warning outcomes, with separate counts for validation cases and timed calls and examples of the measured call time. O shows representative direct and execute ns/call at widths 128 and 1016. L reports independent plan and replay times, then the exclusive encoding and recovery stages at K=512 and B=128. The stage means and unattributed time add to the mean instrumented lifecycle before rounding. Combined intervals appear once, with their family identifiers. W shows headline throughput and round-trip results at K=512/5008 and B=128/1016, plus representative first-use, reuse, all-source, continuity and lifecycle timings. Recovery rows show the exact number of missing source symbols.
+The report opens with a summary of configuration, component and interface versions, recorded environment and overall results. The summary displays the plain test content version. Sampling schedules and environment/test-content digests remain in the index.
+
+V follows this order:
+
+1. **Summary:** correctness status and the counts of fatal and warning cases for each C.
+2. **Fatal and Warning:** one entry per structured contract/failure-kind pair, including its affected components, families and case counts. A problem can span multiple V families and C entries. These are groups of observed contract failures or boundary deviations; a group does not establish a shared implementation cause. Each fatal problem explains one representative case with its failed contract, expected/observed bytes or compared execution paths, operation, parameters and replay identity where recorded. Receive diagnostics distinguish the last input symbol ID from the differing output byte. Warning problems show their reference expectation, contract basis, validation/timed observations and representative timings. Individual cases are not expanded in these findings. Empty finding types state None detected, referring only to completed checks.
+3. **Detailed results:** the complete existing coverage, exclusion and V01–V11 family tables. They show completed and unfinished checks, skips, and per-family fatal/warning counts. The Markdown does not add a row for every concrete case; complete per-case records remain in the index.
+
+Correctness and performance coverage use separate tables with one count per column. Counts refer to test cases. A skipped correctness-only case is excluded from performance counts. Identical exclusion reasons are grouped across C entries and show per-C counts. Partial or unaccepted measurements appear separately when present. Read these tables to confirm the combinations and conditions actually tested.
+
+O shows family coverage and representative direct/execute ns/call at widths 128 and 1016. L shows family coverage, independent plan/replay times, then exclusive encoding and recovery stages at K=512 and B=128. Stage means and unattributed time add to the instrumented lifecycle before rounding. W shows family coverage, headline throughput and round-trip results at K=512/5008 and B=128/1016, plus representative first-use, reuse, all-source, continuity and lifecycle timings. Full diagnostics, replay history and hashes remain in the index.
 
 Read family coverage for the selected scheme to see what was checked, measured, diagnosed, stopped or skipped. Accepted timing coverage means the case has its required samples in a successful run. A recovery sample can exhaust its budget within such a case. Read the recovered count before comparing throughput. For the full parameter matrix, work counts, failure witnesses, warning variants and diagnostic/resource observations, use `feval report REPORT_DIR --json`.
 

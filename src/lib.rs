@@ -10,6 +10,7 @@ pub mod content;
 pub mod coverage;
 pub mod evidence;
 pub mod execution;
+pub mod findings;
 pub mod measurement;
 pub mod process;
 pub mod progress;
