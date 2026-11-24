@@ -504,7 +504,11 @@ fn invoke_worker(
         &mut command,
         &directory.join("logs"),
         label,
-        Duration::from_secs(if mode == "first-use" { 60 } else { 600 }),
+        Duration::from_secs(match mode {
+            "first-use" => crate::content::FIRST_USE_TIMEOUT_SECONDS,
+            "describe" => 600,
+            _ => crate::content::WORKER_TIMEOUT_SECONDS,
+        }),
         if observe { Some(&mut observer) } else { None },
     )?;
     let events: Vec<Value> = raw

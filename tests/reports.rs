@@ -3,6 +3,15 @@ use fountain_eval::findings::{Difference, FailureKind as Kind, Violation};
 use fountain_eval::{report, validation};
 use serde_json::{Value, json};
 
+fn report_section<'a>(md: &'a str, heading: &str) -> &'a str {
+    md.split_once(heading)
+        .unwrap()
+        .1
+        .split("\n## ")
+        .next()
+        .unwrap()
+}
+
 fn structured(
     case: &str,
     contract: &str,
@@ -68,8 +77,7 @@ fn report_is_self_contained_grouped_and_bounds_every_table() {
     let md = report::markdown(&r);
     for section in [
         "## Summary",
-        "### Fatal",
-        "### Warning",
+        "### Key results · Findings",
         "## Validation tests (V)",
         "## Operation tests (O)",
         "## Link tests (L)",
@@ -82,8 +90,7 @@ fn report_is_self_contained_grouped_and_bounds_every_table() {
         "## Summary",
         "## Validation tests (V)",
         "### Summary",
-        "### Fatal",
-        "### Warning",
+        "### Key results · Findings",
         "### Detailed results",
         "## Operation tests (O)",
         "## Link tests (L)",
@@ -92,21 +99,51 @@ fn report_is_self_contained_grouped_and_bounds_every_table() {
     .map(|s| md.find(s).unwrap());
     assert!(order.windows(2).all(|w| w[0] < w[1]));
     assert!(
-        md.contains("| 512 | Build plan |")
-            && md.contains("| O04 xor one |")
-            && md.contains("source-equivalent Gbit/s")
+        md.contains("| L02 · Build a new plan |")
+            && md.contains("| O04 · XOR one source into one target |")
+            && md.contains("Decode · source-equivalent Gbit/s")
             && md.contains("V11 · Errors and lifecycle")
             && md.contains("L12 · Decode replay")
             && md.contains("W08 · Component lifecycle")
     );
     assert!(md.lines().count() < 360 && !md.contains("<details>"));
     assert!(!md.contains("```json") && !md.contains("report.html"));
+    for (section, primary) in [
+        ("## Validation tests (V)", "### Key results · Findings"),
+        (
+            "## Operation tests (O)",
+            "### Key results · Direct call latency",
+        ),
+        (
+            "## Link tests (L)",
+            "### Key results · Encode and decode stages",
+        ),
+        (
+            "## Workflow tests (W)",
+            "### Key results · Precode, Encode and Decode",
+        ),
+    ] {
+        let body = report_section(&md, section).trim_start();
+        assert!(body.starts_with("### Summary"));
+        assert!(body.find(primary).unwrap() < body.find("### Detailed results").unwrap());
+    }
+    assert!(!md.contains("**"));
+    assert!(md.find("### Test results").unwrap() < md.find("### Test configuration").unwrap());
+    assert!(md.contains("[V · Validation](#validation-tests-v)"));
+    assert_eq!(md.matches("\n---\n\n## ").count(), 4);
     let mut rows = 0;
+    let mut parameter_grid = false;
     for line in md.lines() {
         if line.starts_with('|') {
+            if rows == 0 {
+                parameter_grid = line.starts_with("| Workload | K=64 | K=128 |")
+                    || line.starts_with("| B (bytes/symbol) | K=64 | K=128 |")
+                    || line.starts_with("| One timed call | 128 B | 256 B |");
+            }
             rows += 1;
             assert!(rows <= 14, "long table"); // header + separator + at most 12 data rows
-            assert!(line.matches('|').count() <= 7, "wide table: {line}");
+            let max_pipes = if parameter_grid { 10 } else { 7 };
+            assert!(line.matches('|').count() <= max_pipes, "wide table: {line}");
         } else {
             rows = 0;
         }
@@ -141,7 +178,7 @@ fn summary_contains_config_environment_versions_and_results_before_findings() {
         assert!(!md.contains(label), "{label}");
     }
     for label in [
-        "V check coverage",
+        "Checked / applicable",
         "Performance test coverage",
         "Exclusion reasons",
     ] {
@@ -149,24 +186,14 @@ fn summary_contains_config_environment_versions_and_results_before_findings() {
             !first.contains(label),
             "Detailed coverage appeared in the summary"
         );
-        let validation = md
-            .split("## Validation tests (V)")
-            .nth(1)
-            .unwrap()
-            .split("## Operation tests (O)")
-            .next()
-            .unwrap();
-        assert!(validation.contains(label), "{label}");
     }
-    let findings = md
-        .split("## Validation tests (V)")
-        .nth(1)
-        .unwrap()
+    let findings = report_section(&md, "## Validation tests (V)")
         .split("### Detailed results")
         .next()
         .unwrap();
-    assert!(findings.contains("### Fatal\n\nNone detected."));
-    assert!(findings.contains("### Warning\n\nNone detected."));
+    assert!(findings.contains("Checked / applicable"));
+    assert!(findings.contains("Fatal · None detected in completed checks."));
+    assert!(findings.contains("Warning · None detected in completed checks."));
 }
 
 #[test]
@@ -258,24 +285,28 @@ fn failed_measurement_separates_partial_and_rejected_cases() {
     r.status = "failed".into();
     r.stage = "measure".into();
     let plan = r.recipe.as_ref().unwrap();
-    let total = plan.cases.len();
-    let checks = plan
-        .checks
-        .values()
-        .filter(|c| c.skip.is_none() && c.spec.validation_family().is_some())
-        .count();
-    let skipped = plan
-        .checks
-        .values()
-        .filter(|c| c.measured && (c.skip.is_some() || c.measurement_skip.is_some()))
-        .count();
+    let first_case = |category: &str| {
+        plan.cases
+            .iter()
+            .find(|id| plan.checks[*id].spec.category == category)
+            .unwrap()
+    };
+    let complete = first_case("operation");
+    let partial = first_case("workflow");
     r.samples
-        .retain(|s| s.case == plan.cases[0] || (s.case == plan.cases[1] && s.repetition == 0));
+        .retain(|s| &s.case == complete || (&s.case == partial && s.repetition == 0));
+    r.diagnostics.clear();
     let md = report::markdown(&r);
-    let pending = total - 2;
-    assert!(md.contains(&format!("| C0 | {total} | 0 | {pending} | {skipped} |")));
-    assert!(md.contains("| C0 | 1 | 1 |"));
-    assert!(md.contains(&format!("| C0 | {checks} | {checks} | 0 |")));
+    let validation = report_section(&md, "## Validation tests (V)");
+    assert!(validation.contains("| 1018/1018 | 0 |"));
+    assert!(!validation.contains("Incomplete sample sets"));
+    let operation = report_section(&md, "## Operation tests (O)");
+    assert!(operation.contains("| C0 | 468 | 0 | 467 | 36 |"));
+    assert!(operation.contains("| C0 | 0 | 1 |"));
+    let workflow = report_section(&md, "## Workflow tests (W)");
+    assert!(workflow.contains("| C0 | 1644 | 0 | 1643 | 1644 |"));
+    assert!(workflow.contains("| C0 | 1 | 0 |"));
+    assert!(operation.contains("Complete sample sets not accepted"));
     assert!(md.contains("Not measured"));
 }
 
@@ -294,26 +325,187 @@ fn unresolved_catalog_is_not_presented_as_an_applicable_plan() {
 }
 
 #[test]
-fn performance_exclusions_omit_checks_that_have_no_timing() {
+fn coverage_and_exclusions_belong_to_their_test_category() {
     let mut r = support::record("native-2", "rq");
     r.status = "failed".into();
     r.stage = "validate".into();
     r.samples.clear();
+    r.diagnostics.clear();
     let md = report::markdown(&r);
-    let coverage = md
-        .split("## Validation tests (V)")
-        .nth(1)
-        .unwrap()
-        .split("## Operation tests (O)")
-        .next()
+    let validation = report_section(&md, "## Validation tests (V)");
+    assert!(validation.contains("| 1018/1018 | 0 |"));
+    let excluded = "RQ is selected. R10 cases are excluded.";
+    assert!(validation.contains(&format!("{excluded} | 91 |")));
+    assert!(!validation.contains("Performance test coverage"));
+    assert!(!validation.contains("no alias-operation entry point"));
+    let operation = report_section(&md, "## Operation tests (O)");
+    assert!(operation.contains("| C0 | 468 | 0 | 468 | 36 |"));
+    assert!(operation.contains(
+        "| V06 · Time boundary calls such as self-XOR and overlapping copies | 0/108, accepted |"
+    ));
+    assert!(operation.contains("no alias-operation entry point. | 36 |"));
+    assert!(!operation.contains(excluded));
+    let link = report_section(&md, "## Link tests (L)");
+    let summary = link.split_once("### Key results").unwrap().0;
+    assert!(summary.contains("| C0 | Independent timings | 112 | 0 | 112 | 112 |"));
+    assert!(summary.contains("| C0 | Stage observations | 96 | 0 | 96 | 96 |"));
+    let (timed_exclusions, stage_exclusions) = link
+        .split_once("#### Stage observation exclusions")
         .unwrap();
-    assert!(coverage.contains("| C0 | 1416 | 0 | 1416 | 264 |"));
-    assert!(coverage.contains("| C0 | 1074 | 1074 | 0 | 45 |"));
-    assert!(coverage.contains("RQ is selected. R10 cases are excluded. | 45 | 216 |"));
-    assert!(coverage.contains("no alias-operation entry point. | 0 | 48 |"));
-    assert!(!coverage.contains("Incomplete sample sets"));
-    assert!(!coverage.contains("Partial / rejected"));
-    assert!(!coverage.contains("fused work"));
+    assert!(timed_exclusions.contains(&format!("{excluded} | 112 |")));
+    assert!(stage_exclusions.contains(&format!("{excluded} | 96 |")));
+    let workflow = report_section(&md, "## Workflow tests (W)");
+    assert!(workflow.contains("| C0 | 1644 | 0 | 1644 | 1644 |"));
+    assert!(workflow.contains(&format!("{excluded} | 1644 |")));
+    assert!(!workflow.contains("Stage observations"));
+    assert!(!md.contains("Incomplete sample sets"));
+}
+
+#[test]
+fn operation_latency_shows_direct_calls_across_the_shared_grid() {
+    let mut r = support::record("native-2", "rq");
+    let timings = [
+        ("operation/broadcast-4/b128/direct/small", 640),
+        ("operation/broadcast-4/b1024/direct/small", 1920),
+    ];
+    for sample in &mut r.samples {
+        if let Some((_, time)) = timings.iter().find(|(case, _)| sample.case == *case) {
+            sample.elapsed_ns = *time;
+        }
+    }
+    let md = report::markdown(&r);
+    let o = report_section(&md, "## Operation tests (O)");
+    let (_, rest) = o
+        .split_once("### Key results · Direct call latency (ns/call)")
+        .unwrap();
+    let (latency, coverage) = rest.split_once("### Detailed results").unwrap();
+    assert!(coverage.contains(
+        "| V06 · Time boundary calls such as self-XOR and overlapping copies | 108/108, accepted |"
+    ));
+    let columns = "| One timed call | 128 B | 256 B | 512 B | 1024 B | 2048 B | 4096 B |";
+    assert_eq!(latency.matches(columns).count(), 1);
+    assert!(latency.contains("| O04 · XOR four sources into one target |"));
+    let broadcast = latency
+        .lines()
+        .find(|line| line.starts_with("| O05 · Broadcast XOR from one source into four targets |"))
+        .unwrap();
+    let cells: Vec<_> = broadcast
+        .trim_matches('|')
+        .split('|')
+        .map(str::trim)
+        .collect();
+    assert_eq!((cells[1], cells[4]), ("10.000", "30.000"));
+    assert!(!latency.contains("Execute"));
+    assert!(!latency.contains("Not measured"));
+}
+
+#[test]
+fn link_stage_coverage_distinguishes_unfinished_and_unaccepted_observations() {
+    let mut r = support::record("native-2", "rq");
+    r.status = "failed".into();
+    r.stage = "diagnose".into();
+    let partial = "workflow/encode-repairs/rq/k512/b1024/r8";
+    let complete = "workflow/decode/rq/k512/b1024/m52/source-first/s6513";
+    r.diagnostics.retain(|event| {
+        event["case"] == complete || (event["case"] == partial && event["worker"] == 0)
+    });
+    let md = report::markdown(&r);
+    let link = report_section(&md, "## Link tests (L)");
+    assert!(link.contains("| C0 | Independent timings | 112 | 0 | 0 | 112 |"));
+    assert!(link.contains("| C0 | 0 | 112 |"));
+    assert!(link.contains("| C0 | Stage observations | 96 | 0 | 94 | 96 |"));
+    assert!(link.contains("| C0 | 1 | 1 |"));
+    assert!(link.contains("Complete observation sets not accepted"));
+}
+
+#[test]
+fn workflow_grids_keep_encoding_phases_separate_and_show_every_round_trip_geometry() {
+    let mut r = support::record("native-2", "rq");
+    for event in &mut r.diagnostics {
+        let (intervals, mapping, total) = match event["case"].as_str().unwrap() {
+            "workflow/encode-repairs/rq/k512/b1024/r8" => (
+                json!({"setup":100000, "load":200000, "apply":300000, "generate":4000, "output":4192}),
+                ["setup", "load", "apply", "generate", "output"],
+                608192,
+            ),
+            "workflow/encode-repairs/rq/k512/b512/r8" => (
+                json!({"prepare":600000, "repair-output":4096}),
+                [
+                    "prepare",
+                    "prepare",
+                    "prepare",
+                    "repair-output",
+                    "repair-output",
+                ],
+                604096,
+            ),
+            "workflow/encode-repairs/rq/k512/b4096/r8" => {
+                (json!({"fused":600000}), ["fused"; 5], 600000)
+            }
+            _ => continue,
+        };
+        let link_coverage: serde_json::Map<_, _> = ["L01", "L04", "L05", "L06", "L09"]
+            .into_iter()
+            .zip(mapping)
+            .map(|(family, interval)| (family.to_owned(), json!({"interval":interval})))
+            .collect();
+        event["observation"] = json!({
+            "stages": {"total_ns":total, "exclusive_ns":intervals, "unattributed_ns":0},
+            "link_coverage": link_coverage,
+        });
+    }
+    let md = report::markdown(&r);
+    let workflow = report_section(&md, "## Workflow tests (W)");
+    let (headlines, details) = workflow.split_once("### Detailed results").unwrap();
+    let (_, leading) = headlines
+        .split_once("#### Precode · source-equivalent Gbit/s")
+        .unwrap();
+    let (precode, leading) = leading
+        .split_once("#### Encode · repair-output Gbit/s")
+        .unwrap();
+    let (encode, decode) = leading
+        .split_once("#### Decode · source-equivalent Gbit/s")
+        .unwrap();
+    let round_trip = details
+        .split_once("#### Round trip (W06)")
+        .unwrap()
+        .1
+        .split_once("#### Other workloads")
+        .unwrap()
+        .0;
+    let cell = |section: &str, b: usize| -> String {
+        section
+            .lines()
+            .find(|line| line.starts_with(&format!("| {b} |")))
+            .unwrap()
+            .split('|')
+            .nth(5)
+            .unwrap()
+            .trim()
+            .into()
+    };
+    assert_eq!(cell(precode, 512), "3.495");
+    assert_eq!(cell(precode, 1024), "6.991");
+    assert!(precode.contains("Counts K × B source bytes."));
+    assert!(encode.contains("Counts R × B repair bytes with R=8."));
+    assert!(decode.contains("Counts K × B recovered source bytes."));
+    for b in [512, 1024] {
+        assert_eq!(cell(encode, b), "8.000");
+    }
+    assert_eq!(cell(precode, 4096), "Not measured");
+    assert_eq!(cell(encode, 4096), "Not measured");
+    let columns =
+        "| B (bytes/symbol) | K=64 | K=128 | K=256 | K=512 | K=1024 | K=2048 | K=4096 | K=8192 |";
+    for grid in [precode, encode, decode, round_trip] {
+        assert!(grid.contains(columns));
+        for b in [128, 256, 512, 1024, 2048, 4096] {
+            assert!(
+                grid.lines()
+                    .any(|line| line.starts_with(&format!("| {b} |")))
+            );
+        }
+    }
+    assert!(!round_trip.contains("Not measured"));
 }
 
 #[test]
@@ -322,10 +514,10 @@ fn stage_table_preserves_combined_interval_and_adds_to_diagnostic_total() {
     for event in r
         .diagnostics
         .iter_mut()
-        .filter(|event| event["case"] == "workflow/decode/rq/k512/b128/m52/source-first/s6513")
+        .filter(|event| event["case"] == "workflow/decode/rq/k512/b1024/m52/source-first/s6513")
     {
         let worker = event["worker"].as_u64().unwrap();
-        let mut intervals = json!({"ingestion-and-solve":6000});
+        let mut intervals = json!({"ingestion-and-solve":6000,"diagnostic-query-overhead":0});
         if worker != 0 {
             intervals["component-release"] = json!(3000);
         }
@@ -345,8 +537,56 @@ fn stage_table_preserves_combined_interval_and_adds_to_diagnostic_total() {
     let md = report::markdown(&r);
     assert!(md.contains("| ingestion and solve (L07, L08 · combined) | 6.000 | 50.0% |"));
     assert!(md.contains("| component release (L10) | 2.000 | 16.7% |"));
+    assert!(
+        md.find("| diagnostic query overhead |").unwrap()
+            < md.find("| component release (L10) |").unwrap()
+    );
     assert!(md.contains("| Unattributed | 4.000 | 33.3% |"));
     assert!(md.contains("| Instrumented lifecycle total | 12.000 | 100.0% |"));
+}
+
+#[test]
+fn link_report_shows_block_configuration_before_matching_scale_tables() {
+    let r = support::record("native-2", "rq");
+    let md = report::markdown(&r);
+    let l = report_section(&md, "## Link tests (L)");
+    let order = [
+        "### Summary",
+        "### Key results · Encode and decode stages",
+        "#### Encode · mean µs/block",
+        "C0 · RQ · K=512 · B=1024 bytes/symbol · 8 repair symbols generated",
+        "#### Decode · mean µs/block",
+        "C0 · RQ · K=512 · B=1024 bytes/symbol · 52 missing source symbols (10% rounded up)",
+        "### Detailed results",
+        "#### Encoding plans (L02–L03) · median ms/call",
+        "#### Encode replay (L11) · median ms/replay",
+        "#### Decode replay (L12) · median ms/replay",
+        "#### Link coverage details",
+    ]
+    .map(|heading| l.find(heading).unwrap());
+    assert!(
+        order
+            .windows(2)
+            .all(|positions| positions[0] < positions[1])
+    );
+    let columns = "| K=64 | K=128 | K=256 | K=512 | K=1024 | K=2048 | K=4096 | K=8192 |";
+    assert!(l.contains("| Stage | Mean µs/block | Share of lifecycle (%) |"));
+    assert!(l.contains(&format!("| Workload {columns}")));
+    let (encode, decode) = l
+        .split_once("#### Encode replay (L11)")
+        .unwrap()
+        .1
+        .split_once("#### Decode replay (L12)")
+        .unwrap();
+    for replay in [encode, decode] {
+        assert!(replay.contains(&format!("| B (bytes/symbol) {columns}")));
+        for b in [128, 256, 512, 1024, 2048, 4096] {
+            assert!(replay.contains(&format!("| {b} |")));
+        }
+    }
+    assert!(decode.contains("Missing source symbols · K=64 → 7, K=128 → 13, K=256 → 26, K=512 → 52, K=1024 → 103, K=2048 → 205, K=4096 → 410, K=8192 → 820"));
+    assert!(!l.contains("1016"));
+    assert!(!l.contains("K=5008"));
 }
 
 #[test]
@@ -394,6 +634,17 @@ fn warning_reports_distinct_timed_observations_and_actual_call_counts() {
     assert!(md.contains("3 calls with other observations"));
     assert!(md.contains("1 case · Expected &#91;0&#93;, observed &#91;1&#93;"));
     assert!(md.contains("B=128 direct small") && md.contains("ns/call"));
+    let warning = md
+        .split_once("#### Warning 1\n\n")
+        .unwrap()
+        .1
+        .split_once("### Detailed results")
+        .unwrap()
+        .0;
+    assert!(warning.starts_with("Boundary reference deviation · self xor"));
+    assert!(warning.contains("- Warning basis · "));
+    assert!(warning.contains("- Timed observations · "));
+    assert!(!warning.contains('|') && !warning.contains("**") && !warning.contains("\n#### "));
 }
 
 #[test]
@@ -486,7 +737,7 @@ fn mixed_sequence_failure_leads_with_zero_scalar_contract_and_exact_bytes() {
         ),
     );
     let md = report::markdown(&r);
-    let finding = md.find("**Fatal**").unwrap();
+    let finding = md.find("#### Fatal ").unwrap();
     let summary = md.find("Multiply-add with scalar 0").unwrap();
     let difference = md.find("| Symbol 14, byte 0 | 130 | 0 |").unwrap();
     let context = md.find("| Operation | MulAdd").unwrap();
@@ -586,19 +837,20 @@ fn repeated_fatals_form_one_problem_before_the_complete_family_tables() {
     }
     let md = report::markdown(&r);
     let findings = md
-        .split("\n### Fatal\n")
+        .split("\n### Key results · Findings\n")
         .nth(1)
         .unwrap()
-        .split("\n### Warning\n")
+        .split("\n### Detailed results\n")
         .next()
         .unwrap();
     assert!(findings.contains("| C0 | V04 | 25 |"));
-    assert_eq!(findings.matches("**Fatal**").count(), 1);
+    assert_eq!(findings.matches("#### Fatal ").count(), 1);
     assert!(findings.contains(&ids[0]));
     for id in ids.iter().skip(1) {
         assert!(!findings.contains(id), "Repeated case expanded: {id}");
     }
     assert!(findings.contains("Step 27/256"));
+    assert!(findings.contains("Fatal validation findings blocked O/L/W measurements."));
     let detail = md.split("### Detailed results").nth(1).unwrap();
     for number in 1..=11 {
         assert!(detail.contains(&format!("V{number:02} ·")));
@@ -696,23 +948,27 @@ fn one_problem_can_span_components_and_validation_families() {
     };
     let md = report::snapshot(&saved);
     let findings = md
-        .split("\n### Fatal\n")
+        .split("\n### Key results · Findings\n")
         .nth(1)
         .unwrap()
         .split("### Detailed results")
         .next()
         .unwrap();
-    assert_eq!(findings.matches("**Fatal**").count(), 1);
+    assert_eq!(findings.matches("#### Fatal ").count(), 1);
     assert!(findings.contains("| C0 | V02, V04 | 2 |"));
     assert!(findings.contains("| C1 | V02, V04 | 2 |"));
     assert_eq!(
         findings
-            .matches("#### Warning 1 · Boundary reference deviation")
+            .matches("#### Warning 1\n\nBoundary reference deviation")
             .count(),
         1
     );
-    assert!(findings.contains("| C0 | 1 | 1 case · Expected"));
-    assert!(findings.contains("| C1 | 1 | 1 case · Expected"));
+    assert!(
+        findings.contains("C0 · 1 affected case\n\n- Validation observations · 1 case · Expected")
+    );
+    assert!(
+        findings.contains("C1 · 1 affected case\n\n- Validation observations · 1 case · Expected")
+    );
     assert!(md.contains("V11 · Errors and lifecycle"));
 }
 
@@ -760,7 +1016,7 @@ fn different_contract_failures_are_not_merged_by_family_alone() {
         );
     }
     let md = report::markdown(&r);
-    assert_eq!(md.matches("**Fatal**").count(), 3);
+    assert_eq!(md.matches("#### Fatal ").count(), 3);
     assert!(md.contains("| First difference | Direct | Execute |"));
     assert!(md.contains("| First difference | Batch | Elementary calls |"));
     assert!(md.contains("A separate undocumented panic"));
@@ -793,7 +1049,7 @@ fn grouping_uses_only_explicit_identity_and_not_message_words() {
             "finding":structured(case,"operator.explicit-contract",kind,json!({}),None)}));
     }
     let md = report::markdown(&r);
-    assert_eq!(md.matches("**Fatal**").count(), 2);
+    assert_eq!(md.matches("#### Fatal ").count(), 2);
     assert!(md.contains("| C0 | V02 | 2 |"));
     assert!(md.contains("| C0 | V02 | 1 |"));
     assert!(!md.contains("A required symbol was missing"));
@@ -812,7 +1068,7 @@ fn legacy_messages_are_unclassified_and_never_used_as_grouping_keys() {
             .push(json!({"case":case,"message":"Identical MulAdd scalar: 0 diagnostic"}));
     }
     let md = report::markdown(&r);
-    assert_eq!(md.matches("**Unclassified diagnostic**").count(), 2);
+    assert_eq!(md.matches("\n\nUnclassified diagnostic\n").count(), 2);
     assert!(!md.contains("operator.mul_add.zero"));
 }
 

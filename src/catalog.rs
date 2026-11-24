@@ -78,9 +78,10 @@ pub fn recipe(test: &TestReference) -> Result<Recipe> {
         "validation_failure":"complete all independent applicable V checks; any V fatal blocks all O/L/W prechecks and measurements; warnings do not block",
         "seeds":crate::content::SEEDS,"random_generator":"splitmix64-low-byte-v1",
         "build":{"toolchain":"1.89.0","profile":"release","opt_level":3,"codegen_units":1,"lto":false,"target_cpu":"native"},
-        "timeout_seconds":600,"fresh_case_timeout_seconds":60,
+        "timeout_seconds":crate::content::WORKER_TIMEOUT_SECONDS,"fresh_case_timeout_seconds":crate::content::FIRST_USE_TIMEOUT_SECONDS,
         "timing":{"ordinary":"public workflow through owned output; validation outside timer","diagnostic":"same workload with stage and resource observation; never pooled with ordinary","operator":"one prepared public operation on each independently initialized instance","first_use":"one fresh process per sample; process startup excluded"},
-        "source_counts":crate::content::SOURCE_COUNTS,"operator_widths":crate::content::WIDTHS,
+        "source_counts":crate::content::SOURCE_COUNTS,"symbol_widths":crate::content::SYMBOL_WIDTHS,
+        "boundary_source_counts":crate::content::BOUNDARY_SOURCE_COUNTS,"boundary_widths":crate::content::BOUNDARY_WIDTHS,
         "case_count":checks.len(),"repetitions":crate::content::REPETITIONS});
     let digest = util::digest(&(
         &test.version,

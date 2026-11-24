@@ -357,7 +357,8 @@ fn boundary_policy_is_explicit_and_shared_with_measurement_cases() {
         version: "0.1.0".into(),
     })
     .unwrap();
-    let mut count = 0;
+    let mut validation_count = 0;
+    let mut measurement_count = 0;
     for check in recipe.checks.values().filter(|c| c.spec.family == "V06") {
         let defined = matches!(check.spec.workload.as_str(), "self-copy" | "empty-xor");
         let policy = check.spec.boundary.as_ref().unwrap();
@@ -368,9 +369,18 @@ fn boundary_policy_is_explicit_and_shared_with_measurement_cases() {
             defined
         );
         assert!(!policy.expectation.is_empty() && !policy.basis.is_empty());
-        count += 1;
+        if check.measured {
+            assert!(check.spec.direct);
+            measurement_count += 1;
+        } else {
+            validation_count += 1;
+        }
     }
-    assert_eq!(count, 9 * 19 * 2 + 9 * 8 * 2 * 2);
+    assert_eq!(
+        validation_count,
+        9 * content::correctness_widths().len() * 2
+    );
+    assert_eq!(measurement_count, 9 * content::SYMBOL_WIDTHS.len() * 2);
 }
 #[test]
 fn boundary_deviations_have_distinct_fatal_and_warning_outcomes() {
@@ -447,4 +457,23 @@ fn ambiguous_boundaries_never_excuse_unrelated_symbol_corruption() {
             );
         }
     }
+}
+
+#[test]
+fn shared_rq_sizes_have_independent_reference_geometry() {
+    // RFC 6330, Table 2, mapped to the registered source counts.
+    let expected = [
+        (69, 92),
+        (138, 167),
+        (257, 296),
+        (526, 577),
+        (1032, 1101),
+        (2070, 2170),
+        (4112, 4260),
+        (8194, 8416),
+    ];
+    assert_eq!(
+        content::SOURCE_COUNTS.map(|k| reference::geometry("rq", k)),
+        expected,
+    );
 }

@@ -6,13 +6,26 @@ pub const WORKERS: usize = 3;
 pub const SAMPLES_PER_WORKER: usize = 5;
 pub const REPETITIONS: usize = WORKERS * SAMPLES_PER_WORKER;
 pub const SEEDS: [u64; 3] = [0x19_71, 0x20_03, 0x50_08];
-pub const WIDTHS: [usize; 8] = [16, 31, 32, 33, 128, 1016, 4096, 16384];
-pub const CORRECTNESS_WIDTHS: [usize; 19] = [
-    1, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129, 1016, 1023, 1024, 1025, 4096, 16384,
+pub const SOURCE_COUNTS: [usize; 8] = [64, 128, 256, 512, 1024, 2048, 4096, 8192];
+pub const SYMBOL_WIDTHS: [usize; 6] = [128, 256, 512, 1024, 2048, 4096];
+pub const BOUNDARY_WIDTHS: [usize; 15] = [
+    1, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 129, 1023, 1025, 16384,
 ];
-pub const SOURCE_COUNTS: [usize; 15] = [
+pub const BOUNDARY_SOURCE_COUNTS: [usize; 15] = [
     1, 4, 9, 10, 11, 63, 64, 65, 511, 512, 513, 5007, 5008, 5009, 5120,
 ];
+pub const WORKER_TIMEOUT_SECONDS: u64 = 1800;
+pub const FIRST_USE_TIMEOUT_SECONDS: u64 = 60;
+
+pub fn correctness_widths() -> std::collections::BTreeSet<usize> {
+    SYMBOL_WIDTHS.into_iter().chain(BOUNDARY_WIDTHS).collect()
+}
+
+fn codec_geometries() -> impl Iterator<Item = (usize, usize)> {
+    SOURCE_COUNTS
+        .into_iter()
+        .flat_map(|k| SYMBOL_WIDTHS.into_iter().map(move |width| (k, width)))
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -371,7 +384,7 @@ pub fn boundaries() -> Vec<Boundary> {
 
 pub fn cases() -> Vec<Case> {
     let mut out = Vec::new();
-    for width in CORRECTNESS_WIDTHS {
+    for width in correctness_widths() {
         for (work, family) in [
             ("operator-reference", "V02"),
             ("storage-ownership", "V03"),
@@ -458,38 +471,20 @@ pub fn cases() -> Vec<Case> {
                 .map(|b| (b.name.into(), "V06", b.action, Some(b.contract))),
         )
     {
-        for width in WIDTHS {
-            for direct in [false, true] {
-                // Insertion, lookup and aliasing have no Operation-enum equivalent.
-                if !direct
-                    && (name == "unshared-first-write"
-                        || matches!(
-                            action,
-                            Action::Insert { .. }
-                                | Action::Read { .. }
-                                | Action::Alias { .. }
-                                | Action::SharedWrite { .. }
-                        ))
-                {
-                    continue;
+        for width in SYMBOL_WIDTHS {
+            for (set, maximum) in [("small", 64), ("large", 512)] {
+                let mut c = Case::new("operation", family, &name);
+                c.width = width;
+                c.direct = true;
+                c.actions.push(action.clone());
+                c.instances = maximum.min((64 * 1024 * 1024 / (width * 16)).max(1));
+                c.warning = boundary.as_ref().is_some_and(|b| !b.defined);
+                c.boundary = boundary.clone();
+                c.requires.push("operator_surface".into());
+                if family == "O08" {
+                    c.requires.push("alias".into());
                 }
-                for (set, maximum) in [("small", 64), ("large", 512)] {
-                    let mut c = Case::new("operation", family, &name);
-                    c.width = width;
-                    c.direct = direct;
-                    c.actions.push(action.clone());
-                    c.instances = maximum.min((64 * 1024 * 1024 / (width * 16)).max(1));
-                    c.warning = boundary.as_ref().is_some_and(|b| !b.defined);
-                    c.boundary = boundary.clone();
-                    c.requires.push("operator_surface".into());
-                    if family == "O08" {
-                        c.requires.push("alias".into());
-                    }
-                    out.push(c.identify(&format!(
-                        "b{width}/{}/{set}",
-                        if direct { "direct" } else { "execute" }
-                    )));
-                }
+                out.push(c.identify(&format!("b{width}/direct/{set}")));
             }
         }
     }
@@ -515,16 +510,21 @@ pub fn cases() -> Vec<Case> {
                 out.push(c.identify(&format!("{scheme}/s{seed}")));
             }
         }
-        for k in SOURCE_COUNTS {
-            for width in [31, 128] {
-                let mut c = Case::new("correctness", "V07", "scheme-padding");
-                c.scheme = Some(scheme.into());
-                c.k = k;
-                c.width = width;
-                out.push(c.identify(&format!("{scheme}/k{k}/b{width}")));
-            }
+        let padding_geometries: std::collections::BTreeSet<_> = codec_geometries()
+            .chain(
+                BOUNDARY_SOURCE_COUNTS
+                    .into_iter()
+                    .flat_map(|k| [31, 128].into_iter().map(move |width| (k, width))),
+            )
+            .collect();
+        for (k, width) in padding_geometries {
+            let mut c = Case::new("correctness", "V07", "scheme-padding");
+            c.scheme = Some(scheme.into());
+            c.k = k;
+            c.width = width;
+            out.push(c.identify(&format!("{scheme}/k{k}/b{width}")));
         }
-        for k in [64, 512, 5008] {
+        for k in SOURCE_COUNTS {
             for work in ["plan-build", "plan-export"] {
                 let mut c = Case::new(
                     "chain",
@@ -537,92 +537,95 @@ pub fn cases() -> Vec<Case> {
                 c.requires.push("plan".into());
                 out.push(c.identify(&format!("{scheme}/k{k}")));
             }
-            for width in [128, 1016] {
-                let geometry = format!("{scheme}/k{k}/b{width}");
-                for (work, family) in [("encode-replay", "L11"), ("decode-replay", "L12")] {
-                    let mut c = Case::new("chain", family, work);
-                    c.scheme = Some(scheme.into());
-                    c.k = k;
-                    c.width = width;
-                    if work == "decode-replay" {
-                        c.missing = k.div_ceil(10);
-                    }
-                    c.requires.push("plan".into());
-                    out.push(c.identify(&geometry));
+        }
+        for (k, width) in codec_geometries() {
+            let geometry = format!("{scheme}/k{k}/b{width}");
+            for (work, family) in [("encode-replay", "L11"), ("decode-replay", "L12")] {
+                let mut c = Case::new("chain", family, work);
+                c.scheme = Some(scheme.into());
+                c.k = k;
+                c.width = width;
+                if work == "decode-replay" {
+                    c.missing = k.div_ceil(10);
                 }
-                for (work, family) in [
-                    ("first-encode", "W01"),
-                    ("encode-sources", "W02,W08"),
-                    ("round-trip", "W06"),
-                    ("continuous-rebuild", "W07"),
-                    ("continuous-reuse", "W03,W07"),
-                ] {
+                c.requires.push("plan".into());
+                out.push(c.identify(&geometry));
+            }
+        }
+        for (k, width) in codec_geometries() {
+            let geometry = format!("{scheme}/k{k}/b{width}");
+            for (work, family) in [
+                ("first-encode", "W01"),
+                ("encode-sources", "W02,W08"),
+                ("round-trip", "W06"),
+                ("continuous-rebuild", "W07"),
+                ("continuous-reuse", "W03,W07"),
+            ] {
+                let mut c = Case::new("workflow", family, work);
+                c.scheme = Some(scheme.into());
+                c.k = k;
+                c.width = width;
+                if work == "round-trip" {
+                    c.missing = k.div_ceil(10);
+                    c.order = "mixed".into();
+                }
+                c.fresh_process = work == "first-encode";
+                if work.starts_with("continuous") {
+                    c.blocks = 32;
+                }
+                if work == "continuous-reuse" {
+                    c.requires.push("reuse".into());
+                }
+                out.push(c.identify(&geometry));
+            }
+            let mut repairs = vec![1, 8, k.div_ceil(10)];
+            repairs.sort_unstable();
+            repairs.dedup();
+            for r in repairs {
+                for (work, family) in [("encode-repairs", "W02"), ("reuse-encode", "W03")] {
+                    let family = if work == "encode-repairs" && r == 8 {
+                        "W02,W08,L01,L04,L05,L06,L09,L10"
+                    } else {
+                        family
+                    };
                     let mut c = Case::new("workflow", family, work);
                     c.scheme = Some(scheme.into());
                     c.k = k;
                     c.width = width;
-                    if work == "round-trip" {
-                        c.missing = k.div_ceil(10);
-                        c.order = "mixed".into();
-                    }
-                    c.fresh_process = work == "first-encode";
-                    if work.starts_with("continuous") {
-                        c.blocks = 32;
-                    }
-                    if work == "continuous-reuse" {
+                    c.repairs = r;
+                    if work == "reuse-encode" {
                         c.requires.push("reuse".into());
                     }
-                    out.push(c.identify(&geometry));
+                    out.push(c.identify(&format!("{geometry}/r{r}")));
                 }
-                let mut repairs = vec![1, 8, k.div_ceil(10)];
-                repairs.sort_unstable();
-                repairs.dedup();
-                for r in repairs {
-                    for (work, family) in [("encode-repairs", "W02"), ("reuse-encode", "W03")] {
-                        let family = if work == "encode-repairs" && r == 8 {
-                            "W02,W08,L01,L04,L05,L06,L09,L10"
-                        } else {
-                            family
-                        };
-                        let mut c = Case::new("workflow", family, work);
+            }
+            let mut omissions = vec![0, 1, k.div_ceil(100), k.div_ceil(10)];
+            omissions.sort_unstable();
+            omissions.dedup();
+            for missing in omissions {
+                for order in ["source-first", "mixed"] {
+                    for seed in SEEDS {
+                        let mut c = Case::new(
+                            "workflow",
+                            if missing == 0 {
+                                "W04,W08"
+                            } else if missing == k.div_ceil(10)
+                                && order == "source-first"
+                                && seed == SEEDS[0]
+                            {
+                                "W05,W08,L01,L07,L08,L09,L10"
+                            } else {
+                                "W05,W08"
+                            },
+                            "decode",
+                        );
                         c.scheme = Some(scheme.into());
                         c.k = k;
                         c.width = width;
-                        c.repairs = r;
-                        if work == "reuse-encode" {
-                            c.requires.push("reuse".into());
-                        }
-                        out.push(c.identify(&format!("{geometry}/r{r}")));
-                    }
-                }
-                let mut omissions = vec![0, 1, k.div_ceil(100), k.div_ceil(10)];
-                omissions.sort_unstable();
-                omissions.dedup();
-                for missing in omissions {
-                    for order in ["source-first", "mixed"] {
-                        for seed in SEEDS {
-                            let mut c = Case::new(
-                                "workflow",
-                                if missing == 0 {
-                                    "W04,W08"
-                                } else if missing == k.div_ceil(10)
-                                    && order == "source-first"
-                                    && seed == SEEDS[0]
-                                {
-                                    "W05,W08,L01,L07,L08,L09,L10"
-                                } else {
-                                    "W05,W08"
-                                },
-                                "decode",
-                            );
-                            c.scheme = Some(scheme.into());
-                            c.k = k;
-                            c.width = width;
-                            c.missing = missing;
-                            c.order = order.into();
-                            c.seed = seed;
-                            out.push(c.identify(&format!("{geometry}/m{missing}/{order}/s{seed}")));
-                        }
+                        c.missing = missing;
+                        c.order = order.into();
+                        c.seed = seed;
+                        out.push(c.identify(&format!("{geometry}/m{missing}/{order}/s{seed}")));
                     }
                 }
             }

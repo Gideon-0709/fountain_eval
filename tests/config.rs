@@ -162,7 +162,7 @@ fn skips_cannot_hide_missing_results_or_be_relabelled_as_success() {
         .as_mut()
         .unwrap()
         .checks
-        .get_mut("operation/xor-one/b16/direct/small")
+        .get_mut("operation/xor-one/b128/direct/small")
         .unwrap()
         .skip = Some(fountain_eval::coverage::Skip {
         code: "fake".into(),
@@ -283,7 +283,10 @@ fn single_components_keep_full_catalog_with_no_implicit_production_partner() {
         if family == "product-abi" {
             assert!(engine.cases.is_empty());
         } else {
-            assert_eq!(engine.cases.len(), 6);
+            assert_eq!(
+                engine.cases.len(),
+                2 * fountain_eval::content::SOURCE_COUNTS.len()
+            );
         }
         let operator = catalog::plan(&r.test, &r.scheme, family, Scope::Operator).unwrap();
         assert_eq!(operator.identity, engine.identity);

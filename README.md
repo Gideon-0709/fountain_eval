@@ -191,16 +191,16 @@ A pending preparation can be consumed once. `run --prepared` writes a normal res
 
 ## What the formal content runs
 
-`feval list` expands the complete 2,511-case candidate. The selected scheme and verified interface determine applicability; users cannot suppress cases.
+`feval list` enumerates the candidate catalog. The selected scheme and verified interface determine applicability, and each selection runs its full applicable set. See the [workload matrix](docs/TEST.md#workload-matrix) for the expansion rules.
 
 | Category | Coverage | Measurement |
 |---|---|---|
 | Validation tests (V01–V11) | Scalar GF/byte oracle, mixed prefixes, storage/dispatch, boundary observations, scheme padding, plan reuse, small independent linear solve, receive ordering, participation and release | Validation outside ordinary timers |
-| Operation tests (O01–O09) | Public storage, XOR, GF, copy/move and supported alias calls; direct/execute paths; small/large sets | One prepared call per independent instance |
+| Operation tests (O01–O09) | Direct public storage, XOR, GF, copy/move and supported alias calls in small and large sets | One prepared call per independent instance |
 | Link tests (L01–L12) | Symbolic plan construction and operation-list cloning, actual encode/decode stage partitions, recorded real-session replay, operation mix and allocation diagnostics | Ordinary totals and separate instrumented observations |
 | Workflow tests (W01–W08) | First use, source/repair output, source replacement, all-source and missing-source decode, round trip, 32-block continuity and lifecycle | Directly measured output-ready/lifecycle durations |
 
-The main matrix uses K=64/512/5008 and symbol widths 128/1016. Ordinary cases run in three sequential worker processes with one excluded warmup and five samples each (15 recorded samples). First-use cases use 15 fresh processes. Diagnostic builds have separate binaries and samples. Timers exclude checking and serialization; output-ready and full-lifecycle scopes are explicitly distinguished. No performance threshold determines correctness.
+The common sensitivity grid uses K=64/128/256/512/1024/2048/4096/8192 and B=128/256/512/1024/2048/4096. O uses the shared B values. Symbolic plans use K. Replay, workflows and paired link-stage observations cover all 48 K × B geometries per scheme. V supplements the common values with correctness boundary fixtures. Ordinary cases run in three sequential worker processes with one excluded warmup and five samples each (15 recorded samples). First-use cases use 15 fresh processes. Diagnostic builds have separate binaries and samples. Timers exclude checking and serialization. The report distinguishes output-ready and full-lifecycle scopes. Correctness is checked against the workload contract.
 
 The pinned public Slab/Simd implementations have a `mul_add(src, 0, dst)` branch that clears `dst`. The independent mathematical reference expects `dst` unchanged. A run that detects this ordinary GF error fails before measurement; it is not converted into a self-XOR warning or silently skipped. Other independent V cases still execute; O/L/W remain unexecuted after V completes. This is a component result, not a reason to weaken the formal contract.
 
@@ -225,11 +225,22 @@ feval compare "$REPORT#C0" /path/to/candidate-report#C0 > comparison.md
 
 The `run --json` response contains `result` and `batch`. Use the printed ID even when a run exits with a component failure. `report <result-id> --json` returns the report directory as `report`, the Markdown path as `markdown`, and `result_id`. Pass a published report directory to display the report or read its stored index with `--json`. The original `report.md` path also works with the index beside it. Relative report and comparison paths are resolved from the active workspace root. Multi-C comparisons use the `#C<N>` selector. Single-C reports can be passed directly.
 
-The report starts with tables for the test configuration, component and interface versions, recorded environment, and results. Validation (V), Operation (O), Link (L) and Workflow (W) follow in order. V starts with its correctness summary, then Fatal and Warning findings grouped by the check-emitted `contract_id` and `failure_kind`, and ends with the complete coverage and V01–V11 family tables. Each problem summarizes the affected components, families and case counts, with one representative fatal diagnostic; individual cases remain in the index. Empty finding types show None detected. The O/L/W categories have their own family coverage and performance details. Comparable workloads show component results side by side. A dagger marks benchmark timing CV above 10%.
+### Reading the Markdown
 
-Detailed coverage counts and exclusion reasons appear in V and come from the per-case records. The report separates accepted measurements, partial sample sets, complete sets rejected with their run, unexecuted cases and skips. A case with a complete sample set can contain incomplete recovery attempts. Its row shows the recovery count and omits successful throughput. Family coverage and skip reasons remain visible for single-component and capability-limited selections.
+The opening summary puts the result for each C first, followed by the configuration and recorded environment. The links at the top jump to V, O, L and W. Each section follows the same order of coverage summary, key results and detailed results.
+
+| Section | Key results |
+| --- | --- |
+| V · Validation | Fatal and warning findings grouped by contract ID and failure kind. The numbered headings identify the problems. The V01–V11 coverage table follows in the details. |
+| O · Operations | Direct-call latency in ns/call across the shared symbol widths. |
+| L · Links | Encode and decode stage time in mean µs/block, with shares of the instrumented lifecycle. Standalone plans and replay use median ms per call or replay. |
+| W · Workflows | Precode, Encode and Decode throughput in decimal Gbit/s. Each grid states the counted bytes and timed interval. W06 round trip appears in the details on the same K × B grid. |
+
+A dagger marks an ordinary timing CV above 10%. Exclusions list why a case does not apply. Applicable cases without measurements remain visible. The index retains exact case coverage, warning observations and aggregate results. See the [report reading guide](docs/TEST.md#read-the-report) for timing boundaries and rate denominators.
 
 `report.md` contains plain Markdown. Share it by itself for reading, or copy the entire report directory to retain `compare` and `report --json` access. The adjacent index records the config, C/I/T/E, test plan, build provenance, complete per-case coverage, correctness findings, warning observations, aggregate timings and diagnostics. The loader checks the Markdown and index as a pair. Earlier reports with an embedded index remain readable.
+
+### Comparing runs
 
 `compare` verifies T/E/I and common fatal-check witnesses before comparing common measured cases. Failed runs are ineligible; semantic warnings remain visible and eligible. Its headline rows show the baseline, candidate, median time change and CV, with observed changes in input, work and warnings flagged per case. Comparison uses the aggregate statistics validated before cleanup; it cannot recalculate statistics from disposed samples. Existing per-C raw evidence directories are still readable. A finalized report is a result, not a replayable preparation.
 

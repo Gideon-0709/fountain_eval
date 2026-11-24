@@ -19,7 +19,7 @@ fn metrics_are_decimal_gigabits_and_operations_per_second() {
     let row = op
         .summary
         .iter()
-        .find(|s| s.case == "operation/xor-one/b16/direct/small")
+        .find(|s| s.case == "operation/xor-one/b128/direct/small")
         .unwrap();
     assert_eq!(row.operations_per_second, Some(64.0 * 1e9 / 3000.0));
     assert_eq!(row.source_payload_gbps, None);
@@ -154,7 +154,7 @@ fn failed_and_prepared_stages_do_not_imply_measurement() {
 fn semantic_warnings_preserve_success_measurements_and_comparison() {
     let left = record("native-2", "rq");
     let mut right = left.clone();
-    let case = "operation/self-xor/b16/direct/small";
+    let case = "operation/self-xor/b128/direct/small";
     let event = right
         .validation
         .iter_mut()
@@ -196,7 +196,7 @@ fn measured_boundary_variation_is_reported_without_becoming_fatal() {
     let sample = r
         .samples
         .iter_mut()
-        .find(|s| s.case == "operation/self-xor/b16/direct/small")
+        .find(|s| s.case == "operation/self-xor/b128/direct/small")
         .unwrap();
     sample.observation =
         Some(json!({"calls":64,"outcomes":[{"count":1,"actual":[99]},{"count":63,"actual":[0]}]}));
@@ -334,7 +334,7 @@ fn fatal_failure_details_are_visible_in_markdown() {
     r.summary.clear();
     r.correctness.fatal_failures.push(serde_json::json!({"case":"correctness/arithmetic", "severity":"fatal", "status":"failed", "message":"MulAdd scalar: 0 <invalid>"}));
     let markdown = fountain_eval::report::markdown(&r);
-    assert!(markdown.contains("**Fatal**"));
+    assert!(markdown.contains("#### Fatal "));
     assert!(markdown.contains("MulAdd scalar: 0 &lt;invalid&gt;"));
     assert!(!markdown.contains("```json"));
 }

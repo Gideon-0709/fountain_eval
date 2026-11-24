@@ -144,7 +144,10 @@ def main():
             markdown = (work / (label + "-report.stdout")).read_text()
             assert "## Summary" in markdown and "## Validation tests (V)" in markdown
             assert "## Fatal and warning findings" not in markdown
-            assert "### Fatal" in markdown and "### Warning" in markdown and "### Detailed results" in markdown
+            assert "### Key results · Findings" in markdown and "### Detailed results" in markdown
+            assert "Fatal · None detected in completed checks." in markdown
+            assert ("Warning · None detected in completed checks." in markdown
+                    or "#### Warning 1\n" in markdown)
             results[label] = body
         elif body.get("result", {}).get("status") != "prepared":
             assert not body.get("result", {}).get("summary"), "Failure published a complete performance summary"

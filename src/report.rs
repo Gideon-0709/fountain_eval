@@ -1,5 +1,10 @@
 //! Markdown reports: one self-contained reading surface, backed by sealed evidence.
-use crate::{artifact::Component, evidence::Record, measurement::Summary};
+use crate::{
+    artifact::Component,
+    content::{SOURCE_COUNTS, SYMBOL_WIDTHS},
+    evidence::Record,
+    measurement::Summary,
+};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -7,6 +12,12 @@ use std::{
 };
 
 const PAGE: usize = 12;
+const REPORT_HEADER: &str = concat!(
+    "# Fountain evaluation report\n\n",
+    "[Summary](#summary) · [V · Validation](#validation-tests-v) · ",
+    "[O · Operations](#operation-tests-o) · [L · Links](#link-tests-l) · ",
+    "[W · Workflows](#workflow-tests-w)\n\n",
+);
 const CATEGORIES: [(&str, &str); 4] = [
     ("correctness", "Validation tests"),
     ("operation", "Operation tests"),
@@ -33,15 +44,15 @@ const FAMILIES: [(&str, &[&str]); 4] = [
     (
         "O",
         &[
-            "Insert",
-            "Read",
-            "Zero",
-            "XOR",
-            "Multi-source XOR",
-            "GF arithmetic",
-            "Copy and move",
-            "Alias",
-            "Remove",
+            "Insert at a new ID or overwrite an existing ID",
+            "Look up a symbol and return its reference",
+            "Zero one symbol, a list or a range",
+            "XOR one or more sources into one target",
+            "Broadcast one source by XOR into four or eight targets",
+            "Multiply or multiply-add in GF(256)",
+            "Copy or move one symbol or a range",
+            "Share a symbol and time the first write with and without sharing",
+            "Remove a symbol or record an ID association",
         ],
     ),
     (
@@ -244,20 +255,28 @@ fn metric(c: &Component, id: &str, kind: Metric) -> String {
         .unwrap_or_else(|| "Unavailable".into())
 }
 const OPS: &[(&str, &str)] = &[
-    ("O01", "insert-new"),
-    ("O02", "read"),
-    ("O03", "zero-one"),
-    ("O04", "xor-one"),
-    ("O05", "xor-many-4"),
-    ("O06", "scale-7"),
-    ("O06", "mul-add-7"),
-    ("O07", "copy-one"),
-    ("O07", "move-one"),
-    ("O08", "alias"),
-    ("O09", "remove"),
+    ("insert-new", "Insert a symbol at a new ID"),
+    ("read", "Look up a stored symbol reference"),
+    ("zero-one", "Zero one stored symbol"),
+    ("xor-one", "XOR one source into one target"),
+    ("xor-many-4", "XOR four sources into one target"),
+    (
+        "broadcast-4",
+        "Broadcast XOR from one source into four targets",
+    ),
+    ("scale-7", "Multiply one symbol by 7"),
+    (
+        "mul-add-7",
+        "Multiply a source by 7 and XOR into one target",
+    ),
+    ("copy-one", "Copy one symbol to another ID"),
+    ("move-one", "Move one symbol to another ID"),
+    ("alias", "Share one symbol under a second ID"),
+    ("remove", "Remove one stored symbol"),
 ];
-const HEADLINE: [(usize, usize); 4] = [(512, 128), (512, 1016), (5008, 128), (5008, 1016)];
-const STAGED: (usize, usize) = HEADLINE[0];
+const OPERATOR_HEADLINE_WIDTHS: [usize; 2] = [128, 1024];
+const HEADLINE: [(usize, usize); 4] = [(512, 128), (512, 1024), (8192, 128), (8192, 1024)];
+const STAGED: (usize, usize) = (512, 1024);
 
 fn matrix<T>(
     out: &mut String,
@@ -302,13 +321,15 @@ fn recovery_id(scheme: &str, k: usize, width: usize, missing: usize) -> String {
 fn important(c: &crate::content::Case) -> bool {
     match c.category.as_str() {
         "operation" => {
-            OPS.iter().any(|(_, operation)| *operation == c.workload)
-                && [128, 1016].contains(&c.width)
+            OPS.iter().any(|(operation, _)| *operation == c.workload)
+                && OPERATOR_HEADLINE_WIDTHS.contains(&c.width)
                 && c.instances == 64
         }
         "chain" => {
             matches!(c.workload.as_str(), "plan-build" | "plan-export")
-                || (c.workload.ends_with("-replay") && [512, 5008].contains(&c.k) && c.width == 128)
+                || (c.workload.ends_with("-replay")
+                    && crate::content::SOURCE_COUNTS.contains(&c.k)
+                    && c.width == 128)
         }
         "workflow" => {
             let at_headline = HEADLINE.contains(&(c.k, c.width));
@@ -356,8 +377,15 @@ fn summary(
     components: &[Component],
     requests: &[(u32, &crate::protocol::EvaluationRequest)],
     metadata: Vec<Vec<String>>,
+    results: Vec<Vec<String>>,
 ) {
-    out.push_str("## Summary\n\n### Test configuration\n\n");
+    out.push_str("## Summary\n\n### Test results\n\n");
+    table(
+        out,
+        &["C", "Result", "Fatal", "Warning", "Performance"],
+        results,
+    );
+    out.push_str("### Test configuration\n\n");
     table(out, &["Setting", "Value"], metadata);
     table(
         out,
@@ -470,7 +498,6 @@ fn summary(
         })
         .collect();
     table(out, &["C", "Environment"], unresolved);
-    out.push_str("### Test results\n\n");
 }
 
 fn result_row(c: &Component) -> Vec<String> {
@@ -489,7 +516,7 @@ fn result_row(c: &Component) -> Vec<String> {
 
 pub fn snapshot(saved: &crate::artifact::Snapshot) -> String {
     let b = &saved.batch;
-    let mut out = "# Fountain evaluation report\n\n".to_owned();
+    let mut out = REPORT_HEADER.to_owned();
     summary(
         &mut out,
         &saved.components,
@@ -505,10 +532,6 @@ pub fn snapshot(saved: &crate::artifact::Snapshot) -> String {
             b.elapsed_ns,
             &b.status,
         ),
-    );
-    table(
-        &mut out,
-        &["C", "Result", "Fatal", "Warning", "Performance"],
         b.entries
             .iter()
             .map(|entry| {
@@ -546,7 +569,7 @@ pub fn markdown(r: &Record) -> String {
     match crate::artifact::Component::from_record(r) {
         Ok(mut c) => {
             c.correctness = r.correctness.clone();
-            let mut out = "# Fountain evaluation report\n\n".to_owned();
+            let mut out = REPORT_HEADER.to_owned();
             summary(
                 &mut out,
                 std::slice::from_ref(&c),
@@ -558,10 +581,6 @@ pub fn markdown(r: &Record) -> String {
                     r.timing.elapsed_ns,
                     &r.status,
                 ),
-            );
-            table(
-                &mut out,
-                &["C", "Result", "Fatal", "Warning", "Performance"],
                 vec![result_row(&c)],
             );
             sections(&mut out, &[c]);
@@ -576,23 +595,61 @@ pub fn markdown(r: &Record) -> String {
 }
 
 fn sections(out: &mut String, components: &[Component]) {
-    validation_results(out, components);
-    operation_results(out, components);
-    link_results(out, components);
-    workflow_results(out, components);
+    if components
+        .iter()
+        .filter_map(|c| c.plan.as_ref())
+        .any(|plan| {
+            plan.definition["symbol_widths"] != serde_json::json!(SYMBOL_WIDTHS)
+                || plan.definition["source_counts"] != serde_json::json!(SOURCE_COUNTS)
+        })
+    {
+        out.push_str("> Earlier test matrix. Coverage counts describe the original run. The tables use the current K and B values and mark missing observations as Not measured. Measurements outside the displayed ranges are available in the result index.\n\n");
+    }
+    if components.iter().any(|c| {
+        c.status == "succeeded" && c.summary.iter().any(|s| s.coefficient_of_variation > 0.10)
+    }) {
+        out.push_str("† marks a timing standard deviation above 10% of the mean.\n\n");
+    }
+    for render in [
+        validation_results,
+        operation_results,
+        link_results,
+        workflow_results,
+    ] {
+        out.push_str("---\n\n");
+        render(out, components);
+    }
 }
 
 fn validation_results(out: &mut String, components: &[Component]) {
     out.push_str("## Validation tests (V)\n\n### Summary\n\n");
     table(
         out,
-        &["C", "Correctness", "Fatal cases", "Warning cases"],
+        &[
+            "C",
+            "Correctness",
+            "Checked / applicable",
+            "Not checked",
+            "Fatal cases",
+            "Warning cases",
+        ],
         components
             .iter()
             .map(|c| {
+                let (checked, pending) = if c.coverage["status"] == "not_planned" {
+                    ("Plan unavailable".into(), "—".into())
+                } else {
+                    let counts = Coverage::Validation.counts(c);
+                    (
+                        format!("{}/{}", counts.completed, counts.applicable()),
+                        counts.pending.to_string(),
+                    )
+                };
                 vec![
                     format!("C{}", c.component_id),
                     title(&c.correctness.status),
+                    checked,
+                    pending,
                     c.correctness.fatal_failures.len().to_string(),
                     c.correctness.warnings.len().to_string(),
                 ]
@@ -602,7 +659,7 @@ fn validation_results(out: &mut String, components: &[Component]) {
     out.push_str("Problems are grouped by observed behavior, with affected components, test families and case counts. Each fatal problem has one representative diagnostic.\n\n");
     findings(out, components);
     out.push_str("### Detailed results\n\n");
-    coverage(out, components);
+    exclusion_reasons(out, components, Coverage::Validation);
     family_coverage(out, components, "V");
 }
 
@@ -614,7 +671,7 @@ fn performance_summary(c: &Component) -> String {
     if c.status != "succeeded" {
         return format!("Not measured · {} unaccepted samples", c.sample_count);
     }
-    let count = Counts::collect(c, case_rows(c)).accepted;
+    let count = Coverage::Timing(None).counts(c).completed;
     let incomplete = c.summary.iter().filter(|s| s.incomplete > 0).count();
     if incomplete == 0 {
         format!("{count} accepted cases · {} samples", c.sample_count)
@@ -624,125 +681,210 @@ fn performance_summary(c: &Component) -> String {
 }
 
 fn operation_results(out: &mut String, components: &[Component]) {
-    out.push_str("## Operation tests (O)\n\n");
-    family_coverage(out, components, "O");
-    if !components.iter().any(|c| accepts(c, "operation/")) {
-        out.push_str("Not measured. See coverage for applicability and execution status.\n\n");
-        return;
-    }
-    out.push_str("Median ns/call across 64 independent instances, shown as direct / execute. Multi-source XOR uses four sources. GF arithmetic uses scalar 7.\n\n");
-    let rows: Vec<_> = OPS
-        .iter()
-        .map(|(family, name)| (vec![format!("{family} {}", title(name))], *name))
+    out.push_str("## Operation tests (O)\n\n### Summary\n\n");
+    let scope = Coverage::Timing(Some("operation"));
+    measurement_summary(out, components, &[scope]);
+    out.push_str("### Key results · Direct call latency (ns/call)\n\n");
+    let operations = crate::content::operations();
+    let columns = SYMBOL_WIDTHS.map(|b| format!("{b} B"));
+    let headers: Vec<_> = std::iter::once("One timed call")
+        .chain(columns.iter().map(String::as_str))
         .collect();
-    for width in [128, 1016] {
-        let _ = writeln!(out, "### {width} bytes per symbol\n");
-        matrix(out, components, &["Operation"], &rows, |c, name| {
-            let at = |dispatch| {
-                metric(
-                    c,
-                    &format!("operation/{name}/b{width}/{dispatch}/small"),
-                    Metric::NanosecondsPerCall,
-                )
-            };
-            let direct = at("direct");
-            let execute = at("execute");
-            if direct == execute && matches!(direct.as_str(), "Skipped" | "Not measured") {
-                direct
-            } else {
-                format!("{direct} / {execute}")
-            }
-        });
+    let mut measured = false;
+    for c in components.iter().filter(|c| accepts(c, "operation/")) {
+        if !measured {
+            out.push_str("Median batch time divided by 64 independent direct calls. Storage is prepared before timing. Each column is bytes per symbol.\n\n");
+            measured = true;
+        }
+        let _ = writeln!(out, "C{}\n", c.component_id);
+        let rows = OPS
+            .iter()
+            .map(|&(name, description)| {
+                let (_, family, _) = operations
+                    .iter()
+                    .find(|(workload, _, _)| workload == name)
+                    .expect("representative operation is in the test catalog");
+                let mut row = vec![format!("{family} · {description}")];
+                for width in SYMBOL_WIDTHS {
+                    let id = format!("operation/{name}/b{width}/direct/small");
+                    row.push(metric(c, &id, Metric::NanosecondsPerCall));
+                }
+                row
+            })
+            .collect();
+        table(out, &headers, rows);
+    }
+    if !measured {
+        out.push_str("Not measured.\n\n");
+    }
+    out.push_str("### Detailed results\n\n");
+    measurement_details(out, components, scope);
+    family_coverage(out, components, "O");
+    if components
+        .iter()
+        .any(|c| scope.rows(c).any(|(_, check)| !check.spec.direct))
+    {
+        out.push_str(
+            "This run's coverage includes Execute cases. Their timings are in the index.\n\n",
+        );
     }
 }
 
 fn link_results(out: &mut String, components: &[Component]) {
-    out.push_str("## Link tests (L)\n\n");
-    family_coverage(out, components, "L");
-    out.push_str("### Encoding plans (L02–L03)\n\n");
-    if components.iter().any(|c| accepts(c, "chain/plan-")) {
-        let rows: Vec<_> = [64, 512, 5008]
-            .into_iter()
-            .flat_map(|k| {
-                [
-                    ("plan-build", "Build plan"),
-                    ("plan-export", "Clone operations"),
-                ]
-                .map(|(name, label)| (vec![k.to_string(), label.into()], (k, name)))
-            })
-            .collect();
-        matrix(
-            out,
-            components,
-            &["K", "Independent interval · median ms"],
-            &rows,
-            |c, (k, name)| {
-                metric(
-                    c,
-                    &format!("chain/{name}/{}/k{k}", c.request.scheme.name),
-                    Metric::Milliseconds,
-                )
-            },
-        );
-    } else {
-        out.push_str("Not measured. See coverage for standalone plan support.\n\n");
-    }
-
-    out.push_str("### Recorded operator replay (L11–L12)\n\n");
-    if components
-        .iter()
-        .any(|c| accepts(c, "chain/encode-replay/") || accepts(c, "chain/decode-replay/"))
-    {
-        out.push_str("Median ms for replaying a captured operation sequence at 128 bytes per symbol. The full index retains operation counts and sequence identity.\n\n");
-        let rows: Vec<_> = [512, 5008]
-            .into_iter()
-            .flat_map(|k| {
-                [("encode-replay", "Encode"), ("decode-replay", "Decode")]
-                    .map(|(name, label)| (vec![k.to_string(), label.into()], (k, name)))
-            })
-            .collect();
-        matrix(out, components, &["K", "Replay"], &rows, |c, (k, name)| {
-            metric(
-                c,
-                &format!("chain/{name}/{}/k{k}/b128", c.request.scheme.name),
-                Metric::Milliseconds,
-            )
-        });
-    } else {
-        out.push_str("Not measured. See coverage for replay support.\n\n");
-    }
-
+    out.push_str("## Link tests (L)\n\n### Summary\n\n");
+    let independent = Coverage::Timing(Some("chain"));
+    measurement_summary(out, components, &[independent, Coverage::LinkStages]);
     let (k, width) = STAGED;
     let missing = k.div_ceil(10);
-    let _ = writeln!(
-        out,
-        "### Observed encode and decode stages (L01, L04–L10)\n\nK={k}, B={width}. Encoding generates 8 repairs. Decoding starts with {missing} missing sources (source-first, seed {}). Table times are means in µs from instrumented lifecycles. Each combined interval is counted once. Displayed sums may differ by rounding.\n",
-        crate::content::SEEDS[0]
-    );
-    for encode in [true, false] {
-        let mut any = false;
-        for c in components.iter().filter(|c| c.status == "succeeded") {
-            let scheme = &c.request.scheme.name;
-            let id = if encode {
-                format!("workflow/encode-repairs/{scheme}/k{k}/b{width}/r8")
-            } else {
-                recovery_id(scheme, k, width, missing)
-            };
-            if let Some(rows) = stage_rows(c, &id) {
-                any = true;
-                let direction = if encode { "Encode" } else { "Recovery decode" };
-                let _ = writeln!(out, "**C{} · {direction}**\n", c.component_id);
-                table(out, &["Interval", "Mean µs", "Share"], rows);
+    out.push_str("### Key results · Encode and decode stages\n\n");
+    if components.iter().any(|c| accepts(c, "workflow/")) {
+        out.push_str("Stage times are means from the instrumented run. Percentages use the full instrumented lifecycle for the same block. Combined intervals count once.\n\n");
+        for (encode, direction) in [(true, "Encode"), (false, "Decode")] {
+            let _ = writeln!(out, "#### {direction} · mean µs/block\n");
+            let mut any = false;
+            for c in components.iter().filter(|c| c.status == "succeeded") {
+                let scheme = &c.request.scheme.name;
+                let id = if encode {
+                    format!("workflow/encode-repairs/{scheme}/k{k}/b{width}/r8")
+                } else {
+                    recovery_id(scheme, k, width, missing)
+                };
+                if let Some(rows) = stage_rows(c, &id) {
+                    any = true;
+                    let workload = if encode {
+                        "8 repair symbols generated".into()
+                    } else {
+                        format!(
+                            "{missing} missing source symbols (10% rounded up) · source-first · seed {}",
+                            crate::content::SEEDS[0]
+                        )
+                    };
+                    let _ = writeln!(
+                        out,
+                        "C{} · {} · K={k} · B={width} bytes/symbol · {workload}\n",
+                        c.component_id,
+                        scheme.to_uppercase(),
+                    );
+                    table(
+                        out,
+                        &["Stage", "Mean µs/block", "Share of lifecycle (%)"],
+                        rows,
+                    );
+                }
+            }
+            if !any {
+                out.push_str("Not measured.\n\n");
             }
         }
-        if !any {
-            let direction = if encode { "Encode" } else { "Recovery decode" };
-            let _ = writeln!(out, "{direction} stages: Not measured.\n");
+    } else {
+        out.push_str("Encode and decode stages were not measured.\n\n");
+    }
+
+    out.push_str("### Detailed results\n\n");
+    if components.iter().any(|c| accepts(c, "chain/")) {
+        out.push_str("#### Encoding plans (L02–L03) · median ms/call\n\n");
+        out.push_str("L02 builds a new plan. L03 clones the stored instructions. L05 covers applying the plan to source data inside the Encode workflow.\n\n");
+        link_scale_table(
+            out,
+            components,
+            "Workload",
+            &[
+                ("plan-build", "L02 · Build a new plan".into(), None),
+                (
+                    "plan-export",
+                    "L03 · Clone an existing instruction list".into(),
+                    None,
+                ),
+            ],
+        );
+
+        for (work, heading, scenario) in [
+            (
+                "encode-replay",
+                "Encode replay (L11) · median ms/replay",
+                "Replays the recorded calls for encoding 8 repair symbols.",
+            ),
+            (
+                "decode-replay",
+                "Decode replay (L12) · median ms/replay",
+                "Replays the recorded recovery calls for 10% source loss rounded up. Surviving sources arrive first.",
+            ),
+        ] {
+            let _ = writeln!(out, "#### {heading}\n\n{scenario}\n");
+            let replay: Vec<_> = SYMBOL_WIDTHS
+                .into_iter()
+                .map(|width| (work, width.to_string(), Some(width)))
+                .collect();
+            link_scale_table(out, components, "B (bytes/symbol)", &replay);
+        }
+    } else {
+        out.push_str("Independent plan and replay timings were not measured.\n\n");
+    }
+    out.push_str("#### Link coverage details\n\n");
+    measurement_details(out, components, independent);
+    measurement_details(out, components, Coverage::LinkStages);
+    family_coverage(out, components, "L");
+}
+
+fn link_scale_table(
+    out: &mut String,
+    components: &[Component],
+    first_column: &str,
+    workloads: &[(&str, String, Option<usize>)],
+) {
+    let columns = SOURCE_COUNTS.map(|k| format!("K={k}"));
+    let headers: Vec<_> = std::iter::once(first_column)
+        .chain(columns.iter().map(String::as_str))
+        .collect();
+    for c in components.iter().filter(|c| accepts(c, "chain/")) {
+        if components.len() > 1 {
+            let _ = writeln!(out, "C{}\n", c.component_id);
+        }
+        let scheme = &c.request.scheme.name;
+        let rows = workloads
+            .iter()
+            .map(|(work, label, width)| {
+                let mut row = vec![label.clone()];
+                for k in SOURCE_COUNTS {
+                    let mut id = format!("chain/{work}/{scheme}/k{k}");
+                    if let Some(width) = width {
+                        let _ = write!(id, "/b{width}");
+                    }
+                    row.push(metric(c, &id, Metric::Milliseconds));
+                }
+                row
+            })
+            .collect();
+        table(out, &headers, rows);
+        if workloads
+            .iter()
+            .any(|(work, _, _)| *work == "decode-replay")
+        {
+            let missing = SOURCE_COUNTS
+                .iter()
+                .map(|k| format!("K={k} → {}", k.div_ceil(10)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let _ = writeln!(out, "Missing source symbols · {missing}\n");
         }
     }
 }
 
 fn stage_rows(c: &Component, id: &str) -> Option<Vec<Vec<String>>> {
+    const STAGE_ORDER: &[&str] = &[
+        "scheme-and-storage-setup",
+        "decoder-context-setup",
+        "source-loading-and-padding",
+        "encoder-context-and-plan-application",
+        "product-construction-loading-and-plan-application",
+        "symbol-generation",
+        "product-generation-and-output",
+        "ingestion-and-solve",
+        "output-materialization",
+        "diagnostic-query-overhead",
+        "component-release",
+        "workflow-complete",
+    ];
     let metrics = c.diagnostic_summaries.get(id)?.get("metrics")?;
     let total = &metrics["observation/stages/total_ns"];
     let count = total["n"].as_f64()?;
@@ -766,10 +908,11 @@ fn stage_rows(c: &Component, id: &str) -> Option<Vec<Vec<String>>> {
             } else {
                 format!("{} ({links})", title(stage))
             };
-            Some((links, row(label, mean)))
+            let order = STAGE_ORDER.iter().position(|&known| known == stage);
+            Some((order.unwrap_or(STAGE_ORDER.len()), row(label, mean)))
         })
         .collect();
-    stages.sort_by(|(a, _), (b, _)| (a.is_empty(), a).cmp(&(b.is_empty(), b)));
+    stages.sort_by_key(|(order, _)| *order);
     let mut rows: Vec<_> = stages.into_iter().map(|(_, row)| row).collect();
     rows.push(row(
         "Unattributed".into(),
@@ -808,89 +951,154 @@ fn stage_families(metrics: &Value, stage: &str) -> String {
     }
 }
 
-fn workflow_results(out: &mut String, components: &[Component]) {
-    out.push_str("## Workflow tests (W)\n\n");
-    family_coverage(out, components, "W");
-    if !components.iter().any(|c| accepts(c, "workflow/")) {
-        out.push_str("Not measured. See coverage for applicability and execution status.\n\n");
-        return;
-    }
-    out.push_str("K is source symbols and B is bytes per symbol. Rates use the median output-ready time and decimal Gbit/s.\n\n");
-    out.push_str("### Codec throughput (W02, W05)\n\nThe encoding columns show source-equivalent / repair-output Gbit/s for 8 repairs. The recovery columns show source-equivalent Gbit/s.\n\n");
-    let geometry = |k: usize, width: usize| vec![k.to_string(), width.to_string()];
-    let encode: Vec<_> = HEADLINE
-        .into_iter()
-        .map(|(k, width)| (geometry(k, width), (k, width)))
+fn workflow_grid(
+    out: &mut String,
+    components: &[Component],
+    render: impl Fn(&Component, usize, usize) -> String,
+) {
+    let columns = SOURCE_COUNTS.map(|k| format!("K={k}"));
+    let headers: Vec<_> = std::iter::once("B (bytes/symbol)")
+        .chain(columns.iter().map(String::as_str))
         .collect();
-    matrix(out, components, &["K", "B"], &encode, |c, &(k, width)| {
-        let id = format!(
-            "workflow/encode-repairs/{}/k{k}/b{width}/r8",
-            c.request.scheme.name
-        );
-        let source = metric(c, &id, Metric::SourceRate);
-        let repair = metric(c, &id, Metric::RepairRate);
-        if source == repair && matches!(source.as_str(), "Skipped" | "Not measured") {
-            source
-        } else {
-            format!("{source} / {repair}")
+    for c in components.iter().filter(|c| accepts(c, "workflow/")) {
+        if components.len() > 1 {
+            let _ = writeln!(out, "C{}\n", c.component_id);
         }
-    });
-    let _ = writeln!(
-        out,
-        "**Recovery decode · source-first, seed {}**\n",
-        crate::content::SEEDS[0]
+        let rows = SYMBOL_WIDTHS
+            .into_iter()
+            .map(|width| {
+                std::iter::once(width.to_string())
+                    .chain(SOURCE_COUNTS.into_iter().map(|k| render(c, k, width)))
+                    .collect()
+            })
+            .collect();
+        table(out, &headers, rows);
+    }
+}
+
+fn encode_phase_means(c: &Component, k: usize, width: usize) -> Option<(f64, f64)> {
+    let id = format!(
+        "workflow/encode-repairs/{}/k{k}/b{width}/r8",
+        c.request.scheme.name
     );
-    let decode: Vec<_> = HEADLINE
-        .into_iter()
-        .map(|(k, width)| {
-            let missing = k.div_ceil(10);
-            (
-                vec![k.to_string(), width.to_string(), missing.to_string()],
-                (k, width, missing),
+    let diagnostic = c.diagnostic_summaries.get(&id)?;
+    let count = diagnostic["observations"].as_u64().filter(|&n| n > 0)?;
+    let metrics = &diagnostic["metrics"];
+
+    let intervals = |families: &[&str]| -> Option<BTreeSet<&str>> {
+        families
+            .iter()
+            .map(|family| {
+                let variants =
+                    metrics[format!("observation/link_coverage/{family}/interval")]["variants"]
+                        .as_array()?;
+                let [variant] = variants.as_slice() else {
+                    return None;
+                };
+                if variant["n"].as_u64()? != count {
+                    return None;
+                }
+                variant["value"].as_str()
+            })
+            .collect()
+    };
+    let precode = intervals(&["L01", "L04", "L05"])?;
+    let repair = intervals(&["L06", "L09"])?;
+    if !precode.is_disjoint(&repair) {
+        return None;
+    }
+    let mean = |intervals: BTreeSet<&str>| -> Option<f64> {
+        intervals
+            .into_iter()
+            .map(|interval| {
+                let sample = &metrics[format!("observation/stages/exclusive_ns/{interval}")];
+                if sample["n"].as_u64()? != count {
+                    return None;
+                }
+                sample["mean"].as_f64().filter(|&ns| ns >= 0.0)
+            })
+            .sum::<Option<f64>>()
+            .filter(|&ns| ns > 0.0)
+    };
+    Some((mean(precode)?, mean(repair)?))
+}
+
+fn workflow_results(out: &mut String, components: &[Component]) {
+    out.push_str("## Workflow tests (W)\n\n### Summary\n\n");
+    let scope = Coverage::Timing(Some("workflow"));
+    measurement_summary(out, components, &[scope]);
+    out.push_str("### Key results · Precode, Encode and Decode\n\n");
+    let measured = components.iter().any(|c| accepts(c, "workflow/"));
+    if measured {
+        out.push_str("K is the source-symbol count and B is bytes per symbol. Each rate in decimal Gbit/s is 8 × counted bytes divided by elapsed nanoseconds.\n\n");
+        out.push_str("#### Precode · source-equivalent Gbit/s\n\nCounts K × B source bytes. Uses mean instrumented W02 time from scheme and storage setup through source loading, padding and preparation of intermediate symbols.\n\n");
+        workflow_grid(out, components, |c, k, width| {
+            encode_phase_means(c, k, width).map_or_else(
+                || "Not measured".into(),
+                |(precode, _)| decimal(8.0 * (k * width) as f64 / precode),
             )
-        })
-        .collect();
-    matrix(
-        out,
-        components,
-        &["K", "B", "Missing"],
-        &decode,
-        |c, &(k, width, missing)| {
+        });
+
+        out.push_str("#### Encode · repair-output Gbit/s\n\nCounts R × B repair bytes with R=8. Uses mean instrumented W02 time from a ready encoder through generation and materialization of all eight repair symbols.\n\n");
+        workflow_grid(out, components, |c, k, width| {
+            let repair_bytes = 8 * width;
+            encode_phase_means(c, k, width).map_or_else(
+                || "Not measured".into(),
+                |(_, repair)| decimal(8.0 * repair_bytes as f64 / repair),
+            )
+        });
+
+        let _ = writeln!(
+            out,
+            "#### Decode · source-equivalent Gbit/s\n\nCounts K × B recovered source bytes. Uses median W05 time from decoder construction through input ingestion, recovery and materialization of the source block. Missing sources are 10% of K rounded up. Surviving sources come first (seed {}).\n",
+            crate::content::SEEDS[0]
+        );
+        workflow_grid(out, components, |c, k, width| {
             metric(
                 c,
-                &recovery_id(&c.request.scheme.name, k, width, missing),
+                &recovery_id(&c.request.scheme.name, k, width, k.div_ceil(10)),
                 Metric::SourceRate,
             )
-        },
-    );
+        });
+    } else {
+        out.push_str("Not measured.\n\n");
+    }
 
-    out.push_str("### Round trip (W06)\n\nMedian ms for encoding, in-memory delivery in mixed order and decoding.\n\n");
-    matrix(
-        out,
-        components,
-        &["K", "B", "Missing"],
-        &decode,
-        |c, &(k, width, _)| {
-            metric(
-                c,
-                &format!(
-                    "workflow/round-trip/{}/k{k}/b{width}",
-                    c.request.scheme.name
-                ),
-                Metric::Milliseconds,
-            )
-        },
-    );
+    out.push_str("### Detailed results\n\n");
+    if measured {
+        workflow_details(out, components);
+    }
+    measurement_details(out, components, scope);
+    family_coverage(out, components, "W");
+}
+
+fn workflow_details(out: &mut String, components: &[Component]) {
+    out.push_str("#### Round trip (W06) · median ms/block\n\nMeasures encoder construction, symbol generation, simulated omission and mixed-order delivery in memory, and decoding through recovered output. Each K omits 10% of source symbols rounded up.\n\n");
+    workflow_grid(out, components, |c, k, width| {
+        metric(
+            c,
+            &format!(
+                "workflow/round-trip/{}/k{k}/b{width}",
+                c.request.scheme.name
+            ),
+            Metric::Milliseconds,
+        )
+    });
     let (k, width) = STAGED;
     let _ = writeln!(
         out,
-        "### First use, reuse, all-source decode and lifecycle\n\nK={k}, B={width}. The directly timed elapsed medians and the derived lifecycle median are in ms.\n"
+        "#### Other workloads at K={k}, B={width}\n\nMedian ms except where noted. The lifecycle includes component release.\n"
     );
     let rows = [
         (
             "W01 First encode, 8 repairs",
             "first-encode",
             Metric::Milliseconds,
+        ),
+        (
+            "W02 End-to-end repair-output throughput (Gbit/s)",
+            "encode-repairs",
+            Metric::RepairRate,
         ),
         (
             "W03 Reused plan, 8 repairs",
@@ -936,260 +1144,244 @@ fn case_rows(c: &Component) -> impl Iterator<Item = &Value> {
     c.coverage["cases"].as_array().into_iter().flatten()
 }
 
-#[derive(Default)]
-struct Counts {
-    validations: usize,
-    validation_fatals: usize,
-    validation_warnings: usize,
-    validation_skips: usize,
-    validation_pending: usize,
-    accepted: usize,
-    partial: usize,
-    rejected: usize,
-    measurement_pending: usize,
-    measurement_skips: usize,
-    diagnosed: usize,
-    diagnosis_pending: usize,
+#[derive(Clone, Copy)]
+enum Coverage {
+    Validation,
+    Timing(Option<&'static str>),
+    LinkStages,
 }
-impl Counts {
-    fn collect<'a>(component: &Component, rows: impl IntoIterator<Item = &'a Value>) -> Self {
-        let mut c = Self::default();
-        for r in rows {
-            match r["validation"]["status"].as_str() {
-                Some("skipped") => c.validation_skips += 1,
-                Some("not_executed") => c.validation_pending += 1,
-                Some("passed" | "failed") => {
-                    c.validations += 1;
-                    if r["validation"]["status"] == "failed" {
-                        if r["validation"]["severity"] == "fatal" {
-                            c.validation_fatals += 1;
-                        } else {
-                            c.validation_warnings += 1;
-                        }
+
+impl Coverage {
+    fn field(self) -> &'static str {
+        match self {
+            Self::Validation => "validation",
+            Self::Timing(_) => "measurement",
+            Self::LinkStages => "diagnostics",
+        }
+    }
+
+    fn rows(
+        self,
+        component: &Component,
+    ) -> impl Iterator<Item = (&Value, &crate::validation::Check)> {
+        case_rows(component).filter_map(move |row| {
+            let check = component.plan.as_ref()?.checks.get(row["case"].as_str()?)?;
+            let spec = &check.spec;
+            let applies = match self {
+                Self::Validation => spec.validation_family().is_some(),
+                Self::Timing(category) => {
+                    check.measured && category.is_none_or(|category| spec.category == category)
+                }
+                // Staged observations use workflow cases that carry L families.
+                Self::LinkStages => {
+                    check.measured
+                        && spec.category == "workflow"
+                        && spec.family.split(',').any(|family| family.starts_with('L'))
+                }
+            };
+            applies.then_some((row, check))
+        })
+    }
+
+    fn counts(self, c: &Component) -> Counts {
+        self.count_rows(c, self.rows(c).map(|(row, _)| row))
+    }
+
+    fn count_rows<'a>(self, c: &Component, rows: impl Iterator<Item = &'a Value>) -> Counts {
+        let mut counts = Counts::default();
+        for row in rows {
+            let entry = &row[self.field()];
+            match entry["status"].as_str() {
+                Some("skipped") => counts.excluded += 1,
+                Some("not_executed") => counts.pending += 1,
+                Some("passed") => counts.completed += 1,
+                Some("failed") => {
+                    counts.completed += 1;
+                    if entry["severity"] == "fatal" {
+                        counts.fatals += 1;
+                    } else {
+                        counts.warnings += 1;
                     }
                 }
-                _ => {}
-            }
-            let measured = component
-                .plan
-                .as_ref()
-                .and_then(|p| p.checks.get(r["case"].as_str().unwrap_or("")))
-                .is_some_and(|c| c.measured);
-            if measured {
-                match r["measurement"]["status"].as_str() {
-                    Some("recorded") if r["measurement"]["accepted"] == true => c.accepted += 1,
-                    Some("recorded") => c.rejected += 1,
-                    Some("incomplete") => c.partial += 1,
-                    Some("not_executed") => c.measurement_pending += 1,
-                    Some("skipped") => c.measurement_skips += 1,
-                    _ => {}
+                Some("recorded") => {
+                    let accepted = match self {
+                        Self::LinkStages => c.status == "succeeded",
+                        _ => entry["accepted"] == true,
+                    };
+                    if accepted {
+                        counts.completed += 1;
+                    } else {
+                        counts.rejected += 1;
+                    }
                 }
-            }
-            match r["diagnostics"]["status"].as_str() {
-                Some("recorded") if component.status == "succeeded" => c.diagnosed += 1,
-                Some("recorded" | "incomplete" | "not_executed") => c.diagnosis_pending += 1,
+                Some("incomplete") => counts.partial += 1,
                 _ => {}
             }
         }
-        c
-    }
-
-    fn planned(&self) -> usize {
-        self.accepted + self.partial + self.rejected + self.measurement_pending
+        counts
     }
 }
 
-fn coverage(out: &mut String, components: &[Component]) {
-    out.push_str("**V check coverage**\n\n");
-    table(
-        out,
-        &[
-            "C",
-            "Applicable checks",
-            "Checked",
-            "Not checked",
-            "Excluded",
-        ],
-        components
-            .iter()
-            .map(|c| {
-                let mut row = vec![format!("C{}", c.component_id)];
-                if c.coverage["status"] == "not_planned" {
-                    row.extend([
-                        "Plan unavailable".into(),
-                        "—".into(),
-                        "—".into(),
-                        "—".into(),
-                    ]);
-                } else {
-                    let counts = Counts::collect(
-                        c,
-                        case_rows(c).filter(|row| {
-                            c.plan
-                                .as_ref()
-                                .and_then(|p| p.checks.get(row["case"].as_str().unwrap_or("")))
-                                .is_some_and(|check| check.spec.validation_family().is_some())
-                        }),
-                    );
-                    row.extend([
-                        (counts.validations + counts.validation_pending).to_string(),
-                        counts.validations.to_string(),
-                        counts.validation_pending.to_string(),
-                        counts.validation_skips.to_string(),
-                    ]);
-                }
-                row
-            })
-            .collect(),
-    );
+#[derive(Default)]
+struct Counts {
+    completed: usize,
+    pending: usize,
+    excluded: usize,
+    partial: usize,
+    rejected: usize,
+    fatals: usize,
+    warnings: usize,
+}
+impl Counts {
+    fn applicable(&self) -> usize {
+        self.completed + self.pending + self.partial + self.rejected
+    }
+}
 
-    out.push_str("**Performance test coverage**\n\n");
-    table(
-        out,
-        &[
-            "C",
-            "Applicable tests",
-            "Accepted results",
-            "Not started",
-            "Excluded",
-        ],
-        components
-            .iter()
-            .map(|c| {
-                let mut row = vec![format!("C{}", c.component_id)];
-                if c.coverage["status"] == "not_planned" {
-                    row.extend([
-                        "Plan unavailable".into(),
-                        "—".into(),
-                        "—".into(),
-                        "—".into(),
-                    ]);
-                } else {
-                    let counts = Counts::collect(c, case_rows(c));
-                    row.extend([
-                        counts.planned().to_string(),
-                        counts.accepted.to_string(),
-                        counts.measurement_pending.to_string(),
-                        counts.measurement_skips.to_string(),
-                    ]);
-                }
-                row
-            })
-            .collect(),
-    );
-
-    let exceptions: Vec<_> = components
+fn measurement_summary(out: &mut String, components: &[Component], scopes: &[Coverage]) {
+    let multiple_scopes = scopes.len() > 1;
+    let mut headers = vec![
+        "C",
+        "Applicable cases",
+        "Accepted cases",
+        "Not started",
+        "Excluded",
+    ];
+    if multiple_scopes {
+        headers.insert(1, "Scope");
+    }
+    let rows = components
         .iter()
-        .filter_map(|c| {
-            let n = Counts::collect(c, case_rows(c));
-            (n.partial + n.rejected > 0).then(|| {
-                vec![
-                    format!("C{}", c.component_id),
-                    n.partial.to_string(),
-                    n.rejected.to_string(),
-                ]
+        .flat_map(|c| {
+            scopes.iter().map(move |&scope| {
+                let mut row = vec![format!("C{}", c.component_id)];
+                if multiple_scopes {
+                    let name = match scope {
+                        Coverage::LinkStages => "Stage observations",
+                        _ => "Independent timings",
+                    };
+                    row.push(name.into());
+                }
+                if c.coverage["status"] == "not_planned" {
+                    row.extend([
+                        "Plan unavailable".into(),
+                        "—".into(),
+                        "—".into(),
+                        "—".into(),
+                    ]);
+                } else {
+                    let counts = scope.counts(c);
+                    row.extend([
+                        counts.applicable().to_string(),
+                        counts.completed.to_string(),
+                        counts.pending.to_string(),
+                        counts.excluded.to_string(),
+                    ]);
+                }
+                row
             })
         })
         .collect();
-    if !exceptions.is_empty() {
-        table(
-            out,
-            &["C", "Incomplete sample sets", "Complete sets not accepted"],
-            exceptions,
-        );
-        out.push_str("Incomplete sample sets ended before all samples were collected. Complete sets from an unsuccessful C are not accepted.\n\n");
-    }
-    out.push_str("V checks run in family order, V01–V11. A fatal does not stop other independent V cases; after V completes, any fatal blocks O/L/W. An aborted, crashed or timed-out driver can leave V cases not checked. Counts are test cases. Excluded cases do not apply to the selected scheme or API. Performance results require all samples and a successful C outcome.\n\n");
+    table(out, &headers, rows);
+}
 
-    let mut grouped = BTreeMap::<(String, usize, usize), Vec<String>>::new();
+fn measurement_details(out: &mut String, components: &[Component], scope: Coverage) {
+    let (partial, rejected) = match scope {
+        Coverage::LinkStages => (
+            "Incomplete observation sets",
+            "Complete observation sets not accepted",
+        ),
+        _ => (
+            "Incomplete sample sets",
+            "Complete sample sets not accepted",
+        ),
+    };
+    table(
+        out,
+        &["C", partial, rejected],
+        components
+            .iter()
+            .map(|c| (c, scope.counts(c)))
+            .filter(|(_, counts)| counts.partial + counts.rejected > 0)
+            .map(|(c, counts)| {
+                vec![
+                    format!("C{}", c.component_id),
+                    counts.partial.to_string(),
+                    counts.rejected.to_string(),
+                ]
+            })
+            .collect(),
+    );
+    exclusion_reasons(out, components, scope);
+}
+
+fn exclusion_reasons(out: &mut String, components: &[Component], scope: Coverage) {
+    let mut grouped = BTreeMap::<(String, usize), Vec<String>>::new();
     for c in components {
-        let mut reasons = BTreeMap::<String, (usize, usize)>::new();
-        for row in case_rows(c) {
-            let check = c
-                .plan
-                .as_ref()
-                .and_then(|p| p.checks.get(row["case"].as_str().unwrap_or("")));
-            for scope in ["validation", "measurement"] {
-                let entry = &row[scope];
-                if entry["status"] != "skipped"
-                    || (scope == "measurement" && !check.is_some_and(|c| c.measured))
-                    || (scope == "validation"
-                        && check.is_none_or(|c| c.spec.validation_family().is_none()))
-                {
-                    continue;
-                }
-                let code = entry["reason"]["code"].as_str().unwrap_or("");
-                let raw = entry["reason"]["reason"]
-                    .as_str()
-                    .unwrap_or("Reason unavailable");
-                let reason = if code == "scheme_not_selected" {
-                    check
-                        .and_then(|check| check.spec.scheme.as_ref())
-                        .map_or_else(
-                            || raw.into(),
-                            |scheme| {
-                                format!(
-                                    "{} is selected. {} cases are excluded.",
-                                    c.request.scheme.name.to_uppercase(),
-                                    scheme.to_uppercase()
-                                )
-                            },
-                        )
-                } else if code == "capability_unavailable" && raw.contains("does not expose alias")
-                {
-                    "The selected interface has no alias-operation entry point.".into()
-                } else {
-                    raw.to_owned()
-                };
-                let counts = reasons.entry(reason).or_default();
-                if scope == "validation" {
-                    counts.0 += 1;
-                } else {
-                    counts.1 += 1;
-                }
+        let mut reasons = BTreeMap::<String, usize>::new();
+        for (row, check) in scope.rows(c) {
+            let entry = &row[scope.field()];
+            if entry["status"] != "skipped" {
+                continue;
             }
+            let code = entry["reason"]["code"].as_str().unwrap_or("");
+            let raw = entry["reason"]["reason"]
+                .as_str()
+                .unwrap_or("Reason unavailable");
+            let reason = if code == "scheme_not_selected" {
+                check.spec.scheme.as_ref().map_or_else(
+                    || raw.into(),
+                    |scheme| {
+                        format!(
+                            "{} is selected. {} cases are excluded.",
+                            c.request.scheme.name.to_uppercase(),
+                            scheme.to_uppercase()
+                        )
+                    },
+                )
+            } else if code == "capability_unavailable" && raw.contains("does not expose alias") {
+                "The selected interface has no alias-operation entry point.".into()
+            } else {
+                raw.to_owned()
+            };
+            *reasons.entry(reason).or_default() += 1;
         }
-        for (reason, (checks, timings)) in reasons {
+        for (reason, count) in reasons {
             grouped
-                .entry((reason, checks, timings))
+                .entry((reason, count))
                 .or_default()
                 .push(format!("C{}", c.component_id));
         }
     }
     if !grouped.is_empty() {
-        out.push_str("**Exclusion reasons**\n\n");
+        let heading = match scope {
+            Coverage::LinkStages => "Stage observation exclusions",
+            Coverage::Timing(Some("chain")) => "Independent timing exclusions",
+            _ => "Exclusion reasons",
+        };
+        let _ = writeln!(out, "#### {heading}\n");
         table(
             out,
-            &[
-                "Applies to",
-                "Reason",
-                "V checks per C",
-                "Performance tests per C",
-            ],
+            &["Applies to", "Reason", "Excluded cases per C"],
             grouped
                 .into_iter()
-                .map(|((reason, checks, timings), ids)| {
-                    vec![
-                        ids.join(", "),
-                        reason,
-                        checks.to_string(),
-                        timings.to_string(),
-                    ]
-                })
+                .map(|((reason, count), ids)| vec![ids.join(", "), reason, count.to_string()])
                 .collect(),
         );
     }
 }
 
 fn family_coverage(out: &mut String, components: &[Component], selected: &str) {
-    // V06 includes timed boundary cases. The L stage families share W cases,
-    // so their diagnostic observations belong to each associated family.
-    out.push_str("Family counts apply to the selected scheme. Link stage families count diagnostic cases.\n\n");
+    if selected == "L" {
+        out.push_str(
+            "L01 and L04–L10 count observed stage cases. Their workflow timings appear in W.\n\n",
+        );
+    }
     for (prefix, labels) in FAMILIES
         .into_iter()
         .filter(|(prefix, _)| *prefix == selected)
     {
-        let rows: Vec<_> = labels
+        let mut rows: Vec<_> = labels
             .iter()
             .enumerate()
             .map(|(index, label)| {
@@ -1198,56 +1390,44 @@ fn family_coverage(out: &mut String, components: &[Component], selected: &str) {
                 (vec![format!("{family} · {label}")], (family, n))
             })
             .collect();
-        matrix(out, components, &["Family"], &rows, |c, (family, n)| {
-            let relevant = case_rows(c).filter(|r| {
-                r["family"]
-                    .as_str()
-                    .is_some_and(|f| f.split(',').any(|f| f == family))
-                    && r["validation"]["reason"]["code"] != "scheme_not_selected"
-            });
-            let rates = Counts::collect(c, relevant);
-            let (recorded, pending, skipped) = match prefix {
-                "V" => (
-                    rates.validations,
-                    rates.validation_pending,
-                    rates.validation_skips,
-                ),
-                "L" if matches!(n, 1 | 4..=10) => (
-                    rates.diagnosed,
-                    rates.diagnosis_pending,
-                    rates.measurement_skips,
-                ),
-                _ => (
-                    rates.accepted,
-                    rates.measurement_pending + rates.partial + rates.rejected,
-                    rates.measurement_skips,
-                ),
+        let heading = if prefix == "O" {
+            rows.push((
+                vec!["V06 · Time boundary calls such as self-XOR and overlapping copies".into()],
+                ("V06".into(), 6),
+            ));
+            "Timed workloads by family"
+        } else {
+            "Family"
+        };
+        matrix(out, components, &[heading], &rows, |c, (family, n)| {
+            let (scope, result) = match prefix {
+                "V" => (Coverage::Validation, "checked"),
+                "L" if matches!(n, 1 | 4..=10) => (Coverage::LinkStages, "diagnosed"),
+                "O" => (Coverage::Timing(Some("operation")), "accepted"),
+                _ => (Coverage::Timing(None), "accepted"),
             };
-            if recorded + pending == 0 {
-                return if skipped > 0 {
-                    format!("Skipped ({skipped})")
+            let relevant = scope.rows(c).filter_map(|(row, check)| {
+                (check.spec.family.split(',').any(|f| f == family)
+                    && row[scope.field()]["reason"]["code"] != "scheme_not_selected")
+                    .then_some(row)
+            });
+            let counts = scope.count_rows(c, relevant);
+            if counts.applicable() == 0 {
+                return if counts.excluded > 0 {
+                    format!("Skipped ({})", counts.excluded)
                 } else {
                     "Unavailable".into()
                 };
             }
-            let result = if prefix == "V" {
-                "checked"
-            } else if prefix == "L" && matches!(n, 1 | 4..=10) {
-                "diagnosed"
-            } else {
-                "accepted"
-            };
-            let mut text = format!("{recorded}/{}, {result}", recorded + pending);
-            if prefix == "V" {
-                if rates.validation_fatals > 0 {
-                    let _ = write!(text, " · {} fatal", rates.validation_fatals);
-                }
-                if rates.validation_warnings > 0 {
-                    let _ = write!(text, " · {} warnings", rates.validation_warnings);
-                }
+            let mut text = format!("{}/{}, {result}", counts.completed, counts.applicable());
+            if counts.fatals > 0 {
+                let _ = write!(text, " · {} fatal", counts.fatals);
             }
-            if skipped > 0 {
-                let _ = write!(text, " · {skipped} skipped");
+            if counts.warnings > 0 {
+                let _ = write!(text, " · {} warnings", counts.warnings);
+            }
+            if counts.excluded > 0 {
+                let _ = write!(text, " · {} skipped", counts.excluded);
             }
             text
         });
@@ -1261,19 +1441,13 @@ fn fatal(out: &mut String, c: &Component, finding: &Value) {
     let violation = structured_finding(finding);
     let check = c.plan.as_ref().and_then(|p| p.checks.get(case));
     if let Some(v) = &violation {
+        let _ = writeln!(out, "{}\n", cell(&v.requirement));
+        let kind = serde_json::to_value(v.failure_kind).unwrap();
         let _ = writeln!(
             out,
-            "**Fatal** · **{}**\n\n{}\n",
-            v.failure_kind.label(),
-            cell(&v.requirement)
-        );
-        table(
-            out,
-            &["Contract ID", "Failure kind"],
-            vec![vec![
-                v.contract_id.clone(),
-                string(&serde_json::to_value(v.failure_kind).unwrap()),
-            ]],
+            "Contract ID · {} · {}\n",
+            cell(&v.contract_id),
+            cell(&string(&kind))
         );
         if let Some(difference) = &v.difference {
             let value = |v: &Value| {
@@ -1326,7 +1500,7 @@ fn fatal(out: &mut String, c: &Component, finding: &Value) {
             );
         }
     } else {
-        out.push_str("**Fatal** · **Unclassified diagnostic**\n\nThis result has no structured contract/failure identity. It is shown separately without inferring a problem from its message.\n\n");
+        out.push_str("This result has no structured contract/failure identity. It is shown separately without inferring a problem from its message.\n\n");
         let _ = writeln!(
             out,
             "{}\n",
@@ -1454,8 +1628,10 @@ fn fatal_findings(out: &mut String, components: &[Component]) {
     let mut problems: Vec<_> = problems.into_iter().collect();
     problems.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(&b.0)));
     for (index, (_, findings)) in problems.iter().enumerate() {
-        let _ = writeln!(out, "#### Fatal {}\n", index + 1);
         let (c, finding) = findings[0];
+        let label = structured_finding(finding)
+            .map_or("Unclassified diagnostic", |v| v.failure_kind.label());
+        let _ = writeln!(out, "#### Fatal {}\n\n{label}\n", index + 1);
         fatal(out, c, finding);
         affected_cases(out, findings);
         let _ = writeln!(
@@ -1466,14 +1642,27 @@ fn fatal_findings(out: &mut String, components: &[Component]) {
     }
 }
 fn findings(out: &mut String, components: &[Component]) {
-    out.push_str("### Fatal\n\n");
+    out.push_str("### Key results · Findings\n\n");
     if components
         .iter()
         .all(|c| c.correctness.fatal_failures.is_empty())
     {
-        out.push_str("None detected. Review the executed coverage in V.\n\n");
+        out.push_str("Fatal · None detected in completed checks.\n\n");
+    }
+    if components.iter().all(|c| c.correctness.warnings.is_empty()) {
+        out.push_str("Warning · None detected in completed checks.\n\n");
     }
     fatal_findings(out, components);
+    for c in components
+        .iter()
+        .filter(|c| c.stage == "validate" && !c.correctness.fatal_failures.is_empty())
+    {
+        let _ = writeln!(
+            out,
+            "C{} · Fatal validation findings blocked O/L/W measurements.\n",
+            c.component_id
+        );
+    }
     for c in components {
         if c.correctness.fatal_failures.is_empty() && c.status != "succeeded" {
             table(
@@ -1507,17 +1696,7 @@ fn findings(out: &mut String, components: &[Component]) {
             );
         }
     }
-    out.push_str("### Warning\n\n");
-    if components.iter().all(|c| c.correctness.warnings.is_empty()) {
-        out.push_str("None detected. Review the executed coverage in V.\n\n");
-    }
     warning_findings(out, components);
-    if components
-        .iter()
-        .any(|c| c.status == "succeeded" && !c.summary.is_empty())
-    {
-        out.push_str("† marks benchmark timing CV above 10%.\n\n");
-    }
 }
 
 fn warning_findings(out: &mut String, components: &[Component]) {
@@ -1551,31 +1730,32 @@ fn warning_findings(out: &mut String, components: &[Component]) {
         let label = violation
             .as_ref()
             .map_or("Unclassified diagnostic", |v| v.failure_kind.label());
-        let _ = writeln!(out, "#### Warning {} · {}\n", index + 1, label);
-        if let Some(v) = violation {
-            table(
-                out,
-                &["Contract", "Meaning"],
-                vec![
-                    vec!["Contract ID".into(), v.contract_id.clone()],
-                    vec![
-                        "Failure kind".into(),
-                        string(&serde_json::to_value(v.failure_kind).unwrap()),
-                    ],
-                    vec!["Reference expectation".into(), v.requirement.clone()],
-                ],
-            );
-            let (c, first) = findings[0];
-            if let Some(contract) = c
-                .plan
-                .as_ref()
-                .and_then(|p| p.checks.get(first["case"].as_str().unwrap_or("")))
-                .and_then(|c| c.spec.boundary.as_ref())
-            {
-                table(out, &["Warning basis"], vec![vec![contract.basis.clone()]]);
-            }
+        let (component, example) = findings[0];
+        let spec = component
+            .plan
+            .as_ref()
+            .and_then(|p| p.checks.get(example["case"].as_str()?))
+            .map(|check| &check.spec);
+        let _ = writeln!(out, "#### Warning {}\n", index + 1);
+        if let Some(spec) = spec {
+            let _ = writeln!(out, "{label} · {}\n", cell(&title(&spec.workload)));
         } else {
-            out.push_str("No structured identity is available; this case is not merged based on diagnostic text.\n\n");
+            let _ = writeln!(out, "{label}\n");
+        }
+        if let Some(v) = violation {
+            let _ = writeln!(out, "- Reference expectation · {}", cell(&v.requirement));
+            if let Some(boundary) = spec.and_then(|spec| spec.boundary.as_ref()) {
+                let _ = writeln!(out, "- Warning basis · {}", cell(&boundary.basis));
+            }
+            let kind = serde_json::to_value(v.failure_kind).unwrap();
+            let _ = writeln!(
+                out,
+                "- Contract ID · {} · {}\n",
+                cell(&v.contract_id),
+                cell(&string(&kind))
+            );
+        } else {
+            out.push_str("The saved case has no structured contract identity.\n\n");
         }
         let mut groups = BTreeMap::<u32, (&Component, Vec<&Value>)>::new();
         for (c, warning) in findings {
@@ -1585,75 +1765,65 @@ fn warning_findings(out: &mut String, components: &[Component]) {
                 .1
                 .push(warning);
         }
-        table(
-            out,
-            &[
-                "C",
-                "Affected cases",
-                "Validation observations",
-                "Timed observations",
-                "Example timings",
-            ],
-            groups
-                .into_values()
-                .map(|(c, ws)| {
-                    let mut checks = BTreeMap::new();
-                    let mut calls = BTreeMap::new();
-                    for w in &ws {
-                        let expected = &w["expected"];
-                        if violation.is_none() || problem_key(c, w) == *key {
-                            *checks
-                                .entry(difference(expected, &w["actual"]))
-                                .or_default() += 1;
-                        }
-                        if let Some(variants) = w["measurement_summary"]["variants"].as_array() {
-                            for variant in variants {
-                                count_warning_calls(
-                                    &mut calls,
-                                    expected,
-                                    &variant["actual"],
-                                    variant["samples"].as_u64().unwrap_or_default(),
-                                    key,
-                                    violation.is_none(),
-                                );
-                            }
-                        } else if let Some(observations) = w["measured_observations"].as_array() {
-                            for observation in observations {
-                                count_warning_calls(
-                                    &mut calls,
-                                    expected,
-                                    &observation["actual"],
-                                    1,
-                                    key,
-                                    violation.is_none(),
-                                );
-                            }
-                        }
+        for (c, ws) in groups.into_values() {
+            let mut checks = BTreeMap::new();
+            let mut calls = BTreeMap::new();
+            for w in &ws {
+                let expected = &w["expected"];
+                if violation.is_none() || problem_key(c, w) == *key {
+                    *checks
+                        .entry(difference(expected, &w["actual"]))
+                        .or_default() += 1;
+                }
+                if let Some(variants) = w["measurement_summary"]["variants"].as_array() {
+                    for variant in variants {
+                        count_warning_calls(
+                            &mut calls,
+                            expected,
+                            &variant["actual"],
+                            variant["samples"].as_u64().unwrap_or_default(),
+                            key,
+                            violation.is_none(),
+                        );
                     }
-                    let timed = if calls.is_empty() {
-                        "Not measured".into()
-                    } else {
-                        let text = list_variants(calls, "call");
-                        if c.status == "succeeded" {
-                            text
-                        } else {
-                            format!("{text} (unaccepted run)")
-                        }
-                    };
-                    vec![
-                        format!("C{}", c.component_id),
-                        ws.len().to_string(),
-                        if checks.is_empty() {
-                            "No validation deviation of this kind".into()
-                        } else {
-                            list_variants(checks, "case")
-                        },
-                        timed,
-                        warning_timings(c, &ws),
-                    ]
-                })
-                .collect(),
-        );
+                } else if let Some(observations) = w["measured_observations"].as_array() {
+                    for observation in observations {
+                        count_warning_calls(
+                            &mut calls,
+                            expected,
+                            &observation["actual"],
+                            1,
+                            key,
+                            violation.is_none(),
+                        );
+                    }
+                }
+            }
+            let timed = if calls.is_empty() {
+                "Not measured".into()
+            } else {
+                let text = list_variants(calls, "call");
+                if c.status == "succeeded" {
+                    text
+                } else {
+                    format!("{text} (unaccepted run)")
+                }
+            };
+            let validation = if checks.is_empty() {
+                "No validation deviation of this kind".into()
+            } else {
+                list_variants(checks, "case")
+            };
+            let cases = if ws.len() == 1 { "case" } else { "cases" };
+            let _ = writeln!(out, "C{} · {} affected {cases}\n", c.component_id, ws.len());
+            let _ = writeln!(out, "- Validation observations · {}", cell(&validation));
+            let _ = writeln!(out, "- Timed observations · {}", cell(&timed));
+            let _ = writeln!(
+                out,
+                "- Direct timing example · {}\n",
+                cell(&warning_timings(c, &ws))
+            );
+        }
     }
 }
 
@@ -1661,32 +1831,33 @@ fn warning_timings(c: &Component, warnings: &[&Value]) -> String {
     if c.status != "succeeded" {
         return "Not measured".into();
     }
-    let timings: Vec<_> = ["direct", "execute"]
-        .into_iter()
-        .filter_map(|dispatch| {
-            warnings.iter().find_map(|w| {
-                let id = w["case"].as_str()?;
-                let mut fields = id.split('/').skip(2);
-                let width = fields.next()?.strip_prefix('b')?.parse::<usize>().ok()?;
-                if fields.next() != Some(dispatch) {
-                    return None;
-                }
-                let size = fields.next()?;
-                let sample = c.summary.iter().find(|s| s.case == id)?;
-                let ns = sample.ns_per_operation?;
-                Some(format!(
-                    "B={width} {dispatch} {size} · {}{} ns/call",
-                    decimal(ns),
-                    mark(sample)
-                ))
-            })
+    let mut measured = false;
+    warnings
+        .iter()
+        .find_map(|w| {
+            let id = w["case"].as_str()?;
+            let sample = c.summary.iter().find(|s| s.case == id)?;
+            let ns = sample.ns_per_operation?;
+            measured = true;
+            let mut fields = id.split('/').skip(2);
+            let width = fields.next()?.strip_prefix('b')?.parse::<usize>().ok()?;
+            if fields.next() != Some("direct") {
+                return None;
+            }
+            let size = fields.next()?;
+            Some(format!(
+                "B={width} direct {size} · {}{} ns/call",
+                decimal(ns),
+                mark(sample)
+            ))
         })
-        .collect();
-    if timings.is_empty() {
-        "Not measured".into()
-    } else {
-        timings.join(" / ")
-    }
+        .unwrap_or_else(|| {
+            if measured {
+                "See index for timings".into()
+            } else {
+                "Not measured".into()
+            }
+        })
 }
 
 fn count_warning_calls(
@@ -1815,6 +1986,9 @@ pub fn comparison(value: &Value) -> String {
         .iter()
         .filter_map(|row| {
             let case = cases.get(row["case"].as_str()?)?;
+            if case.category == "operation" && !case.direct {
+                return None;
+            }
             let boundary = case.category == "operation"
                 && ["left_warnings", "right_warnings"].iter().any(|key| {
                     row[*key]

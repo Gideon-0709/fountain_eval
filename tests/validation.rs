@@ -60,7 +60,7 @@ fn validation_order_is_v01_through_v11_before_performance_prechecks() {
 
 #[test]
 fn complete_v_retains_all_fatal_findings_and_blocks_performance() {
-    let r = failed_v();
+    let mut r = failed_v();
     let error = validation::verify(r.recipe.as_ref().unwrap(), &r.validation).unwrap_err();
     assert!(
         error.starts_with("2 fatal correctness checks failed; all "),
@@ -84,9 +84,11 @@ fn complete_v_retains_all_fatal_findings_and_blocks_performance() {
             }
         }
     }
+    r.correctness = report;
     let md = fountain_eval::report::markdown(&r);
     let count = r.validation.len();
-    assert!(md.contains(&format!("| C0 | {count} | {count} | 0 |")));
+    assert!(md.contains(&format!("| {count}/{count} | 0 | 2 | 0 |")));
+    assert!(md.contains("Fatal validation findings blocked O/L/W measurements."));
 }
 
 #[test]

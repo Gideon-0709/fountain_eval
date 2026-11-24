@@ -2,7 +2,7 @@
 
 This guide describes the implemented, unreleased **0.1.0** test content. It explains the fixtures, correctness expectations, measurement boundaries and relationships between results. Configuration, component selection, integration and evidence lifecycle are defined in [DESIGN](DESIGN.md); commands and batch reports are documented in the [README](../README.md).
 
-The full catalog contains 2,511 concrete cases across RQ and R10. Each selected C receives the same catalog with explicit applicability. The configured scheme and available component surfaces determine which cases execute. Engine-only C executes standalone plan construction and operation-list cloning; operator-only C executes the pure-operator surface. Missing components, unavailable capabilities and the R10 K<4 domain are reported as skips. Applicable cases blocked by a fatal failure remain unexecuted.
+The full catalog contains 5,017 concrete cases across RQ and R10. Each selected C receives the same catalog with explicit applicability. The configured scheme and available component surfaces determine which cases execute. Engine-only C executes standalone plan construction and operation-list cloning. Operator-only C executes the pure-operator surface. Missing components, unavailable capabilities and the R10 K<4 domain are reported as skips. Applicable cases blocked by a fatal failure remain unexecuted.
 
 ## Test categories and notation
 
@@ -84,7 +84,7 @@ V04 checks interactions caused by preceding operations. It applies a complete, p
 
 Each trace runs from fresh identical initial bytes through three routes: direct methods, `execute`, and alternating direct/`execute`. Insertion and lookup have no instruction-enum equivalent and always use their sole public entry. Each route is checked against the independent state model, not merely against another route. Trace digests exclude the route, allowing identical inputs to be verified across routes.
 
-All 19 correctness widths apply. Directed histories use seed `0x1971`; the generated history uses all three registered seeds. This produces `(3 + 3) × 3 × 19 = 342` cases. Each step has its own deterministic input seed for replacement bytes. The generator runs before component execution and has no dependency on observed component behavior. These are synthetic state histories, not real engine plans; L11/L12 own real operation replay.
+All 21 correctness widths apply. Directed histories use seed `0x1971`; the generated history uses all three registered seeds. This produces `(3 + 3) × 3 × 21 = 378` cases. Each step has its own deterministic input seed for replacement bytes. The generator runs before component execution and has no dependency on observed component behavior. These are synthetic state histories, not real engine plans; L11/L12 own real operation replay.
 
 Any defined-domain mismatch, unreadable expected-live symbol or component panic is fatal. Failure evidence records scenario, B, seed, route, one-based step and total calls, actual dispatch, action/operands, per-step input seed, trace and pre-state digests, the preceding eight actions, and the first differing symbol/byte with expected/actual values and lengths. The visible report shows the first failure and replay identity; its result index retains the bounded preceding trace. A panic retains the same step context. Success records exact checked-prefix/call counts, direct/execute counts, peak live-symbol count and maximum ID.
 
@@ -126,7 +126,7 @@ In this table, X and Y denote original symbol contents. All inputs are live, ini
 | `overlapping-copy` | Snapshot IDs 0..2, then write their original bytes to IDs 1..3. | `CopyToN` does not define overlap order or snapshot behavior: **warning**. |
 | `overlapping-move` | Snapshot IDs 0..2, remove that range, then write IDs 1..3. | `MoveToN` does not define overlap order: **warning**. Source absence is not observable. |
 
-The correctness matrix contains `9 × 19 widths × 2 routes = 342` cases: 76 defined-contract and 266 ambiguous-contract checks. The performance matrix additionally contains `9 × 8 widths × 2 routes × 2 working sets = 288` cases with the same policy. A boundary that matches its reference passes; only a deviation creates a warning. Direct and `execute` differences remain under that boundary's policy rather than becoming a V05 equivalence failure.
+The correctness matrix contains `9 × 21 widths × 2 routes = 378` cases, including 84 defined-contract and 294 ambiguous-contract checks. O adds `9 × 6 widths × 2 working sets = 108` direct timing cases under the same policy. A boundary that matches its reference passes. The boundary's policy determines the severity of deviations across both validation routes.
 
 **Scope protection is always fatal.** A warning permits different behavior only at the registered affected IDs. Every other initialized symbol must remain readable and byte-identical, including after a caught boundary-call panic. Protected symbols are checked outside timing on validation and on every measured instance. Thus a no-op, snapshot difference or ambiguous-target rejection can be a warning, while corruption of an unrelated symbol cannot be hidden as one. Copy-source ID 0 remains protected in overlapping-copy; overlapping-move permits differences at IDs 0..3.
 
@@ -172,7 +172,7 @@ V07–V11 define no warning-only exceptions. An unavailable optional capability 
 
 An individual operation is one public operation semantic, not every internal function or machine instruction. A range operation can process several symbols and still be one public call. Reports therefore include both calls and the operation's width, arity or range length.
 
-Prepare inputs and required storage before timing. For `execute`, prepare the operation object before timing; instruction-list construction and allocation belong to link tests. Stop the timer before inspecting outputs. Preserve the operation's actual effects and prevent compiler elimination without adding validation to the timed region.
+Prepare inputs and required storage before timing the direct method call. Instruction-list construction and allocation belong to link tests. Stop the timer before inspecting outputs. Preserve the operation's actual effects and prevent compiler elimination without adding validation to the timed region.
 
 Use independently initialized states where repetition would alter the operation being measured. Repeated XOR on one target, removing an already removed ID or copying an already shared value must not silently replace the intended workload. State restoration is outside the timer and its cache effects must be standardized and recorded.
 
@@ -188,9 +188,9 @@ Use independently initialized states where repetition would alter the operation 
 | O08 | Establish sharing; first write after sharing. | Measure creation and the first GF write separately. Compare the first write against a private destination containing identical bytes. Applicable through the registered sharing surface. |
 | O09 | Remove a live symbol; informational ID association. | Separate deletion and informational notification rows. The API exposes no safe membership or association query. Removal timing includes any physical release occurring within the call. |
 
-Operations with instruction-enum counterparts use both direct and `execute` paths. Insert, lookup and explicit sharing have one public entry and therefore no alternate-path case. A missing required operator surface produces explicit applicability skips. Applicability uses the registered interface capability. An implementation declining sharing under that registration reports an explicit preparation or validation failure for the case. The fixture does not infer physical sharing from time alone.
+O times direct calls. V05 compares Direct and Execute for operations with an instruction counterpart, and V06 checks both routes against the boundary contracts. A missing required operator surface produces explicit applicability skips. Applicability uses the registered interface capability. An implementation declining sharing under that registration reports an explicit preparation or validation failure for the case. Sharing claims require capability and validation evidence.
 
-Working-set variants use batches of independently initialized operator instances: up to 64 for the small set and 512 for the large set, capped at 64 MiB of initial symbol bytes. Each instance receives one measured call. Width-tail cases exercise non-aligned lengths; this catalog does not vary caller buffer offsets or claim a particular cache residency. Internal alignment is a component property.
+Working-set variants use batches of independently initialized operator instances: up to 64 for the small set and 512 for the large set, capped at 64 MiB of initial symbol bytes. Each instance receives one measured call. V correctness checks exercise non-aligned lengths. O uses the shared widths and does not vary caller buffer offsets or claim a particular cache residency. Internal alignment is a component property.
 
 The one-instance precheck is shared by the small and large batch rows for the same operation, width and entry point. Every measured instance still receives its output check. V06 observations keep the outcome and timing distinction between completed calls and rejected calls. Batch timings include the timer loop and entry dispatch. O04 and O06 indicate primitive arithmetic cost. O01/O02/O07/O08/O09 explain why a fast arithmetic kernel may still produce a slow operator or codec. No arithmetic-kernel-only result substitutes for the public-operation measurement.
 
@@ -256,14 +256,19 @@ W07 measures useful-block continuity as well as isolated task latency. A lower o
 
 ## Workload matrix
 
-The following dimensions expand only the families that consume them; they are not a Cartesian product across all tests.
+The shared sweep uses K = 64, 128, 256, 512, 1024, 2048, 4096, 8192 source symbols and B = 128, 256, 512, 1024, 2048, 4096 bytes per symbol. A case uses the dimensions that affect its work.
 
-| Dimension | Values or expansion rule |
+| Test | Geometry |
 | --- | --- |
-| Main link/workflow geometry | K = 64, 512, 5008; B = 128, 1016; all six combinations. |
-| Operation-test widths | B = 16, 31, 32, 33, 128, 1016, 4096, 16384. |
-| Additional correctness widths | B = 1, 15, 17, 63, 64, 65, 127, 129, 1023, 1024, 1025, plus the operation widths where relevant. |
-| Validation K coverage | K = 1, 4, 9, 10, 11, 63, 64, 65, 511, 512, 513, 5007, 5008, 5009, 5120; B = 31, 128. R10 K=1 is outside its domain. |
+| O direct operations | Each shared B. A call exercises its own operands and working set. |
+| L02–L03 symbolic plans | Each shared K. The plan is independent of B. |
+| L11–L12 replay | All 48 K × B geometries per scheme. Encode replay generates 8 repairs. Decode replay omits `ceil(K/10)` sources. |
+| W workflows and L stage observations | All 48 geometries per scheme. The report's detailed L stage examples use K=512 and B=1024, with 8 repairs on encode and 52 missing sources on decode. |
+| V02–V06 correctness widths | All shared B plus 1, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 129, 1023, 1025, 16384 for alignment, tails, and storage boundaries. |
+| V07 scheme and padding | The shared grid plus selected boundaries at B=31 and B=128 for K = 1, 4, 9, 10, 11, 63, 64, 65, 511, 512, 513, 5007, 5008, 5009, 5120. R10 starts at K=4. |
+
+| Workload dimension | Values or expansion rule |
+| --- | --- |
 | Repair generation | R = 1, 8, ceil(0.1K), deduplicated; source-output materialization is a separate case. |
 | Main decode omissions | M = 0, 1, ceil(0.01K), ceil(0.1K), deduplicated. |
 | Main reception order | Remaining sources followed by repairs; fixed shuffled mixture of sources and repairs. |
@@ -273,7 +278,7 @@ The following dimensions expand only the families that consume them; they are no
 | Consecutive-block count | 32 different payload blocks per registered continuity case. |
 | Repair budget | Zero for W04. For the registered missing-source tests, max(128, 2M + 64). Track the offered domain and consumed prefix separately. |
 
-This is a layered matrix, not a full Cartesian product of every row. Main coding performance covers the six geometries and prescribed output/recovery cases. Width-tail and state-boundary rules expand only relevant checks. For example, a plan-generation case whose contract is independent of B should not duplicate the same work and present the duplicates as additional evidence.
+Fixed correctness fixtures use the inputs required by their contract. For example, V09 solves a small reference system and V10 checks a prescribed receive sequence. Each W workload keeps its prescribed variants, including the 32-block continuity cases. The largest continuity case prepares 1 GiB of source payload before timing.
 
 The executable expansion is in `src/content.rs` and each report's resolved plan in its result index. Operation widths and arities expand independently of codec geometry; plan generation has no payload-width dimension. The catalog retains actual seeds, operands and work counts, including each applicability reason.
 
@@ -338,7 +343,7 @@ plans_per_s              = completed_plan_builds * 1e9 / elapsed_ns
 
 These equations use decimal Gbit/s because nanoseconds supply the factor of 1e9. GB/s and GiB/s are different units and must not share a label. Compute a batch rate from total work and its elapsed time, not an unweighted average of unequal per-item rates.
 
-For example, K=512 and B=1016 represent 520,192 source bytes. Finishing one such block in 1,000,000 ns gives **4.161536 Gbit/s of source-payload-equivalent throughput**. This example is arithmetic, not a measured component result.
+For example, K=512 and B=1024 represent 524,288 source bytes. Finishing one such block in 1,000,000 ns gives **4.194304 Gbit/s of source-payload-equivalent throughput** in this illustrative calculation.
 
 Encoding R repair symbols can be normalized to source bytes for application comparison, but also report the actual repair-output rate and R. A small R can produce a high source-equivalent rate without having emitted that many bytes. Decode source-equivalent throughput likewise does not describe network traffic. Report received source/repair counts and bytes separately.
 
@@ -374,19 +379,49 @@ Legacy results without structured fields are displayed as unclassified, separate
 
 ### Read the report
 
-The report opens with a summary of configuration, component and interface versions, recorded environment and overall results. The summary displays the plain test content version. Sampling schedules and environment/test-content digests remain in the index.
+The report opens with links to V, O, L and W, followed by the overall results, configuration, component and interface versions, and the recorded environment. The summary displays the plain test content version. Sampling schedules and environment/test-content digests remain in the index.
 
-V follows this order:
+Each of V, O, L and W presents its coverage summary, key results and detailed results in that order.
 
-1. **Summary:** correctness status and the counts of fatal and warning cases for each C.
-2. **Fatal and Warning:** one entry per structured contract/failure-kind pair, including its affected components, families and case counts. A problem can span multiple V families and C entries. These are groups of observed contract failures or boundary deviations; a group does not establish a shared implementation cause. Each fatal problem explains one representative case with its failed contract, expected/observed bytes or compared execution paths, operation, parameters and replay identity where recorded. Receive diagnostics distinguish the last input symbol ID from the differing output byte. Warning problems show their reference expectation, contract basis, validation/timed observations and representative timings. Individual cases are not expanded in these findings. Empty finding types state None detected, referring only to completed checks.
-3. **Detailed results:** the complete existing coverage, exclusion and V01–V11 family tables. They show completed and unfinished checks, skips, and per-family fatal/warning counts. The Markdown does not add a row for every concrete case; complete per-case records remain in the index.
+#### Validation (V)
 
-Correctness and performance coverage use separate tables with one count per column. Counts refer to test cases. A skipped correctness-only case is excluded from performance counts. Identical exclusion reasons are grouped across C entries and show per-C counts. Partial or unaccepted measurements appear separately when present. Read these tables to confirm the combinations and conditions actually tested.
+The summary shows correctness status, applicable and completed checks, and fatal and warning counts. Key results group findings by contract ID and failure kind within each severity. The same problem can affect several C entries and test families. The number in a finding heading identifies the problem, while its affected-case count counts observations of that problem.
 
-O shows family coverage and representative direct/execute ns/call at widths 128 and 1016. L shows family coverage, independent plan/replay times, then exclusive encoding and recovery stages at K=512 and B=128. Stage means and unattributed time add to the instrumented lifecycle before rounding. W shows family coverage, headline throughput and round-trip results at K=512/5008 and B=128/1016, plus representative first-use, reuse, all-source, continuity and lifecycle timings. Full diagnostics, replay history and hashes remain in the index.
+A fatal entry explains one representative case. It gives the failed contract, the first difference or compared execution paths, and the parameters and replay identity where recorded. A warning entry gives the reference expectation, contract basis and observations. When a severity has no findings, the report says “None detected in completed checks.” The V01–V11 family and exclusion tables follow in the details. The index retains the concrete cases.
 
-Read family coverage for the selected scheme to see what was checked, measured, diagnosed, stopped or skipped. Accepted timing coverage means the case has its required samples in a successful run. A recovery sample can exhaust its budget within such a case. Read the recovered count before comparing throughput. For the full parameter matrix, work counts, failure witnesses, warning variants and diagnostic/resource observations, use `feval report REPORT_DIR --json`.
+#### Operations (O)
+
+The key table uses one row per representative direct call and one column per shared symbol width. Each ns/call value divides the median batch time by 64 independent calls. O coverage includes the timed V06 boundary calls. The index retains every working set and any `execute` timings recorded by earlier plans.
+
+#### Links (L)
+
+The summary identifies independent timings and paired W stage observations in its Scope column. The Encode and Decode tables specify the scheme, K, B, and the repair or missing-source count.
+
+| Table | Unit and aggregation |
+| --- | --- |
+| Encode and Decode stages | Mean µs per block from the instrumented run. Shares divide the mean interval by the mean full instrumented lifecycle. Interval means and unattributed time add to the lifecycle before rounding. |
+| L02 and L03 encoding plans | Median ms per plan build or instruction-list clone. |
+| L11 and L12 operator replay | Median ms per recorded replay. K is in the columns and B is in the rows. |
+
+#### Workflows (W)
+
+W presents three grids across the shared K × B matrix. Each rate is eight times the counted bytes divided by elapsed nanoseconds, expressed in decimal Gbit/s.
+
+| Grid | Counted bytes | Interval and statistic |
+| --- | --- | --- |
+| Precode | K × B source bytes | Mean instrumented W02 time from scheme and storage setup through loading, padding and preparation of intermediate symbols. |
+| Encode | R × B repair-output bytes with R = 8 | Mean instrumented W02 time from the ready encoder through generation and materialization of all eight repairs. |
+| Decode | K × B recovered source bytes | Ordinary W05 median from decoder construction through ingestion, recovery and materialization. The case uses source-first delivery and omits `ceil(K/10)` sources. |
+
+Precode and Encode sum their respective instrumented intervals. A fused interval within one phase counts once. A rate requires complete observations and a boundary that separates the two phases. Use the ordinary W02 result in the index for the full measured encoding interval.
+
+Detailed results show W06 round-trip median ms/block over the complete K × B matrix. W06 covers encoder construction, symbol generation, simulated omission, mixed-order delivery in memory and decoding. Other rows show representative end-to-end encode, first-use, reuse, all-source, continuity and lifecycle measurements.
+
+#### Coverage and unavailable measurements
+
+Each section lists case counts and exclusion reasons for its own scope. Exclusions mean a case does not apply to the selection. Applicable cases can be accepted, unexecuted, incomplete, or complete with an unsuccessful run. A complete sample set can contain incomplete recovery attempts. In that situation the cell shows the recovery count and omits successful throughput.
+
+When older evidence is rendered in the current layout, coverage follows the original plan and any missing cell is marked Not measured. Use `feval report REPORT_DIR --json` for the complete matrix, work counts, diagnostics and finding observations.
 
 A comparison uses a compatible baseline and candidate. The time change divides by the baseline median, so a negative value is a lower candidate median. Read that change with CV, recovery completion, warnings and the observed work differences on that row.
 
@@ -404,4 +439,4 @@ A comparison uses a compatible baseline and candidate. The time change divides b
 
 An optimization opportunity is a supported location to investigate, not a promised speedup. A measured serial fraction can support a qualified theoretical upper bound, but actual gains depend on interactions, changed work and cache/resource behavior. Avoid automatic causal claims from a single percentage change.
 
-Ordinary workers have a 600-second deadline; fresh-process cases have 60 seconds. Three separate diagnostic workers observe the same ordinary cases. These bounds do not automatically expand after failure. The defined samples characterize these fixed inputs and this host, not production stability.
+Validation, ordinary measurement and diagnostic workers each have a 1,800-second deadline for the expanded grid. Each fresh-process case has 60 seconds. Three separate diagnostic workers observe the same ordinary cases. These bounds do not automatically expand after failure. The defined samples characterize these fixed inputs and this host, not production stability.
