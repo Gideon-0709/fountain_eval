@@ -24,7 +24,7 @@ def main():
     assert root["name"] == "fountain-eval"
     kinds = {kind for target in root["targets"] for kind in target["kind"]}
     assert {"lib", "bin"}.issubset(kinds), "Both library and CLI targets are required"
-    native = {"fountain_engine", "fountain_scheme", "fountain_utility", "fountain_operators", "fountain-arena-operator"}
+    native = {"fountain_engine", "fountain_scheme", "fountain_utility", "fountain_bin_ffi"}
     assert not native.intersection(package["name"] for package in packages), "Native dependencies belong to isolated drivers"
 
     files = command("git", "ls-files", "--cached", "--others", "--exclude-standard", "-z").split("\0")

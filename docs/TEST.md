@@ -1,6 +1,6 @@
 # Fountain evaluation tests
 
-This guide describes the implemented, unreleased **0.1.0** test content. It defines the workloads, fixtures, correctness criteria and measurement methods. See [DESIGN](DESIGN.md) for framework architecture and the [README](../README.md) for CLI usage.
+This guide describes **0.1.0** test content. It defines the workloads, fixtures, correctness criteria and measurement methods. See [DESIGN](DESIGN.md) for framework architecture and the [README](../README.md) for CLI usage.
 
 The full catalog contains 5,017 concrete cases across RQ and R10. Each selected C receives the same catalog with explicit applicability. The configured scheme and available component surfaces determine which cases execute. Engine-only C executes standalone plan construction and operation-list cloning. Operator-only C executes the pure-operator surface. Missing components, unavailable capabilities and the R10 K<4 domain are reported as skips. Applicable cases blocked by a fatal failure remain unexecuted.
 
@@ -284,7 +284,7 @@ Fixed correctness fixtures use the inputs required by their contract. For exampl
 
 The executable expansion is in `src/content.rs` and each report's resolved plan in its result index. Operation widths and arities expand independently of codec geometry; plan generation has no payload-width dimension. The catalog retains actual seeds, operands and work counts, including each applicability reason.
 
-Only the configured scheme runs. Both schemes are exercised by maintainer acceptance of the catalog. Scheme-specific reference fixtures may differ, but a baseline/candidate comparison for the same case uses identical inputs. Repair IDs, omission sets, ordering and payload-generation identities belong in evidence.
+Each run executes the cases for its configured scheme. Scheme-specific reference fixtures may differ, but a baseline/candidate comparison for the same case uses identical inputs. Repair IDs, omission sets, ordering and payload-generation identities belong in evidence.
 
 Stopping at decoder completion is part of the registered recovery workflow, not a changing test budget. Record how much of the fixed offered stream each implementation consumed. A changed amount of work can explain changed time. Budget exhaustion is preserved without automatic extension; no successful decode throughput is emitted for an incomplete block.
 

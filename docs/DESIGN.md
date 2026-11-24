@@ -28,7 +28,7 @@ A completed input identity is `(C,I,T,E)`:
 | T: test content | Input generation, operations, correctness oracle and severity, timing boundary, sampling and metric semantics | Test scenarios, coverage, workload and methodology |
 | E: effective experiment configuration | Selected scheme algorithm/mode, T-derived parameters, common compiler/build settings and observed runtime conditions | Host, OS, toolchain, CPU/power/affinity and common build environment |
 
-I and T have independent version-plus-content identities. A published version must not be repointed to changed content. The catalog lock and repository checks detect content that differs from the explicitly recorded candidate. During the current unreleased round the owner has fixed the planned baseline at 0.1.0; published-version rules apply after that first release. Components' declared package versions alone are insufficient: source bytes and dependency locks distinguish two different checkouts carrying the same version string.
+I and T have independent version-plus-content identities. Published versions retain their content digests. The catalog lock and repository checks detect content that differs from the recorded release identity. Source bytes and dependency locks distinguish component checkouts that share a package version.
 
 Framework package version, serialization schema, run ID, wall-clock time and report renderer are provenance, not additional tuple axes. A semantic change to interface calls or measurement still belongs to I or T even if delivered in a small framework patch.
 
@@ -65,7 +65,7 @@ The workspace owns the default config and all run storage. `init` creates and ac
 
 Config is an input to `(C,I,T,E)`, not an additional identity axis. Raw text, comments and filesystem location do not participate in experiment equality. Scheme implementation changes belong to C; the requested scheme algorithm/mode belongs to E. Each operator reference identifies its Rust type in the selected crate. Requested engine/operator Cargo features and default-feature settings belong to C. T owns workload parameters and severity. I owns invocation and diagnostic build requirements. Source forms (path/Git/registry) are independent of invocation forms (Rust API/product ABI).
 
-The content version selects the full catalog, not an individual suite or category. Every case remains in the expanded plan with validation and measurement applicability. Skips have stable reason codes and explanations. Build errors, fatal checks, crashes, interruption and missing expected outputs are failures or unexecuted work; they are not skips. A canonical-plan check prevents an edited skip from concealing a missing result. Native acceptance executes both configured schemes across registered integrations and verifies coverage.
+The content version selects the full catalog, not an individual suite or category. Every case remains in the expanded plan with validation and measurement applicability. Skips have stable reason codes and explanations. Build errors, fatal checks, crashes, interruption and missing expected outputs are failures or unexecuted work; they are not skips. A canonical-plan check prevents an edited skip from concealing a missing result. Normal runs establish compatibility and coverage for the configured selections. Framework smoke exercises the same CLI with the starter config and generated fault fixtures.
 
 Formal test content has four categories: validation tests (V), operation tests (O), link tests (L) and workflow tests (W). Encoding-plan generation is an engine stage within link testing, not an atomic operation or fifth category. Plan reuse inside complete encoding is workflow testing. The registered formal content implements these four categories; driver and framework acceptance remain separate from component pass/fail results.
 
@@ -177,7 +177,7 @@ Linux/macOS CI checks the framework and publicly accessible native combinations.
 | `drivers/scalar_operator.rs` | I-owned scalar adapter for untimed engine-only plan validation |
 | `drivers/native.rs` | Source engine 2/3 constructors, symbol conversion and materialization |
 | `drivers/product.rs` | Real product facades and SymbolOps callbacks |
-| `scripts/native_acceptance.py` | Maintainer native, failure and reproducibility checks |
+| `scripts/native_acceptance.py` | CLI smoke, synthetic failure and frozen execution checks |
 | `tests/` | Framework contracts, source capture, evidence, units, processes and CLI tests |
 
 Driver templates are embedded by `include_str!`. A generated driver is an isolated executable build artifact, not another published framework package. Native component code is never checked into this repository.

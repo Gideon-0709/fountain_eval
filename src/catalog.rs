@@ -18,6 +18,7 @@ pub const OPERATOR: &str = include_str!("../drivers/operator.rs");
 pub const NATIVE: &str = include_str!("../drivers/native.rs");
 pub const PRODUCT: &str = include_str!("../drivers/product.rs");
 pub const SCALAR_OPERATOR: &str = include_str!("../drivers/scalar_operator.rs");
+const PUBLICATION_STATUS: &str = "released";
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Identity {
     pub id: String,
@@ -153,7 +154,7 @@ pub fn verify_lock() -> Result<()> {
         .map_err(|e| e.to_string())?;
     if lock_entries() != locked {
         return Err(
-            "interface/test identity conflict: catalog content differs from the candidate lock"
+            "interface/test identity conflict: catalog content differs from the locked identities"
                 .into(),
         );
     }
@@ -244,10 +245,10 @@ pub fn registered_interface(identity: &Identity, test: &str) -> bool {
 }
 pub fn list() -> Value {
     let interfaces = ["native-2", "native-3", "product-abi"].map(interface);
-    json!({"format_version":1,"publication_status":"internal-draft","interfaces":interfaces,"test_versions":[recipe(&"0.1.0".parse().unwrap()).unwrap()],"schemes":[{"name":"rq","modes":["systematic"]},{"name":"r10","modes":["systematic"]}]})
+    json!({"format_version":1,"publication_status":PUBLICATION_STATUS,"interfaces":interfaces,"test_versions":[recipe(&"0.1.0".parse().unwrap()).unwrap()],"schemes":[{"name":"rq","modes":["systematic"]},{"name":"r10","modes":["systematic"]}]})
 }
 
-/// Compact candidate seal; the T digest covers every expanded case and semantic source.
+/// Compact release seal; the T digest covers every expanded case and semantic source.
 pub fn lock_entries() -> Value {
-    json!({"format_version":1,"publication_status":"internal-draft","interfaces":(["native-2","native-3","product-abi"].map(interface)),"tests":[recipe(&"0.1.0".parse().unwrap()).unwrap().identity]})
+    json!({"format_version":1,"publication_status":PUBLICATION_STATUS,"interfaces":(["native-2","native-3","product-abi"].map(interface)),"tests":[recipe(&"0.1.0".parse().unwrap()).unwrap().identity]})
 }

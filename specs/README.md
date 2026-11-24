@@ -22,7 +22,7 @@ Each check declares severity, rule, work counts and whether it is measured. Expa
 
 During execution, `test-plan.json` records the full expansion and `coverage.json` records every case. Publication retains the plan and coverage in the report directory's index, with separate validation and measurement states. Validation states include passed, failed, skipped and not_executed. Measurements include recorded, incomplete, skipped, not_applicable and not_executed. Recorded samples are accepted only for a succeeded run. Prepared and early-failed results do not claim validation or measurement completion.
 
-A successful result requires every applicable validation event and every applicable sample. The validator reconstructs the canonical plan, so an edited skip cannot hide missing evidence. Failures and interruptions leave unfinished cases unexecuted; they are never converted into applicability skips. The acceptance harness runs both schemes and writes reachability accounting; cases blocked by upstream fatal checks remain documented coverage gaps.
+A successful result requires every applicable validation event and every applicable sample. The validator reconstructs the canonical plan, so an edited skip cannot hide missing evidence. Failures and interruptions leave unfinished cases unexecuted; they are never converted into applicability skips. Use normal run reports to verify coverage for each configured scheme and integration. Cases blocked by fatal checks remain coverage gaps.
 
 ## CLI output
 

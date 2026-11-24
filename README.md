@@ -2,7 +2,7 @@
 
 `feval` freezes Fountain components, generates isolated native builds, executes every applicable check, records measurements and compares results. The `fountain-eval` Cargo package provides the `fountain_eval` library and the `feval` CLI. Component source remains in its own repository.
 
-The project is an unreleased internal **0.1.0** candidate.
+The team distributes **0.1.0** through its internal Git tag.
 
 ## Install and initialize a workspace
 
@@ -18,7 +18,9 @@ feval run
 feval report <result-id>
 ```
 
-Run the installation command from the repository. The subsequent commands work from any directory after activation. Edit `feval_workspace/fountain-eval.toml` to select the components, scheme and test version. The starter uses the public engine's standalone encoding-plan tests. Add a compatible operator to evaluate a pair. The repository's [configuration](fountain-eval.toml) is a pair comparison you can copy into a workspace. Adjust its Arena path for the new config location.
+Run the installation command from the repository. The subsequent commands work from any directory after activation. Edit `feval_workspace/fountain-eval.toml` to select the components, scheme and test version. The starter uses the public engine's standalone encoding-plan tests.
+
+For a full RQ evaluation, copy the repository's [configuration](fountain-eval.toml) into the workspace. It selects Engine 3 and Arena at fixed Git commits. Git credentials must allow access to both component repositories.
 
 ```text
 feval_workspace/

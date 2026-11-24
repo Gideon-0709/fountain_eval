@@ -1,11 +1,15 @@
 #[test]
-fn catalog_matches_the_explicit_internal_candidate() {
+fn catalog_matches_the_release_lock() {
     let frozen: serde_json::Value =
         serde_json::from_str(include_str!("../specs/catalog-lock.json")).unwrap();
     assert_eq!(
         fountain_eval::catalog::lock_entries(),
         frozen,
-        "Catalog content changed: update this internal candidate deliberately; published identities will be frozen at release"
+        "Catalog content changed under a released interface or test identity"
+    );
+    assert_eq!(
+        fountain_eval::catalog::list()["publication_status"],
+        frozen["publication_status"]
     );
 }
 

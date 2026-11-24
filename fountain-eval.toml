@@ -1,12 +1,7 @@
-# Shared test content for every component selection.
+# Full RQ evaluation for the pinned Engine 3 and Arena pair.
+# Git credentials must allow access to both repositories.
 scheme = "rq"
 test = "0.1.0"
 
-# C0 · public engine with Slab.
-engine0 = "registry:fountain_engine@2.1.0"
-operator0 = { source = "registry:fountain_operators@2.0.0#SlabDataOperator", features = ["simd"] }
-
-# C1 · the same engine with Arena from the sibling checkout.
-# Resolve relative paths from this file's directory.
-engine1 = "registry:fountain_engine@2.1.0"
-operator1 = "path:../fountain-arena-operator#MemoryDataOperator"
+engine0 = "git+https://github.com/shhyang/erasure_coding_lib.git?package=fountain_engine&rev=2b603359f883448d257ec7c5401fc8a9b4054621"
+operator0 = "git+https://github.com/Gideon-0709/fountain-arena-operator.git?package=fountain-arena-operator&rev=dae4f66013806db127b79c07496986aca81b7e8a#MemoryDataOperator"
