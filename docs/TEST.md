@@ -1,6 +1,6 @@
 # Fountain evaluation tests
 
-This guide describes the implemented, unreleased **0.1.0** test content. It explains the fixtures, correctness expectations, measurement boundaries and relationships between results. Configuration, component selection, integration and evidence lifecycle are defined in [DESIGN](DESIGN.md); commands and batch reports are documented in the [README](../README.md).
+This guide describes the implemented, unreleased **0.1.0** test content. It defines the workloads, fixtures, correctness criteria and measurement methods. See [DESIGN](DESIGN.md) for framework architecture and the [README](../README.md) for CLI usage.
 
 The full catalog contains 5,017 concrete cases across RQ and R10. Each selected C receives the same catalog with explicit applicability. The configured scheme and available component surfaces determine which cases execute. Engine-only C executes standalone plan construction and operation-list cloning. Operator-only C executes the pure-operator surface. Missing components, unavailable capabilities and the R10 K<4 domain are reported as skips. Applicable cases blocked by a fatal failure remain unexecuted.
 
@@ -248,7 +248,9 @@ The single-block W02 eight-repair case provides the representative encoding chai
 | W07 | Consecutive independent blocks. | Process 32 distinct payload blocks using the prescribed reconstruction or supported reuse policy. Record first/later readiness, gaps, final release and total batch duration. Input fixture bytes are prepared once per worker case and all inputs and outputs remain owned until validation. The native scope includes continuous encoding. The policy is part of the case. |
 | W08 | Complete component lifecycle. | Derive release and lifecycle endpoints from the relevant encode, decode and round-trip samples. The former independent eight-repair lifecycle case shares the W02 run. The owned output has been handed to the caller and is retained for later checking. Distinguish this endpoint from output-ready time. |
 
-Encoding output cases separate source-symbol materialization and repair generation. For repair cases, the selected R determines the work; it must be visible next to the throughput. Decoder input preparation is excluded from W04/W05 so encoder cost cannot leak into decode throughput.
+Encoding output cases separate source-symbol materialization and repair generation. The requested R specifies how many repair symbols the encoder must produce. The W02 case paired with link-stage observations uses eight repairs. Its precode interval covers scheme and storage setup, source loading and padding, and preparation of intermediate symbols. Its repair interval runs from the ready encoder to materialization of the eight repairs. Samples must expose both intervals to derive separate phase rates.
+
+W04 and W05 prepare decoder input ahead of timing. The timed W05 recovery interval starts at decoder construction and ends when the recovered source block is materialized.
 
 W03 uses actual advertised reuse capabilities. Eval may compose a plan explicitly exported through a supported interface, but it must label that path and include all binding/loading work in its proper scope. It must not reimplement the coding algorithm to manufacture a reuse result. A missing reuse API causes that case to be skipped, while W01/W02 remain applicable.
 
@@ -263,7 +265,7 @@ The shared sweep uses K = 64, 128, 256, 512, 1024, 2048, 4096, 8192 source symbo
 | O direct operations | Each shared B. A call exercises its own operands and working set. |
 | L02–L03 symbolic plans | Each shared K. The plan is independent of B. |
 | L11–L12 replay | All 48 K × B geometries per scheme. Encode replay generates 8 repairs. Decode replay omits `ceil(K/10)` sources. |
-| W workflows and L stage observations | All 48 geometries per scheme. The report's detailed L stage examples use K=512 and B=1024, with 8 repairs on encode and 52 missing sources on decode. |
+| W workflows and paired L stage observations | All 48 K × B geometries per scheme. |
 | V02–V06 correctness widths | All shared B plus 1, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 129, 1023, 1025, 16384 for alignment, tails, and storage boundaries. |
 | V07 scheme and padding | The shared grid plus selected boundaries at B=31 and B=128 for K = 1, 4, 9, 10, 11, 63, 64, 65, 511, 512, 513, 5007, 5008, 5009, 5120. R10 starts at K=4. |
 
@@ -319,6 +321,8 @@ For an ordinary performance case, use three independent worker processes, each w
 
 The candidate uses deterministic fixed batches: up to 64 independent instances for the small set and 512 for the large set, capped at 64 MiB of initial symbol bytes. Sixteen symbols are initialized per instance. These sizes are part of T and the actual call count is retained. There is no adaptive retry or hidden change in batch size. Define state preparation consistently and preserve all observed outputs or sufficient checked evidence. A result below usable clock resolution must be reported as unresolved at that resolution rather than an exact zero-time operation.
 
+Validation, ordinary measurement and diagnostic workers each have a 1,800-second deadline. Each fresh-process case has a 60-second deadline.
+
 Ordinary and diagnostic workers use sorted, reverse and half-rotated case order within each category. C entries still execute independently in configured order. Keep worker/process grouping, repetition index and workload seed. Three seeds measure different inputs; repeats of one seed measure execution variability for that input. Fifteen samples are not 15 independent machines, nor a basis for precise tail-percentile or production-stability claims.
 
 Use every recorded sample in its outcome group. Keep completed latency and budget-exhaustion latency separately and retain counts and worker grouping. A recovery row with an incomplete sample has no successful throughput or comparison speed percentage. The result index retains the input and replay digests, work summaries, and ordinary release and output endpoints. Do not filter slow observations. Individual samples are temporary execution evidence and are cleaned after the verified Markdown report is published. Record case order and host observations. When orchestrating a baseline/candidate study, use a prescribed balanced order; comparing already existing files cannot retroactively remove order drift.
@@ -345,98 +349,8 @@ These equations use decimal Gbit/s because nanoseconds supply the factor of 1e9.
 
 For example, K=512 and B=1024 represent 524,288 source bytes. Finishing one such block in 1,000,000 ns gives **4.194304 Gbit/s of source-payload-equivalent throughput** in this illustrative calculation.
 
-Encoding R repair symbols can be normalized to source bytes for application comparison, but also report the actual repair-output rate and R. A small R can produce a high source-equivalent rate without having emitted that many bytes. Decode source-equivalent throughput likewise does not describe network traffic. Report received source/repair counts and bytes separately.
+For the W02 diagnostic phase rates, precode counts K × B input bytes and repair encoding counts R × B output bytes. Divide each bit count by the mean instrumented time for its phase. W05 recovery counts the K × B recovered source bytes and uses the median ordinary recovery time. The test separately records received source and repair counts.
 
 Symbol lookup, move and alias operations primarily report ns/call and calls/s. Logical-byte rates are optional and must say what logical bytes mean. They do not prove that payload bytes were copied. Symbolic plan generation reports time, plans/s and plan/resource sizes, not payload Gbit/s.
 
 Warnings do not change denominators. A boundary call that returns immediately still counts as the nominal call requested by the test, with its actual result visible. Internally executed arithmetic counts are diagnostic data and cannot silently replace the workload's public-call count.
-
-## Expected report contents and reading guide
-
-### Deliverables
-
-The Markdown report for a selected run includes every C, groups results by test category, and separates execution wall time from benchmark time. The sibling index in the report directory preserves validated aggregate results and exact per-case coverage.
-
-The retained index includes completed codec validation observations, bounded regression evidence and observed work/digest summaries. Comparison exposes when the offered stream, consumed counts or recorded trace differ across C entries. The [artifact contracts](../specs/README.md) define temporary execution evidence and the retained result index. `result.json`, raw samples, logs and build cache are working files, not additional final reports. Framework checks detect missing observations, inconsistent work counts and invalid diagnostic accounting before cleanup.
-
-### Structured contract violations
-
-Checks emit structured findings at the assertion or observation site. A failed check records `finding.contract_id`, `finding.failure_kind`, `finding.requirement`, `finding.context`, and an optional `finding.difference`. Passed checks have no violation. New failed evidence without a valid identity and matching case context is rejected.
-
-| Field | Meaning |
-| --- | --- |
-| `contract_id` | The semantic requirement being checked, such as `operator.mul_add.zero`, `dispatch.equivalence`, or `codec.recovered-payload`. The same requirement can be checked by multiple families. Different requirements have distinct IDs. |
-| `failure_kind` | The observed violation: for example `value_mismatch`, `length_mismatch`, `path_mismatch`, `scope_corruption`, `call_rejected`, `output_unreadable`, or `unexpected_panic`. |
-| `requirement` | Human-readable explanation supplied by the check. It describes the required behavior. |
-| `context` | Case, parameters and source-generated diagnostic context: operation, dispatch, scenario, sequence position, input symbol/count and replay details when applicable. |
-| `difference` | Exact compared values and labels, first differing location and output lengths. Relational checks explicitly name both compared paths. |
-
-The report groups by **severity, contract ID and failure kind**. Width, seed, route, scenario and component selection remain affected-case dimensions. Diagnostic prose and byte values do not determine identity. For example, V02 and V04 can both emit `operator.mul_add.zero` / `value_mismatch`; the report groups them even if their messages differ. A panic during valid decoder input emits an explicit active input contract and `unexpected_panic`; its message is retained without guessing a more specific cause.
-
-Boundary deviations are classified by the checking code from structured outcomes. A rejected call, unreadable output and other reference deviation have distinct kinds under the boundary's reference contract. The driver emits identities for both validation and timed outcomes, outside the primitive timer. A case may observe multiple kinds across samples; each kind has its own group. Global warning counts count unique cases, so affected-case counts across these groups need not add to the global count. The index retains every identity and observation after raw-result cleanup.
-
-Legacy results without structured fields are displayed as unclassified, separately by component/case/phase. They are never grouped by matching error messages. Contract semantics and their source belong to T; changing them updates the internal content seal. Release version assignment remains a maintainer action.
-
-### Read the report
-
-The report opens with links to V, O, L and W, followed by the overall results, configuration, component and interface versions, and the recorded environment. The summary displays the plain test content version. Sampling schedules and environment/test-content digests remain in the index.
-
-Each of V, O, L and W presents its coverage summary, key results and detailed results in that order.
-
-#### Validation (V)
-
-The summary shows correctness status, applicable and completed checks, and fatal and warning counts. Key results group findings by contract ID and failure kind within each severity. The same problem can affect several C entries and test families. The number in a finding heading identifies the problem, while its affected-case count counts observations of that problem.
-
-A fatal entry explains one representative case. It gives the failed contract, the first difference or compared execution paths, and the parameters and replay identity where recorded. A warning entry gives the reference expectation, contract basis and observations. When a severity has no findings, the report says “None detected in completed checks.” The V01–V11 family and exclusion tables follow in the details. The index retains the concrete cases.
-
-#### Operations (O)
-
-The key table uses one row per representative direct call and one column per shared symbol width. Each ns/call value divides the median batch time by 64 independent calls. O coverage includes the timed V06 boundary calls. The index retains every working set and any `execute` timings recorded by earlier plans.
-
-#### Links (L)
-
-The summary identifies independent timings and paired W stage observations in its Scope column. The Encode and Decode tables specify the scheme, K, B, and the repair or missing-source count.
-
-| Table | Unit and aggregation |
-| --- | --- |
-| Encode and Decode stages | Mean µs per block from the instrumented run. Shares divide the mean interval by the mean full instrumented lifecycle. Interval means and unattributed time add to the lifecycle before rounding. |
-| L02 and L03 encoding plans | Median ms per plan build or instruction-list clone. |
-| L11 and L12 operator replay | Median ms per recorded replay. K is in the columns and B is in the rows. |
-
-#### Workflows (W)
-
-W presents three grids across the shared K × B matrix. Each rate is eight times the counted bytes divided by elapsed nanoseconds, expressed in decimal Gbit/s.
-
-| Grid | Counted bytes | Interval and statistic |
-| --- | --- | --- |
-| Precode | K × B source bytes | Mean instrumented W02 time from scheme and storage setup through loading, padding and preparation of intermediate symbols. |
-| Encode | R × B repair-output bytes with R = 8 | Mean instrumented W02 time from the ready encoder through generation and materialization of all eight repairs. |
-| Decode | K × B recovered source bytes | Ordinary W05 median from decoder construction through ingestion, recovery and materialization. The case uses source-first delivery and omits `ceil(K/10)` sources. |
-
-Precode and Encode sum their respective instrumented intervals. A fused interval within one phase counts once. A rate requires complete observations and a boundary that separates the two phases. Use the ordinary W02 result in the index for the full measured encoding interval.
-
-Detailed results show W06 round-trip median ms/block over the complete K × B matrix. W06 covers encoder construction, symbol generation, simulated omission, mixed-order delivery in memory and decoding. Other rows show representative end-to-end encode, first-use, reuse, all-source, continuity and lifecycle measurements.
-
-#### Coverage and unavailable measurements
-
-Each section lists case counts and exclusion reasons for its own scope. Exclusions mean a case does not apply to the selection. Applicable cases can be accepted, unexecuted, incomplete, or complete with an unsuccessful run. A complete sample set can contain incomplete recovery attempts. In that situation the cell shows the recovery count and omits successful throughput.
-
-When older evidence is rendered in the current layout, coverage follows the original plan and any missing cell is marked Not measured. Use `feval report REPORT_DIR --json` for the complete matrix, work counts, diagnostics and finding observations.
-
-A comparison uses a compatible baseline and candidate. The time change divides by the baseline median, so a negative value is a lower candidate median. Read that change with CV, recovery completion, warnings and the observed work differences on that row.
-
-### How to interpret common patterns
-
-| Observation | Supported interpretation | Additional evidence needed for a stronger claim |
-| --- | --- | --- |
-| XOR microbenchmarks improve but full encoding does not. | That primitive improved under its tested state; the complete workload did not show the same benefit. | Actual XOR share, instruction mix, setup and output costs. |
-| Plan generation slows while plan reuse improves. | First-use and steady-state costs moved in different directions. | Application block count and measured amortized/continuity performance. |
-| Replay improves with fewer operations. | Execution became faster for a different program. | Identical-program replay to isolate operator speed. |
-| All-source decode is much faster than missing-source recovery. | The two cases can exercise substantially different work, including a legitimate fast path. | Solve activity, symbols consumed and stage evidence. |
-| Output-ready latency improves but sustained throughput falls. | Work after output handoff or between blocks offsets the isolated latency gain. | Release intervals, block gaps and allocation/state behavior. |
-| A warning-level operation is faster because it returns immediately. | The requested call is faster and has the reported semantic deviation. | Developer judgment about accepting that behavior; the framework does not veto it. |
-| Diagnostic timing differs materially from ordinary timing. | Instrumentation or execution conditions affect the observation. | Same-work comparisons and explicit overhead evidence before attributing the diagnostic split. |
-
-An optimization opportunity is a supported location to investigate, not a promised speedup. A measured serial fraction can support a qualified theoretical upper bound, but actual gains depend on interactions, changed work and cache/resource behavior. Avoid automatic causal claims from a single percentage change.
-
-Validation, ordinary measurement and diagnostic workers each have a 1,800-second deadline for the expanded grid. Each fresh-process case has 60 seconds. Three separate diagnostic workers observe the same ordinary cases. These bounds do not automatically expand after failure. The defined samples characterize these fixed inputs and this host, not production stability.

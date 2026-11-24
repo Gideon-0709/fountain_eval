@@ -2,11 +2,11 @@
 
 `feval` freezes Fountain components, generates isolated native builds, executes every applicable check, records measurements and compares results. The `fountain-eval` Cargo package provides the `fountain_eval` library and the `feval` CLI. Component source remains in its own repository.
 
-The project is an unreleased internal **0.1.0** candidate. Its formal content covers validation tests (V), operation tests (O), link tests (L) and workflow tests (W). Encoding-plan construction and operation-list cloning and recorded execution belong to link testing; plan reuse across blocks belongs to workflow testing. See the [test guide](docs/TEST.md) for contracts and interpretation and the automatically generated reports for executed coverage and limitations. No release or performance ranking is implied.
+The project is an unreleased internal **0.1.0** candidate.
 
 ## Install and initialize a workspace
 
-Requirements: Linux or macOS, Git, `tar`, a native linker/C toolchain and Rust managed by rustup. The generated drivers use Rust 1.89.0, release optimization and the host CPU. Positive native construction coverage uses authorized local Arena and product checkouts on ARM64. Public Slab/Simd currently fail the formal GF check; the pinned operator also has an AVX2 compile error on x86_64. CI verifies these rejections and records the remaining coverage gaps.
+Install Git, `tar`, a native linker and C toolchain, and Rust via rustup on Linux or macOS. The generated drivers use Rust 1.89.0.
 
 ```bash
 cargo install --path . --locked
@@ -44,7 +44,7 @@ feval_workspace/
 
 The activation record is stored at `$XDG_STATE_HOME/feval/active.json` or `~/.local/state/feval/active.json`. Use `feval --help` for a command list and `feval run --help` or `feval help init` for command-specific options.
 
-`test` selects the **entire content version**. Every registered case is considered. Inapplicable cases appear with a machine-readable reason and explanation. Validation runs in order from V01 to V11, completing all independent applicable V cases even after a fatal. All fatal findings are reported. If V has any fatal, that C does not execute O/L/W prechecks or measurements. Warnings do not block performance testing. A failing case retains its first failing assertion; crashes, timeouts and interruption can leave V incomplete. Independent Cs continue after a failed C; an interrupt stops the batch and leaves subsequent Cs unexecuted.
+Set `test` to a test content version. Use `feval list` to inspect the catalog. See [TEST](docs/TEST.md) for the test plan. Each configured selection runs its applicable checks. If validation finds a fatal error for one selection, performance tests for that selection stop and the batch continues with the next selection.
 
 `inspect`, `prepare` and `run` use the active workspace's `fountain-eval.toml`. Use `--config` for another file inside that workspace. A relative `--config` is resolved from the workspace root. Local component paths are always relative to the selected config's directory.
 
@@ -58,13 +58,9 @@ Unknown fields, duplicate keys and malformed references are configuration errors
 
 ## Terminal progress
 
-`run` and `prepare` print compact stage progress to stderr. Each C has a separate heading with its position in the batch and concise component names. Four stages organize the work: **Preparation**, **Validation**, **Performance** and **Diagnostics**. Preparation groups input resolution, native builds and capability checks. `prepare` stops after that stage.
+`run` and `prepare` write progress to stderr. Each component selection has its own heading. A run shows preparation, validation, performance and diagnostics. `prepare` stops after preparation.
 
-A component heading such as `C1 [2/2]` identifies the active selection. Numbered headings show preparation, validation, performance and diagnostics. Preparation names the source, build and probe steps. During driver execution, subheadings identify the latest observed test group, such as encoding plans, operation tests, link tests or workflow tests. Measurement and diagnostic groups also identify the worker.
-
-A terminal refreshes one progress line with the observed count, percentage and stage elapsed time. CI and redirected stderr use plain lines at group changes and at 30-second intervals during long stages. A fatal error appears immediately. The final summary gives each component's outcome, the sealed result path and the command to generate a report. `NO_COLOR` disables color.
-
-Live counts and stage completion describe work performed. The whole C passes only after final protocol, coverage, correctness and evidence validation. Incomplete recovery outcomes are counted separately; the terminal does not aggregate throughput across different workloads. Read the report for operation, link and workflow test results, detailed warning observations and performance dispersion.
+Interactive terminals refresh a status line. Redirected stderr includes milestones and periodic updates during long stages. The final summary gives each selection's outcome and identifies the result directory. Set `NO_COLOR` to disable color.
 
 For automation, add `--json` to keep the structured final response on stdout while progress remains on stderr:
 
@@ -74,8 +70,6 @@ feval prepare --json > prepared.json
 # Optionally retain terminal progress in a separate log:
 feval run --json > run.json 2> progress.log
 ```
-
-The parent reads the driver's existing event log as it grows. Driver code, measured regions, warmups, samples and I/T identities are unchanged by progress display. Host phase durations include orchestration work; they are separate from benchmark timings.
 
 ## Multiple component selections in one config
 
@@ -170,15 +164,11 @@ scheme = "rq"
 test = "0.1.0"
 ```
 
-The product uses its bundled scheme; an explicit external `scheme.source` is rejected. Binary and callback dependencies, hashes and loader evidence are recorded separately. Arena can be used as a product callback operator, while its current exact engine 2.1 dependency conflicts with source engine 3.
+The product uses its bundled scheme; an explicit external `scheme.source` is rejected. Binary and callback dependencies, hashes and loader evidence are recorded separately. Select a callback operator compatible with the product's registered trait dependency.
 
 Product runs execute codec, source-replacement and lifecycle checks through the real shared library and the selected SymbolOps callbacks. Full operator cases and standalone plan/replay cases require surfaces the product ABI does not provide and are explicitly skipped. Product resource observations cover the driver/callback allocator, not allocations inside the dynamic library. The registered R10 scheme accepts K=4..8192 on every integration; K=1 success cases are explicitly outside-domain skips. Product V11 checks below-domain rejection through its recoverable API.
 
-## Effective settings and prepared execution
-
-Test content derives K, symbol width, repair budget, seeds, ordering, warmup/repetition counts, severity and timing. The config selects component build features alongside component references. I derives the native bindings and diagnostic build requirements. E captures actual common build and runtime conditions.
-
-Storage paths are fixed by the workspace. The original config and its resolved settings are retained in the result and report index. Their location and comments do not affect experiment equality.
+## Prepared execution
 
 `prepare` leaves a pending workspace and its frozen cache, without publishing a final report. Its JSON response contains `prepared` and `batch`. Prepared execution consumes those inputs without rereading the original config:
 
@@ -189,26 +179,7 @@ feval run --prepared "$PREPARED"
 
 A pending preparation can be consumed once. `run --prepared` writes a normal result under `results/`. Generating its report removes both the run and consumed preparation data by default. Prepared binaries require the original CPU and OS family. `--prepared` and `--config` are mutually exclusive.
 
-## What the formal content runs
-
-`feval list` enumerates the candidate catalog. The selected scheme and verified interface determine applicability, and each selection runs its full applicable set. See the [workload matrix](docs/TEST.md#workload-matrix) for the expansion rules.
-
-| Category | Coverage | Measurement |
-|---|---|---|
-| Validation tests (V01–V11) | Scalar GF/byte oracle, mixed prefixes, storage/dispatch, boundary observations, scheme padding, plan reuse, small independent linear solve, receive ordering, participation and release | Validation outside ordinary timers |
-| Operation tests (O01–O09) | Direct public storage, XOR, GF, copy/move and supported alias calls in small and large sets | One prepared call per independent instance |
-| Link tests (L01–L12) | Symbolic plan construction and operation-list cloning, actual encode/decode stage partitions, recorded real-session replay, operation mix and allocation diagnostics | Ordinary totals and separate instrumented observations |
-| Workflow tests (W01–W08) | First use, source/repair output, source replacement, all-source and missing-source decode, round trip, 32-block continuity and lifecycle | Directly measured output-ready/lifecycle durations |
-
-The common sensitivity grid uses K=64/128/256/512/1024/2048/4096/8192 and B=128/256/512/1024/2048/4096. O uses the shared B values. Symbolic plans use K. Replay, workflows and paired link-stage observations cover all 48 K × B geometries per scheme. V supplements the common values with correctness boundary fixtures. Ordinary cases run in three sequential worker processes with one excluded warmup and five samples each (15 recorded samples). First-use cases use 15 fresh processes. Diagnostic builds have separate binaries and samples. Timers exclude checking and serialization. The report distinguishes output-ready and full-lifecycle scopes. Correctness is checked against the workload contract.
-
-The pinned public Slab/Simd implementations have a `mul_add(src, 0, dst)` branch that clears `dst`. The independent mathematical reference expects `dst` unchanged. A run that detects this ordinary GF error fails before measurement; it is not converted into a self-XOR warning or silently skipped. Other independent V cases still execute; O/L/W remain unexecuted after V completes. This is a component result, not a reason to weaken the formal contract.
-
-Checks emit explicit contract IDs, violation kinds, structured context and exact differences. Report grouping uses these identities; diagnostic wording is only supplementary. Older evidence without these fields is shown as unclassified and kept separate. A warning retains expected/actual data, operation, width, dispatch and measured observations. Warnings do not fail correctness, suppress performance or veto comparison. A faster implementation returning immediately is still timed and its deviation is reported. Developers decide the tradeoff. `correctness.status: passed_with_warnings` can accompany `status: succeeded` and exit 0.
-
-Crashes, timeouts, build conflicts, malformed evidence and missing applicable results remain failures. They are never converted to capability skips. Unknown I/T or scheme selections are explicit unsupported errors.
-
-## Reading results and comparing
+## Generate and read a report
 
 `feval run` seals the entire batch under `results/<result-id>/` and prints the ID. `feval report <result-id>` publishes **one directory for the entire batch** at `reports/<result-id>/` in the active workspace. It contains `report.md` for reading and `index.json.lzma` for comparison. After verified publication, it removes the raw result and its private build cache. Use `--keep` to retain that data, including any consumed preparation. While the raw result is available, repeating the command verifies and reuses an existing report from the same sealed run.
 
@@ -223,32 +194,15 @@ feval report "$REPORT" --json
 feval compare "$REPORT#C0" /path/to/candidate-report#C0 > comparison.md
 ```
 
-The `run --json` response contains `result` and `batch`. Use the printed ID even when a run exits with a component failure. `report <result-id> --json` returns the report directory as `report`, the Markdown path as `markdown`, and `result_id`. Pass a published report directory to display the report or read its stored index with `--json`. The original `report.md` path also works with the index beside it. Relative report and comparison paths are resolved from the active workspace root. Multi-C comparisons use the `#C<N>` selector. Single-C reports can be passed directly.
+The `run --json` response contains `result` and `batch`. Use the printed ID even when a run exits with a component failure. `report <result-id> --json` returns the report directory as `report`, the Markdown path as `markdown`, and `result_id`. Pass a published report directory to display the report or read its stored index with `--json`. The original `report.md` path also works with the index beside it. Relative report and comparison paths are resolved from the active workspace root.
 
-### Reading the Markdown
-
-The opening summary puts the result for each C first, followed by the configuration and recorded environment. The links at the top jump to V, O, L and W. Each section follows the same order of coverage summary, key results and detailed results.
-
-| Section | Key results |
-| --- | --- |
-| V · Validation | Fatal and warning findings grouped by contract ID and failure kind. The numbered headings identify the problems. The V01–V11 coverage table follows in the details. |
-| O · Operations | Direct-call latency in ns/call across the shared symbol widths. |
-| L · Links | Encode and decode stage time in mean µs/block, with shares of the instrumented lifecycle. Standalone plans and replay use median ms per call or replay. |
-| W · Workflows | Precode, Encode and Decode throughput in decimal Gbit/s. Each grid states the counted bytes and timed interval. W06 round trip appears in the details on the same K × B grid. |
-
-A dagger marks an ordinary timing CV above 10%. Exclusions list why a case does not apply. Applicable cases without measurements remain visible. The index retains exact case coverage, warning observations and aggregate results. See the [report reading guide](docs/TEST.md#read-the-report) for timing boundaries and rate denominators.
-
-`report.md` contains plain Markdown. Share it by itself for reading, or copy the entire report directory to retain `compare` and `report --json` access. The adjacent index records the config, C/I/T/E, test plan, build provenance, complete per-case coverage, correctness findings, warning observations, aggregate timings and diagnostics. The loader checks the Markdown and index as a pair. Earlier reports with an embedded index remain readable.
+The Markdown report opens with the batch summary and contains separate V, O, L and W sections. Share `report.md` for reading, or copy the entire report directory to retain the index for `compare` and `report --json`.
 
 ### Comparing runs
 
-`compare` verifies T/E/I and common fatal-check witnesses before comparing common measured cases. Failed runs are ineligible; semantic warnings remain visible and eligible. Its headline rows show the baseline, candidate, median time change and CV, with observed changes in input, work and warnings flagged per case. Comparison uses the aggregate statistics validated before cleanup; it cannot recalculate statistics from disposed samples. Existing per-C raw evidence directories are still readable. A finalized report is a result, not a replayable preparation.
+Select one component per report with `#C<N>` when a report contains several selections. Compare two successful results that meet the [compatibility requirements](docs/DESIGN.md#comparability-and-attribution). The command outputs Markdown by default and supports `--json`.
 
-## Evidence, failures and retention
-
-Each run retains its config, plan, provenance, validation, samples, diagnostics and subprocess logs. This includes completed prefixes from failed, unsupported and interrupted batches. Their report preserves outcome, errors, warnings and exact coverage. Large byte-array assertions retain lengths, the first differing offset and values, the total number of differences, short prefixes and SHA-256 hashes.
-
-`report` verifies the sealed result and reads back both published files before cleaning raw data. A publication or verification error retains the raw result. A cleanup error identifies the affected paths. Cleanup uses result ownership and locks so other runs and preparations can continue. `clean` and explicit directory reset require exclusive access to the workspace. Keep the result with `--keep` when you need its individual samples or full logs.
+## Exit codes and troubleshooting
 
 | Exit | Meaning |
 |---|---|
@@ -258,8 +212,15 @@ Each run retains its config, plan, provenance, validation, samples, diagnostics 
 | 4 | At least one failed or unexecuted C; inspect every batch entry |
 | 130 | Interrupted run |
 
-Start failures with the component outcome, fatal findings and diagnostic excerpts in the report index. A preparation with a corrupt cache fails explicitly. Execution and publication are local operations. The verified report directory survives cleanup.
+For a component failure, generate the report and inspect that selection's outcome and findings. Use `feval report <result-id> --keep` when you need individual samples or subprocess logs.
 
-## Maintainer references
+## Run from source
 
-See the [0.1.0 test guide](docs/TEST.md), [DESIGN and implementation map](docs/DESIGN.md), [CONTRIBUTING](CONTRIBUTING.md) and [artifact contracts](specs/README.md). Reports are produced by the CLI; historical construction summaries are not the source of component results.
+From the repository checkout, run a CLI command without installing it by passing the command after Cargo's `--`.
+
+```bash
+cargo run --locked --bin feval -- --help
+cargo doc --locked --no-deps
+```
+
+The generated library documentation is at `target/doc/fountain_eval/index.html`. See [CONTRIBUTING](CONTRIBUTING.md) for development checks, [DESIGN](docs/DESIGN.md) for the architecture and implementation map, and [TEST](docs/TEST.md) for the test plan.
