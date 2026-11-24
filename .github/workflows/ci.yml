@@ -29,12 +29,8 @@ jobs:
           RUSTDOCFLAGS: -D warnings
       - run: python3 scripts/check_repository.py
       - run: cargo build --locked
-      - name: Public native acceptance and failure lifecycle
-        if: matrix.os != 'ubuntu-latest'
+      - name: Native framework smoke and failure lifecycle
         run: python3 scripts/native_acceptance.py --work .fountain-eval/ci-acceptance --faults
-      - name: Verify known upstream x86 compile rejection
-        if: matrix.os == 'ubuntu-latest'
-        run: python3 scripts/native_acceptance.py --work .fountain-eval/ci-acceptance --expect-upstream-x86-failure
       - name: Print acceptance ledger on failure
         if: failure()
         run: cat .fountain-eval/ci-acceptance/ledger.json || true
